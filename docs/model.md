@@ -27,7 +27,7 @@ Microcode 使用 `@earendil-works/pi-ai` 的 `builtinModels()` 注册内置模�
 
    ```sh
    bun run build
-   bun run package:all
+   bun run package:cli
    ```
 
    用户安装该版本后才能获得更新后的模型目录。

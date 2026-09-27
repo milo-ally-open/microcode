@@ -41,7 +41,7 @@ async function exists(path: string): Promise<boolean> {
 /**
  * User-scoped pi-ai credential storage. OAuth tokens and API keys are AES-256-GCM
  * encrypted at rest; the random encryption key lives only in the OS credential
- * store. A proper-lockfile lock serializes read/modify/write across CLI and GUI.
+ * store. A proper-lockfile lock serializes read/modify/write across processes.
  */
 export class EncryptedCredentialStore implements CredentialStore {
   private readonly lockTarget: string
