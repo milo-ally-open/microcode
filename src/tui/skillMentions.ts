@@ -73,3 +73,10 @@ export function buildSkillMentionContext(input: string, skills: readonly Skill[]
   })
   return sections.length > 0 ? `${input}\n\n[Referenced skills]\n${sections.join('\n\n')}` : input
 }
+
+/** Keep injected skill guidance in Agent context, but hide it when replaying user chat. */
+export function stripInjectedSkillContextForDisplay(input: string): string {
+  const marker = '\n\n[Referenced skills]\n'
+  const markerIndex = input.indexOf(marker)
+  return markerIndex < 0 ? input : input.slice(0, markerIndex)
+}

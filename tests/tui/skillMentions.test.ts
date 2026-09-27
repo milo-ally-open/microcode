@@ -12,6 +12,7 @@ import {
   highlightSkillMentions,
   isSkillAutocompleteContext,
   parseSkillMentions,
+  stripInjectedSkillContextForDisplay,
 } from '../../src/tui/skillMentions.ts'
 
 describe('skill mentions', () => {
@@ -44,6 +45,7 @@ describe('skill mentions', () => {
       const prompt = buildSkillMentionContext(completed.lines[0]!, skills)
       expect(prompt).toContain('Please use $fixer')
       expect(prompt).toContain('[Referenced skills]\n### Skill: fixer\n\nApply the minimal fix.')
+      expect(stripInjectedSkillContextForDisplay(prompt)).toBe('Please use $fixer ')
       expect(prompt).not.toContain('Do not invoke automatically.')
     } finally {
       await rm(cwd, { recursive: true, force: true })
@@ -65,6 +67,7 @@ describe('skill mentions', () => {
       expect(buildSkillMentionContext(input, skills)).toContain('### Skill: alpha\n\nAlpha instructions.')
       expect(buildSkillMentionContext(input, skills)).not.toContain('Hidden instructions.')
       expect(buildSkillMentionContext(input, skills)).not.toContain('### Skill: missing')
+      expect(stripInjectedSkillContextForDisplay(input)).toBe(input)
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }

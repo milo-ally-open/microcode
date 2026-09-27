@@ -58,7 +58,7 @@ import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
 import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
 import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, getMentionedImagePaths, listWorkspaceFiles } from './workspaceFiles.ts'
-import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch } from './skillMentions.ts'
+import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch, stripInjectedSkillContextForDisplay } from './skillMentions.ts'
 import { createSessionTitle, normalizeSessionTitle } from './sessionTitle.ts'
 
 
@@ -1927,7 +1927,8 @@ export class App {
           if (imageParts.length > 0) images = imageParts
         }
         const timeline = new TurnTimeline()
-        timeline.addEntry(new UserMessage(text, images), 'user')
+        // Skill guidance is appended to persisted Agent prompts, not part of the user's visible message.
+        timeline.addEntry(new UserMessage(stripInjectedSkillContextForDisplay(text), images), 'user')
         this.chatContainer.addChild(timeline)
         this.activeTurnTimeline = timeline
         this.turnFinalized = false
