@@ -47,6 +47,31 @@ describe('agent modules', () => {
     }
   })
 
+  test('skill manager refreshes newly added project skills and changed loaded skill bodies', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'microcode-live-skills-'))
+    try {
+      const skillsDir = join(cwd, '.microcode', 'skills')
+      const alphaDir = join(skillsDir, 'alpha')
+      await mkdir(alphaDir, { recursive: true })
+      const alphaFile = join(alphaDir, 'SKILL.md')
+      await writeFile(alphaFile, '---\nname: alpha\ndescription: Alpha skill\n---\nFirst body\n')
+
+      const manager = new AgentSkillManager({ cwd, skillPaths: [skillsDir], includeDefaults: false })
+      manager.load('alpha')
+      await writeFile(alphaFile, '---\nname: alpha\ndescription: Alpha skill\n---\nUpdated body\n')
+      const betaDir = join(skillsDir, 'beta')
+      await mkdir(betaDir, { recursive: true })
+      await writeFile(join(betaDir, 'SKILL.md'), '---\nname: beta\ndescription: Beta skill\n---\nBeta body\n')
+
+      expect(manager.refresh()).toBe(true)
+      expect(manager.findSkill('beta')?.name).toBe('beta')
+      expect(manager.getSnapshot().loaded[0]?.body).toBe('Updated body\n')
+      expect(manager.appendLoadedSkills('Base')).toContain('Updated body')
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
   test('token tracker deduplicates assistant usage and computes context budget', () => {
     const model = resolveAgentModelConfig('deepseek-v4-pro', 'openai-completions').model
     const tracker = new AgentTokenTracker()

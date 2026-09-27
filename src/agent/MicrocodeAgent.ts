@@ -311,6 +311,7 @@ export class MicrocodeAgent {
     input: string | AgentMessage | AgentMessage[],
     images?: ImageContent[],
   ): Promise<void> {
+    this.refreshSkillCatalog()
     if (typeof input === 'string') {
       return this.core.prompt(input, images)
     }
@@ -587,14 +588,17 @@ export class MicrocodeAgent {
   }
 
   getSkillSnapshot(): Readonly<AgentSkillSnapshot> {
+    this.refreshSkillCatalog()
     return this.skillManager.getSnapshot()
   }
 
   getSkills() {
+    this.refreshSkillCatalog()
     return this.skillManager.getSkills()
   }
 
   isSkillLoaded(skillName: string): boolean {
+    this.refreshSkillCatalog()
     return this.skillManager.isLoaded(skillName)
   }
 
@@ -603,12 +607,14 @@ export class MicrocodeAgent {
   }
 
   loadSkill(skillName: string): void {
+    this.refreshSkillCatalog()
     this.skillManager.load(skillName)
     this.rebuildSystemPrompt()
     this.emitStateChangedDetached('skills_changed')
   }
 
   unloadSkill(skillName: string): void {
+    this.refreshSkillCatalog()
     if (!this.skillManager.unload(skillName)) return
     this.rebuildSystemPrompt()
     this.emitStateChangedDetached('skills_changed')
@@ -644,6 +650,13 @@ export class MicrocodeAgent {
     const prompt = this.appendLoadedSkills(this.baseSystemPrompt)
     this.updateSystemPrompt(prompt)
     this.compactionManager.setSystemPrompt(prompt)
+  }
+
+  private refreshSkillCatalog(): void {
+    if (!this.skillManager.refresh()) return
+    this.baseSystemPrompt = this.buildBaseSystemPrompt(this.core.state.model)
+    this.rebuildSystemPrompt()
+    this.emitStateChangedDetached('skills_changed')
   }
 
   private updateSystemPrompt(prompt: string): void {

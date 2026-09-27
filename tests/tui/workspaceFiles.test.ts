@@ -44,6 +44,9 @@ describe('workspace file mentions', () => {
         new Set(['images/sample photo.png', 'README.md']),
       )).toEqual(['images/sample photo.png'])
       expect(files.some((file) => file.includes('.git') || file.includes('node_modules'))).toBe(false)
+
+      await writeFile(join(cwd, 'new-after-index.txt'), 'new file')
+      expect(await listWorkspaceFiles(cwd)).toContain('new-after-index.txt')
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }

@@ -195,6 +195,7 @@ export class App {
   private startupWarnings: string[] = []
   private pendingImages: CachedImage[] = []
   private workspaceFileIndex?: Promise<string[]>
+  private workspaceFileIndexUpdatedAt = 0
   private imagePathProcessing = false
   private suppressTrailingQuote = false
   private titleGenerated = false
@@ -534,8 +535,7 @@ export class App {
           const query = atPrefix.startsWith('@"')
             ? atPrefix.slice(2).toLowerCase()
             : atPrefix.slice(1).toLowerCase()
-          this.workspaceFileIndex ??= listWorkspaceFiles(this.agent.getSnapshot().cwd)
-          const files = await this.workspaceFileIndex
+          const files = await this.getWorkspaceFiles(query.length === 0)
           const matches = filterWorkspaceFiles(files, query).slice(0, 100)
           if (matches.length === 0) return null
           return {
@@ -595,8 +595,7 @@ export class App {
 
   private async addMentionedFileContext(input: string): Promise<string> {
     const cwd = this.agent.getSnapshot().cwd
-    this.workspaceFileIndex ??= listWorkspaceFiles(cwd)
-    const indexedFiles = new Set(await this.workspaceFileIndex)
+    const indexedFiles = new Set(await this.getWorkspaceFiles())
     return buildWorkspaceFileContext(cwd, input, indexedFiles, async (path) => {
       return this.authorizeMentionedFileRead(cwd, path)
     })
@@ -604,8 +603,7 @@ export class App {
 
   private async addMentionedImages(input: string): Promise<void> {
     const cwd = this.agent.getSnapshot().cwd
-    this.workspaceFileIndex ??= listWorkspaceFiles(cwd)
-    const indexedFiles = new Set(await this.workspaceFileIndex)
+    const indexedFiles = new Set(await this.getWorkspaceFiles(true))
     const paths = getMentionedImagePaths(input, indexedFiles)
     if (paths.length === 0) return
     if (!modelSupportsImages(this.agent.getCurrentModel())) {
@@ -627,6 +625,15 @@ export class App {
         base64Data: image.data,
       })
     }
+  }
+
+  private async getWorkspaceFiles(forceRefresh = false): Promise<string[]> {
+    const stale = Date.now() - this.workspaceFileIndexUpdatedAt >= 500
+    if (forceRefresh || stale || !this.workspaceFileIndex) {
+      this.workspaceFileIndexUpdatedAt = Date.now()
+      this.workspaceFileIndex = listWorkspaceFiles(this.agent.getSnapshot().cwd)
+    }
+    return this.workspaceFileIndex
   }
 
   private async authorizeMentionedFileRead(cwd: string, path: string): Promise<boolean> {
