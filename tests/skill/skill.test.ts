@@ -23,6 +23,7 @@ describe('skill module', () => {
       expect(result.skills[0]).toMatchObject({ name: 'alpha', description: 'Alpha <special> skill' })
       expect(readSkillBody(result.skills[0])).toBe('Skill body\n')
       expect(formatSkillsForPrompt(result.skills)).toContain('&lt;special&gt;')
+      expect(formatSkillsForPrompt(result.skills)).toContain('$skill-name')
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }

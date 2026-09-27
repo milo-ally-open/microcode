@@ -89,7 +89,7 @@ describe('control tools', () => {
     await expect(createTaskTool('/tmp').execute('task', { action: 'claim', list_id: 'x' })).rejects.toThrow('TaskSystem is unavailable')
   })
 
-  test('Skill tool normalizes slash names and rejects missing or disabled skills', async () => {
+  test('Skill tool matches skill names and rejects missing or disabled skills', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'microcode-skill-tool-'))
     try {
       const filePath = join(cwd, 'SKILL.md')
@@ -101,9 +101,10 @@ describe('control tools', () => {
         ],
       })
 
-      const result = await tool.execute('skill', { skill: '/alpha' })
+      const result = await tool.execute('skill', { skill: 'alpha' })
       expect(result.details?.skillName).toBe('alpha')
       expect(result.content[0]?.text).toContain('skill content')
+      await expect(tool.execute('skill', { skill: '/alpha' })).rejects.toThrow('not found')
       await expect(tool.execute('skill', { skill: 'hidden' })).rejects.toThrow('cannot be invoked')
       await expect(tool.execute('skill', { skill: 'missing' })).rejects.toThrow('not found')
     } finally {

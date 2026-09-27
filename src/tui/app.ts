@@ -51,11 +51,11 @@ import { DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES, loadProjectInstructions } from 
 import { buildInitTaskPrompt, extractInitDraft, getInitProjectFileOutline } from '../instructions/initProjectGuidance.ts'
 import { readMicroFile, writeMicroFile, type MicroFileSnapshot } from '../instructions/writeMicroFile.ts'
 import type { MicrocodeAgent, MicrocodeAgentEvent } from '../agent/index.ts'
-import type { Skill } from '../skill/skill.ts'
 import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
 import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
-import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, listWorkspaceFiles } from './workspaceFiles.ts'
+import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, getMentionedImagePaths, listWorkspaceFiles } from './workspaceFiles.ts'
+import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch } from './skillMentions.ts'
 
 
 
@@ -154,7 +154,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'tasks', description: 'Browse tasks and prioritize unfinished work in the current session', argumentHint: '' },
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
-  { name: 'skills', description: 'Show available skills' },
+  { name: 'skills', description: 'List, enable, or disable skills' },
   { name: 'exit', description: 'Exit Microcode' },
   { name: 'help', description: 'Show help and available commands' },
 ]
@@ -307,6 +307,8 @@ export class App {
         }
       }
 
+      await this.addMentionedImages(userInput)
+
       // Skip if nothing to send (no text and no images)
       const images = this.getPendingImageContents()
       if (!userInput.trim() && images.length === 0) continue
@@ -320,7 +322,12 @@ export class App {
       this.ui.requestRender()
 
       try {
-        const promptInput = await this.addMentionedFileContext(userInput)
+        const withFileContext = await this.addMentionedFileContext(userInput)
+        const promptInput = buildSkillMentionContext(
+          withFileContext,
+          this.agent.getSkills().filter((skill) => !this.agent.isSkillLoaded(skill.name)),
+          userInput,
+        )
         if (images.length > 0) {
           await this.agent.prompt(promptInput, images)
         } else {
@@ -501,6 +508,24 @@ export class App {
         const currentLine = lines[cursorLine] ?? ''
         const textBeforeCursor = currentLine.slice(0, cursorCol)
 
+        const dollarIndex = textBeforeCursor.lastIndexOf('$')
+        const dollarPrefix = dollarIndex >= 0 ? textBeforeCursor.slice(dollarIndex) : ''
+        const isSkillMention = dollarPrefix.startsWith('$') &&
+          (dollarIndex === 0 || /[\s([{]/.test(textBeforeCursor[dollarIndex - 1] ?? ''))
+        if (isSkillMention) {
+          const query = dollarPrefix.slice(1).toLowerCase()
+          const matches = filterInvocableSkills(this.agent.getSkills(), query).slice(0, 100)
+          if (matches.length === 0) return null
+          return {
+            items: matches.map((skill) => ({
+              value: `$${skill.name}`,
+              label: highlightSkillMatch(`$${skill.name}`, query, (match) => chalk.cyan.bold(match)),
+              description: skill.description,
+            })),
+            prefix: dollarPrefix,
+          }
+        }
+
         const atIndex = textBeforeCursor.lastIndexOf('@')
         const atPrefix = atIndex >= 0 ? textBeforeCursor.slice(atIndex) : ''
         const isFileMention = atPrefix.startsWith('@') &&
@@ -528,23 +553,11 @@ export class App {
         const query = textBeforeCursor.slice(1).toLowerCase()
         const builtinMatches = BUILTIN_SLASH_COMMANDS.filter((cmd) => cmd.name.startsWith(query))
 
-        const skills = this.agent.getSkills()
-        const skillMatches = skills
-          .filter(s => !s.disableModelInvocation && s.name.startsWith(query))
-          .map(s => ({
-            value: `/${s.name}`,
-            label: `/${s.name}`,
-            description: s.description,
-          }))
-
-        const allMatches = [
-          ...builtinMatches.map(cmd => ({
-            value: `/${cmd.name}`,
-            label: `/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`,
-            description: cmd.description ?? '',
-          })),
-          ...skillMatches,
-        ]
+        const allMatches = builtinMatches.map((cmd) => ({
+          value: `/${cmd.name}`,
+          label: `/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`,
+          description: cmd.description ?? '',
+        }))
 
         if (allMatches.length === 0) return null
 
@@ -562,6 +575,9 @@ export class App {
         _prefix: string,
       ) => {
         const newLines = [...lines]
+        if (_prefix.startsWith('$')) {
+          return applySkillCompletion(lines, cursorLine, _cursorCol, _prefix, item.value.slice(1))
+        }
         if (_prefix.startsWith('@')) {
           return applyWorkspaceFileCompletion(lines, cursorLine, _cursorCol, _prefix, item.label)
         }
@@ -582,20 +598,47 @@ export class App {
     this.workspaceFileIndex ??= listWorkspaceFiles(cwd)
     const indexedFiles = new Set(await this.workspaceFileIndex)
     return buildWorkspaceFileContext(cwd, input, indexedFiles, async (path) => {
-      const permissionInput = { file_path: resolve(cwd, path) }
-      const permission = this.agent.checkPermission(READ_TOOL_NAME, permissionInput)
-      if (!permission.allowed) {
-        if (permission.reason !== 'ask') return false
-        if (!await this.agent.requestToolPermission(
-          READ_TOOL_NAME,
-          permissionInput,
-          `Read workspace file ${path} as context for this message`,
-        )) {
-          return false
-        }
-      }
-      return true
+      return this.authorizeMentionedFileRead(cwd, path)
     })
+  }
+
+  private async addMentionedImages(input: string): Promise<void> {
+    const cwd = this.agent.getSnapshot().cwd
+    this.workspaceFileIndex ??= listWorkspaceFiles(cwd)
+    const indexedFiles = new Set(await this.workspaceFileIndex)
+    const paths = getMentionedImagePaths(input, indexedFiles)
+    if (paths.length === 0) return
+    if (!modelSupportsImages(this.agent.getCurrentModel())) {
+      this.showStatus('Current model does not support image input. Switch to a vision-capable model.')
+      return
+    }
+
+    for (const path of paths) {
+      if (!await this.authorizeMentionedFileRead(cwd, path)) continue
+      const image = tryReadImageFromPath(resolve(cwd, path))
+      if (!image) continue
+      await this.sessionManager.ensureCreated(cwd)
+      const sessionId = this.sessionManager.getSessionId() ?? 'unknown'
+      const stored = storeImage(image.data, image.mimeType, sessionId)
+      this.pendingImages.push({
+        cachePath: stored.cachePath,
+        fileName: stored.fileName,
+        mimeType: image.mimeType,
+        base64Data: image.data,
+      })
+    }
+  }
+
+  private async authorizeMentionedFileRead(cwd: string, path: string): Promise<boolean> {
+    const permissionInput = { file_path: resolve(cwd, path) }
+    const permission = this.agent.checkPermission(READ_TOOL_NAME, permissionInput)
+    if (permission.allowed) return true
+    if (permission.reason !== 'ask') return false
+    return this.agent.requestToolPermission(
+      READ_TOOL_NAME,
+      permissionInput,
+      `Read workspace file ${path} as context for this message`,
+    )
   }
 
   private async pasteClipboardImage(): Promise<void> {
@@ -838,14 +881,6 @@ export class App {
         return true
 
       default: {
-        // Check if command matches a loaded skill
-        const skillName = command?.startsWith('/') ? command.slice(1) : ''
-        const skills = this.agent.getSkills()
-        const skill = skills.find(s => s.name === skillName && !s.disableModelInvocation)
-        if (skill) {
-          this.handleSkillSlashCommand(skill)
-          return true
-        }
         this.showError(`Unknown command: ${command}. Type /help for available commands.`)
         return true
       }
@@ -2315,13 +2350,48 @@ export class App {
   }
 
   private handleSkillsCommand(): void {
+    const actions: SelectItem[] = [
+      { value: 'list', label: 'List skills', description: 'Show available skills and their status' },
+      { value: 'toggle', label: 'Enable/Disable Skills', description: 'Add or remove skill instructions from the Agent prompt' },
+      { value: 'cancel', label: 'Cancel', description: 'Close this menu' },
+    ]
+    const selectList = new SelectList(actions, actions.length, {
+      selectedPrefix: (text) => chalk.cyan(text),
+      selectedText: (text) => chalk.cyan(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+      noMatch: (text) => theme.dim(text),
+    })
+    this.chatContainer.addChild(new Text(theme.fg('accent', 'Skills'), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim('Choose an action'), 1, 0))
+    this.chatContainer.addChild(selectList)
+    this.ui.setFocus(selectList)
+    this.ui.requestRender()
+    const close = () => {
+      this.chatContainer.removeChild(selectList)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+    }
+    selectList.onSelect = (item) => {
+      close()
+      if (item.value === 'list') this.showSkillList()
+      else if (item.value === 'toggle') this.showSkillEnableDisableMenu()
+      else this.ui.requestRender()
+    }
+    selectList.onCancel = () => {
+      close()
+      this.ui.requestRender()
+    }
+  }
+
+  private showSkillList(): void {
     const skillSnapshot = this.agent.getSkillSnapshot()
     const skills = skillSnapshot.available
     const diagnostics = skillSnapshot.diagnostics
 
     if (skills.length === 0) {
       this.chatContainer.addChild(
-        new Text(theme.dim('No skills loaded.'), 1, 0),
+        new Text(theme.dim('No skills available.'), 1, 0),
       )
       this.chatContainer.addChild(
         new Text(theme.dim('Create SKILL.md files in ~/.microcode/skills/ or .microcode/skills/ to add skills.'), 1, 0),
@@ -2333,8 +2403,8 @@ export class App {
       this.chatContainer.addChild(new Spacer(1))
 
       for (const skill of skills) {
-        const disabled = skill.disableModelInvocation ? theme.dim(' (disabled)') : ''
-        const loaded = this.agent.isSkillLoaded(skill.name) ? chalk.green(' (loaded)') : theme.dim(' (unloaded)')
+        const disabled = skill.disableModelInvocation ? theme.dim(' (disabled for $ invocation)') : ''
+        const loaded = this.agent.isSkillLoaded(skill.name) ? chalk.green(' (enabled)') : theme.dim(' (disabled)')
         this.chatContainer.addChild(
           new Text(`${theme.bold(skill.name)}${disabled}${loaded}`, 1, 0),
         )
@@ -2364,91 +2434,53 @@ export class App {
     this.ui.requestRender()
   }
 
-  private handleSkillSlashCommand(skill: Skill): void {
-    const currentlyLoaded = this.agent.isSkillLoaded(skill.name)
-
-    const statusText = currentlyLoaded
-      ? chalk.green('loaded')
-      : theme.dim('unloaded')
-
-    const headerLabel = theme.fg('accent', `Skill '${skill.name}':`)
-    this.chatContainer.addChild(
-      new Text(`${headerLabel} ${statusText}`, 1, 0),
-    )
-    this.chatContainer.addChild(
-      new Text(theme.dim(`  ${skill.description}`), 1, 0),
-    )
-
-    const items: SelectItem[] = []
-    if (currentlyLoaded) {
-      items.push({ value: 'unload', label: 'Unload', description: 'Remove skill from system prompt' })
-    } else {
-      items.push({ value: 'load', label: 'Load', description: 'Add skill to system prompt' })
+  private showSkillEnableDisableMenu(): void {
+    const skills = this.agent.getSkills()
+    if (skills.length === 0) {
+      this.showStatus('No skills available to enable or disable.')
+      return
     }
-    items.push({ value: 'cancel', label: 'Cancel', description: 'Do nothing' })
-
-    const selectList = new SelectList(items, items.length, {
+    const items: SelectItem[] = skills.map((skill) => ({
+      value: skill.name,
+      label: `${skill.name} — ${this.agent.isSkillLoaded(skill.name) ? 'Disable' : 'Enable'}`,
+      description: skill.description,
+    }))
+    const selectList = new SelectList(items, Math.min(items.length, 12), {
       selectedPrefix: (text) => chalk.cyan(text),
       selectedText: (text) => chalk.cyan(text),
       description: (text) => theme.dim(text),
       scrollInfo: (text) => theme.dim(text),
       noMatch: (text) => theme.dim(text),
     })
-
+    this.chatContainer.addChild(new Text(theme.fg('accent', 'Enable/Disable Skills'), 1, 0))
     this.chatContainer.addChild(selectList)
     this.ui.setFocus(selectList)
     this.ui.requestRender()
-
-    let finished = false
-
-    const removeListener = this.ui.addInputListener((data) => {
-      if (data === '\x03') {
-        finished = true
-        removeListener()
-        this.chatContainer.removeChild(selectList)
-        this.chatContainer.addChild(new Spacer(1))
-        this.ui.setFocus(this.editor)
-        this.ui.requestRender()
-        return { consume: true }
-      }
-      return undefined
-    })
-
-    const finish = (value?: string) => {
-      if (finished) return
-      finished = true
-      removeListener()
+    selectList.onSelect = (item) => {
       this.chatContainer.removeChild(selectList)
-
-      if (value === 'load') {
+      const skill = skills.find((candidate) => candidate.name === item.value)
+      if (skill) {
         try {
-          this.agent.loadSkill(skill.name)
-          this.chatContainer.addChild(
-            new Text(theme.fg('accent', `Loaded skill '${skill.name}' into system prompt.`), 1, 0),
-          )
+          if (this.agent.isSkillLoaded(skill.name)) {
+            this.agent.unloadSkill(skill.name)
+            this.showStatus(`Disabled skill '${skill.name}'.`)
+          } else {
+            this.agent.loadSkill(skill.name)
+            this.showStatus(`Enabled skill '${skill.name}'.`)
+          }
         } catch (error) {
-          this.chatContainer.addChild(
-            new Text(theme.fg('red', `Failed to load skill '${skill.name}': ${error instanceof Error ? error.message : 'Unknown error'}`), 1, 0),
-          )
+          this.showError(`Could not change skill '${skill.name}': ${error instanceof Error ? error.message : String(error)}`)
         }
-      } else if (value === 'unload') {
-        this.agent.unloadSkill(skill.name)
-        this.chatContainer.addChild(
-          new Text(theme.fg('accent', `Unloaded skill '${skill.name}' from system prompt.`), 1, 0),
-        )
-      } else {
-        this.chatContainer.addChild(
-          new Text(theme.dim('Cancelled.'), 1, 0),
-        )
       }
-
+      this.ui.setFocus(this.editor)
+      this.ui.requestRender()
+    }
+    selectList.onCancel = () => {
+      this.chatContainer.removeChild(selectList)
       this.chatContainer.addChild(new Spacer(1))
       this.ui.setFocus(this.editor)
       this.ui.requestRender()
     }
-
-    selectList.onSelect = (item) => finish(item.value)
-    selectList.onCancel = () => finish(undefined)
   }
 
   /**
@@ -2699,6 +2731,7 @@ export class App {
       `  ${theme.bold('/thinking')} [level]   Show or set thinking depth`,
       `  ${theme.bold('/mcp')}                Show MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
+      `  ${theme.bold('/skills')}             List, enable, or disable skills`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
       `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
       `  ${theme.bold('/instructions reload')} Reload project instruction files`,
@@ -2719,6 +2752,7 @@ export class App {
       `  ${theme.bold('Up/Down')}             Browse command history`,
       `  ${theme.bold('Tab')}                 Accept autocomplete suggestion`,
       `  ${theme.bold('@')}                   Search and attach workspace files`,
+      `  ${theme.bold('$skill-name')}         Include a skill in this request`,
       `  ${theme.bold('Ctrl+V / Shift+Insert')} Paste clipboard image`,
       '',
       `${theme.fg('accent', 'Environment Variables:')}`,
@@ -2742,7 +2776,7 @@ export class App {
       helpText.push('')
       for (const skill of skills) {
         const disabled = skill.disableModelInvocation ? ' (disabled)' : ''
-        helpText.push(`  ${theme.bold(`/${skill.name}`)}${disabled}    ${skill.description}`)
+        helpText.push(`  ${theme.bold(`$${skill.name}`)}${disabled}    ${skill.description}`)
       }
     }
 

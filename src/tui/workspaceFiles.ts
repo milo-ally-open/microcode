@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { MENTION_FILE_MAX_BYTES, readMentionedTextFile, supportsMentionedTextFile } from '../tools/FileReadTool/FileReadTool.ts'
+import { IMAGE_EXTENSION_REGEX } from '../utils/imageUtils.ts'
 
 const IGNORED_DIRECTORIES = new Set([
   '.git', 'node_modules', '.next', '.nuxt', '.turbo', 'dist', 'build', 'coverage',
@@ -40,8 +41,17 @@ export function parseFileMentions(text: string): string[] {
   return [...new Set(paths)]
 }
 
+export function getMentionedImagePaths(text: string, indexedFiles: ReadonlySet<string>): string[] {
+  return parseFileMentions(text).filter((path) => indexedFiles.has(path) && IMAGE_EXTENSION_REGEX.test(path))
+}
+
 export function formatFileMention(path: string): string {
   return /\s/.test(path) ? `@"${path.replace(/([\\"])/g, '\\$1')}"` : `@${path}`
+}
+
+export function highlightWorkspaceFileMentions(text: string, highlight: (mention: string) => string): string {
+  const pattern = /(?<![\w@])@(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s]+)/g
+  return text.replace(pattern, (mention) => highlight(mention))
 }
 
 export function applyWorkspaceFileCompletion(

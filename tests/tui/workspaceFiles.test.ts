@@ -7,6 +7,8 @@ import {
   applyWorkspaceFileCompletion,
   filterWorkspaceFiles,
   formatFileMention,
+  getMentionedImagePaths,
+  highlightWorkspaceFileMentions,
   listWorkspaceFiles,
   parseFileMentions,
 } from '../../src/tui/workspaceFiles.ts'
@@ -28,11 +30,19 @@ describe('workspace file mentions', () => {
       expect(filterWorkspaceFiles(files, 'shared dir/my')).toEqual(['src/shared dir/My File.ts'])
       expect(filterWorkspaceFiles(files, 'file.ts')).toEqual(['src/shared dir/My File.ts'])
       expect(formatFileMention('src/shared dir/My File.ts')).toBe('@"src/shared dir/My File.ts"')
+      expect(highlightWorkspaceFileMentions(
+        'Read @README.md and @"src/shared dir/My File.ts", but ignore a@b.com.',
+        (mention) => `[${mention}]`,
+      )).toBe('Read [@README.md] and [@"src/shared dir/My File.ts"], but ignore a@b.com.')
       expect(applyWorkspaceFileCompletion(
         ['Check @src/shared'], 0, 'Check @src/shared'.length, '@src/shared', 'src/shared dir/My File.ts',
       )).toMatchObject({ lines: ['Check @"src/shared dir/My File.ts" '], cursorLine: 0 })
       expect(parseFileMentions('Please inspect @"src/shared dir/My File.ts" and @README.md'))
         .toEqual(['src/shared dir/My File.ts', 'README.md'])
+      expect(getMentionedImagePaths(
+        'Compare @"images/sample photo.png" with @README.md and @outside.jpg',
+        new Set(['images/sample photo.png', 'README.md']),
+      )).toEqual(['images/sample photo.png'])
       expect(files.some((file) => file.includes('.git') || file.includes('node_modules'))).toBe(false)
     } finally {
       await rm(cwd, { recursive: true, force: true })

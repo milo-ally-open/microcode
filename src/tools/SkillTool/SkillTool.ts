@@ -40,12 +40,7 @@ export function createSkillToolWithAgent(
       _signal?: AbortSignal,
     ): Promise<AgentToolResult<SkillToolDetails>> {
       const { skill: skillName } = params
-      const trimmedSkill = skillName.trim()
-
-      // Remove leading slash if present
-      const normalizedSkill = trimmedSkill.startsWith('/')
-        ? trimmedSkill.substring(1)
-        : trimmedSkill
+      const normalizedSkill = skillName.trim()
 
       // Get skills from agent
       const skills = options.getSkills()

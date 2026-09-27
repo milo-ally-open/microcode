@@ -354,7 +354,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 
   const lines = [
     '\n\nThe following skills provide specialized instructions for specific tasks.',
-    'Use the skill tool to load a skill by name when the task matches its description.',
+    'Users can reference a skill as $skill-name to include its instructions in that request. The skill tool can also load a skill when needed.',
     '',
     '<available_skills>',
   ]
