@@ -87,7 +87,7 @@ export function renderHunkLines(hunk: Hunk, width: number): string[] {
 
   // Hunk header
   const header = `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`
-  lines.push(chalk.hex('#5f87ff')(header))
+  lines.push(chalk.white(header))
 
   for (const line of hunk.lines) {
     const truncated = line.length > width ? line.slice(0, width - 1) + '…' : line

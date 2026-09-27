@@ -1,7 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import { formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
@@ -26,7 +26,7 @@ export class FileReadToolUI extends Container {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -69,7 +69,7 @@ export class FileReadToolUI extends Container {
 
     const filePath = this.details?.path || this.args?.file_path || ''
     const shortPath = filePath.split('/').slice(-2).join('/')
-    const header = `${icon} ${chalk.bold('read')} ${theme.fg('accent', shortPath)}`
+    const header = `${formatToolLabel(icon, 'read')}${theme.fg('accent', shortPath)}`
 
     this.contentBox.clear()
 

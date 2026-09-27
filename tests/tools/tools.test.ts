@@ -42,7 +42,7 @@ describe('tools modules', () => {
     createCodingTools({ cwd: process.cwd() })
 
     expect(formatToolActivity('bash', { command: 'bun test' })).toBe('Running a command')
-    expect(formatToolDetail('bash', { command: 'bun test ./test' })).toContain('bun test')
+    expect(formatToolDetail('bash', { command: 'bun test ./tests' })).toContain('bun test')
     expect(formatToolStatus('bash', {}, { stdout: 'a\nb\n', stderr: '' })).toBe('2 lines')
     expect(formatToolSummary('bash', { content: [], isError: false, details: { exitCode: 0 }, textStats: { chars: 4, lines: 2 } })).toContain('exit=0')
 

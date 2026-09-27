@@ -25,6 +25,7 @@ import { BashExecutionComponent } from './components/bashExecution.ts'
 import { getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
 import { UserMessage } from './components/userMessage.ts'
 import { TurnTimeline } from './components/turnTimeline.ts'
+import { PermissionPromptOverlay } from './components/permissionPrompt.ts'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import { modelSupportsImages } from '../models/index.ts'
 import {
@@ -300,9 +301,9 @@ export class App {
       if (!userInput.trim() && images.length === 0) continue
       await this.sessionManager.ensureCreated(process.cwd())
 
-      // Add user message to chat (with grey background)
+      // Start a new visual turn in the chat timeline.
       this.activeTurnTimeline = new TurnTimeline()
-      this.activeTurnTimeline.addEntry(new UserMessage(userInput, images.length > 0 ? images : undefined))
+      this.activeTurnTimeline.addEntry(new UserMessage(userInput, images.length > 0 ? images : undefined), 'user')
       this.chatContainer.addChild(this.activeTurnTimeline)
       this.turnFinalized = false
       this.ui.requestRender()
@@ -1587,7 +1588,7 @@ export class App {
           if (imageParts.length > 0) images = imageParts
         }
         const timeline = new TurnTimeline()
-        timeline.addEntry(new UserMessage(text, images))
+        timeline.addEntry(new UserMessage(text, images), 'user')
         this.chatContainer.addChild(timeline)
         this.activeTurnTimeline = timeline
         this.turnFinalized = false
@@ -1598,13 +1599,13 @@ export class App {
         }
         const component = new AssistantMessageComponent(getMarkdownTheme())
         component.updateContent(msg as any)
-        this.activeTurnTimeline.addEntry(component)
+        this.activeTurnTimeline.addEntry(component, 'assistant')
 
         for (const block of msg.content) {
           if (block.type !== 'toolCall') continue
           const row = this.createToolRow(block.id, block.name, block.arguments ?? {})
           row.markExecutionStarted()
-          this.activeTurnTimeline.addEntry(row)
+          this.activeTurnTimeline.addEntry(row, 'tool')
         }
 
         if (msg.stopReason === 'aborted') {
@@ -1614,7 +1615,6 @@ export class App {
           this.activeTurnTimeline.addEntry(new Text(theme.fg('error', `Error: ${msg.errorMessage || 'Unknown error'}`), 1, 0))
           this.turnFinalized = true
         } else if (msg.stopReason === 'stop') {
-          this.activeTurnTimeline.addEntry(new Text(theme.fg('muted', 'Completed'), 1, 0))
           this.turnFinalized = true
         }
       } else if ((msg as any).role === 'toolResult') {
@@ -1623,7 +1623,7 @@ export class App {
         if (!row) {
           row = this.createToolRow(toolResult.toolCallId, toolResult.toolName, {})
           row.markExecutionStarted()
-          this.appendTurnEntry(row)
+          this.appendTurnEntry(row, 'tool')
         }
         row.updateResult({ content: toolResult.content ?? [], isError: toolResult.isError === true })
         if (row.updateDetails && toolResult.details && typeof toolResult.details === 'object') {
@@ -2313,7 +2313,7 @@ export class App {
   }
 
   /**
-   * Prompt user for tool permission using an inline select list in the chat area.
+   * Prompt user for tool permission in an overlay without changing chat history layout.
    * Returns true if approved, false if denied.
    */
   async promptPermission(
@@ -2345,11 +2345,11 @@ export class App {
         noMatch: (text) => theme.dim(text),
       })
 
-      // Add inline to chat area
       const permLabel = theme.fg('accent', 'Permission requested:')
-      this.chatContainer.addChild(new Text(`${permLabel} ${description}`, 1, 0))
-      this.chatContainer.addChild(selectList)
-      this.ui.setFocus(selectList)
+      const overlay = this.ui.showOverlay(
+        new PermissionPromptOverlay(`${permLabel} ${description}`, selectList),
+        { anchor: 'center', width: '90%', maxHeight: '50%', margin: 1 },
+      )
       this.ui.requestRender()
 
       // Intercept Ctrl+C before it reaches SelectList — exit app instead of deny
@@ -2359,7 +2359,7 @@ export class App {
           finished = true
           removeListener()
           this.permissionPromptActive = false
-          this.chatContainer.removeChild(selectList)
+          overlay.hide()
           this.flushPendingEventsWhilePermission()
           this.exit()
           return { consume: true }
@@ -2372,12 +2372,8 @@ export class App {
         finished = true
         removeListener()
         this.permissionPromptActive = false
-        this.chatContainer.removeChild(selectList)
+        overlay.hide()
         this.flushPendingEventsWhilePermission()
-        const icon = approved ? theme.fg('green', '✓') : theme.fg('red', '✗')
-        const resultText = approved ? 'Approved' : 'Denied'
-        this.chatContainer.addChild(new Text(`${icon} ${resultText}`, 1, 0))
-        this.chatContainer.addChild(new Spacer(1))
         // Start timing from approval, when execution is allowed to continue.
         if (approved) {
           this.resumeToolElapsedTimer()
@@ -2550,9 +2546,9 @@ export class App {
     })
   }
 
-  private appendTurnEntry(component: Component): void {
+  private appendTurnEntry(component: Component, kind: 'user' | 'assistant' | 'tool' | 'status' = 'status'): void {
     if (this.activeTurnTimeline) {
-      this.activeTurnTimeline.addEntry(component)
+      this.activeTurnTimeline.addEntry(component, kind)
     } else {
       this.chatContainer.addChild(component)
     }
@@ -2568,12 +2564,9 @@ export class App {
     return component
   }
 
-  private finishTurn(label?: string): void {
+  private finishTurn(): void {
     if (this.turnFinalized) return
     this.activeTurnTimeline?.setActivity(undefined)
-    if (label) {
-      this.appendTurnEntry(new Text(theme.fg('muted', label), 1, 0))
-    }
     this.turnFinalized = true
   }
 
@@ -2593,7 +2586,7 @@ export class App {
           if (event.message.role === 'assistant') {
             this.streamingComponent = new AssistantMessageComponent(getMarkdownTheme())
             this.streamingMessage = event.message
-            this.appendTurnEntry(this.streamingComponent)
+            this.appendTurnEntry(this.streamingComponent, 'assistant')
             this.showWorking('Thinking…')
             this.streamingComponent.updateContent(this.streamingMessage)
             this.ui.requestRender()
@@ -2639,7 +2632,7 @@ export class App {
           component.setExpanded(this.toolDetailsExpanded)
           component.markExecutionStarted()
           if (!alreadyVisible) {
-            this.appendTurnEntry(component)
+            this.appendTurnEntry(component, 'tool')
           }
           this.pendingTools.set(event.toolCallId, component)
           this.pendingToolStartedAt.set(event.toolCallId, performance.now())
@@ -2717,7 +2710,7 @@ export class App {
             this.hideWorking()
           }
           if (event.message.role === 'assistant' && event.message.stopReason === 'stop') {
-            this.finishTurn('Completed')
+            this.finishTurn()
           }
           this.chatContainer.addChild(new Spacer(1))
           // Generate session title from first user message
@@ -2734,7 +2727,7 @@ export class App {
         case 'agent_end':
           if (!this.isAgentBusy()) {
             this.clearPendingToolState()
-            this.finishTurn(this.turnFinalized ? undefined : 'Completed')
+            this.finishTurn()
             this.hideWorking()
             this.ui.requestRender()
             break
@@ -2742,7 +2735,7 @@ export class App {
           // Some agent implementations emit agent_end for the model turn before
           // executing its requested tools. Pending tools still mean real work remains.
           if (this.pendingTools.size === 0) {
-            this.finishTurn('Completed')
+            this.finishTurn()
             this.hideWorking()
           } else {
             this.showWorking('Running tools…')
@@ -2815,7 +2808,7 @@ export class App {
       if (!component) {
         component = this.createToolRow(toolCall.id, toolCall.name, args)
         component.markExecutionStarted()
-        this.appendTurnEntry(component)
+        this.appendTurnEntry(component, 'tool')
         this.pendingTools.set(toolCall.id, component)
         // The tool is pending as soon as its call starts streaming. Waiting for
         // tool_execution_start creates a visible gap where Working disappears.

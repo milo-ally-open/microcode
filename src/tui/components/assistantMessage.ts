@@ -1,10 +1,10 @@
-import { Container, Text, type MarkdownTheme } from '@earendil-works/pi-tui'
+import { Container, type MarkdownTheme } from '@earendil-works/pi-tui'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { getMarkdownTheme, theme } from '../theme.ts'
 import { ThinkingBlock } from './thinkingBlock.ts'
-import { Markdown } from './markdown.ts'
+import { MarkedMarkdown } from './markedMarkdown.ts'
 
-type BlockComponent = { type: 'text'; component: Markdown } | { type: 'thinking'; component: ThinkingBlock }
+type BlockComponent = { type: 'text'; component: MarkedMarkdown } | { type: 'thinking'; component: ThinkingBlock }
 
 /**
  * Component that renders an assistant message with Markdown formatting and thinking blocks.
@@ -39,11 +39,14 @@ export class AssistantMessageComponent extends Container {
       this.lastBlockSignature = signature
       this.clear()
       this.blockComponents = []
-      this.addChild(new Text(theme.fg('accent', 'Microcode'), 1, 0))
-
       for (const block of blocks) {
         if (block.type === 'text') {
-          const md = new Markdown(block.text.trim() ? block.text : ' ', 1, 0, this.markdownTheme)
+          const md = new MarkedMarkdown(
+            block.text.trim() ? block.text : ' ',
+            theme.fg('muted', '• '),
+            0,
+            this.markdownTheme,
+          )
           this.addChild(md)
           this.blockComponents.push({ type: 'text', component: md })
         } else if (block.type === 'thinking') {

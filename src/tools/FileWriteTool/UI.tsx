@@ -10,6 +10,7 @@ import {
   formatBytes,
   formatCompletedStatus,
   formatRunningStatus,
+  formatToolLabel,
   getProgressFrame,
 } from '../../tui/toolPresentation.ts'
 
@@ -44,7 +45,7 @@ export class FileWriteToolUI extends Container {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -93,7 +94,7 @@ export class FileWriteToolUI extends Container {
 
     const filePath = this.details?.path || this.args?.file_path || ''
     const shortPath = filePath.split('/').slice(-2).join('/')
-    const header = `${icon} ${chalk.bold('write')} ${theme.fg('accent', shortPath)}`
+    const header = `${formatToolLabel(icon, 'write')}${theme.fg('accent', shortPath)}`
 
     this.contentBox.clear()
 

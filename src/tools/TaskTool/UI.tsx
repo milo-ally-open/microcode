@@ -1,6 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
+import { formatToolLabel } from '../../tui/toolPresentation.ts'
 import type { TaskList } from '../../tasks/TaskSystem.ts'
 import type { ToolResult, ToolUIComponent } from '../registry.ts'
 
@@ -24,7 +25,7 @@ export class TaskToolUI extends Container implements ToolUIComponent {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(2, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -75,7 +76,7 @@ export class TaskToolUI extends Container implements ToolUIComponent {
       const state = this.executionStarted ? 'Updating' : 'Updated'
       this.contentBox.addChild(
         new Text(
-          `${theme.fg('accent', '◆')} ${chalk.bold('Tasks')}  ${theme.dim(`${state} ${taskId}…`)}`,
+          `${formatToolLabel(theme.fg('accent', '◆'), 'Tasks')}${theme.dim(`${state} ${taskId}…`)}`,
         ),
       )
       return
@@ -89,7 +90,7 @@ export class TaskToolUI extends Container implements ToolUIComponent {
       : theme.dim('No tasks')
     const heading = action === 'claim' ? 'Next tasks' : 'Tasks'
     const lines = [
-      `${theme.fg('accent', '◆')} ${chalk.bold(heading)}  ${theme.fg('accent', title)}  ${progress}`,
+      `${formatToolLabel(theme.fg('accent', '◆'), heading)}${theme.fg('accent', title)}  ${progress}`,
     ]
 
     if (action === 'claim') {

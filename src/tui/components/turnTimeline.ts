@@ -1,28 +1,35 @@
 import { Container, Text, type Component } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 
+type EntryKind = 'user' | 'assistant' | 'tool' | 'status'
+
+interface TimelineEntry {
+  component: Component
+  kind: EntryKind
+}
+
 /** Renders one user turn as a connected vertical activity rail. */
 export class TurnTimeline extends Container {
-  private entries: Component[] = []
+  private entries: TimelineEntry[] = []
   private activity?: Text
 
-  addEntry(component: Component): void {
+  addEntry(component: Component, kind: EntryKind = 'status'): void {
     if (this.activity) this.entries.pop()
-    this.entries.push(component)
-    if (this.activity) this.entries.push(this.activity)
+    this.entries.push({ component, kind })
+    if (this.activity) this.entries.push({ component: this.activity, kind: 'status' })
   }
 
   setActivity(label?: string): void {
     if (!label) {
       if (!this.activity) return
-      this.entries = this.entries.filter((entry) => entry !== this.activity)
+      this.entries = this.entries.filter((entry) => entry.component !== this.activity)
       this.activity = undefined
       return
     }
 
     if (!this.activity) {
-      this.activity = new Text(label, 1, 0)
-      this.entries.push(this.activity)
+      this.activity = new Text(label, 0, 0)
+      this.entries.push({ component: this.activity, kind: 'status' })
       return
     }
 
@@ -32,13 +39,18 @@ export class TurnTimeline extends Container {
   render(width: number): string[] {
     if (this.entries.length === 0) return []
 
+    const connected = this.entries.some((entry) => entry.kind === 'tool')
+    if (!connected) {
+      return this.entries.flatMap(({ component }) => component.render(width))
+    }
+
     const lines: string[] = []
     const railWidth = 3
     const entryWidth = Math.max(1, width - railWidth)
 
     for (let entryIndex = 0; entryIndex < this.entries.length; entryIndex++) {
       const entry = this.entries[entryIndex]!
-      const entryLines = entry.render(entryIndex === 0 ? width : entryWidth)
+      const entryLines = entry.component.render(entryIndex === 0 ? width : entryWidth)
       if (entryIndex === 0) {
         lines.push(...entryLines)
         continue
@@ -48,8 +60,7 @@ export class TurnTimeline extends Container {
       const branch = isLast ? '└─ ' : '├─ '
       for (let lineIndex = 0; lineIndex < entryLines.length; lineIndex++) {
         const prefix = lineIndex === 0 ? branch : '│  '
-        const color = chalk.hex('#5f87ff')
-        lines.push(color(prefix) + entryLines[lineIndex]!)
+        lines.push(chalk.white(prefix) + entryLines[lineIndex]!)
       }
     }
 
@@ -57,6 +68,6 @@ export class TurnTimeline extends Container {
   }
 
   invalidate(): void {
-    for (const entry of this.entries) entry.invalidate?.()
+    for (const { component } of this.entries) component.invalidate?.()
   }
 }

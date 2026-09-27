@@ -1,3 +1,13 @@
+import chalk from 'chalk'
+
+const TOOL_LABEL_COLUMN_WIDTH = 12
+
+/** Formats the tool-name column so each tool's argument summary starts together. */
+export function formatToolLabel(icon: string, label: string): string {
+  const padding = ' '.repeat(Math.max(1, TOOL_LABEL_COLUMN_WIDTH - label.length))
+  return `${icon} ${chalk.bold(label)}${padding}`
+}
+
 function formatDuration(elapsedMs: number): string {
   const safeElapsedMs = Math.max(0, elapsedMs)
 

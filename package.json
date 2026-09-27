@@ -18,7 +18,7 @@
     "dev": "bun run ./src/entry.ts",
     "build": "bun run build.ts",
     "package:cli": "bun run packaging/package-cli.ts",
-    "test": "bun test ./test"
+    "test": "bun test ./tests"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.87.1",

@@ -47,7 +47,7 @@ bun run dev        # Start in dev mode (bun source)
 
 ## Release Packages
 
-Release packaging lives in `packaging/`, separate from `src/` and `test/`.
+Release packaging lives in `packaging/`, separate from `src/` and `tests/`.
 
 ```bash
 bun run package:cli  # Build a downloadable CLI/TUI package

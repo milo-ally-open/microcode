@@ -1,7 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import { formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 
 import type { ToolUIComponent, ToolResult } from '../registry.ts'
 
@@ -27,7 +27,7 @@ export class BashToolUI extends Container implements ToolUIComponent {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -80,8 +80,8 @@ export class BashToolUI extends Container implements ToolUIComponent {
       : cmd
     const description = this.args?.description
     const header = description
-      ? `${icon} ${chalk.bold('bash')} ${theme.dim(description)}`
-      : `${icon} ${chalk.bold('bash')} ${theme.fg('muted', '$')} ${theme.fg('text', shortCmd)}`
+      ? `${formatToolLabel(icon, 'bash')}${theme.dim(description)}`
+      : `${formatToolLabel(icon, 'bash')}${theme.fg('muted', '$')} ${theme.fg('text', shortCmd)}`
 
     this.contentBox.clear()
 

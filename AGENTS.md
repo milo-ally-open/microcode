@@ -11,7 +11,8 @@
 - This is a TypeScript/Bun project. Use the package manager and versions declared in `package.json`; do not assume npm scripts that are not defined there.
 - Preserve the single-Agent core and CLI/TUI runtime. Do not reintroduce a GUI or multi-Agent swarm/worker behavior unless explicitly requested. Keep independent capabilities (for example, general task management and Git/worktree functionality) separate from orchestration features.
 - When changing Agent behavior, inspect the full path across message conversion, system prompts, tool registration/discovery, permissions, model selection, and session persistence. Keep user-facing capability claims consistent with tools actually exposed at runtime.
-- Update or add focused tests for behavior changes. The test script is `bun test ./test` (`bun run test`); the build script is `bun run build`. Builds generate output, so do not run them during an explicitly read-only task or when generated-file changes are outside scope. There is no lint script currently declared in `package.json`.
+- Store all test code under the repository-root `tests/` directory. Never place test files inside `src/`; use `tests/` (plural) for unit, integration, and related test code.
+- Update or add focused tests for behavior changes. The test script is `bun test ./tests` (`bun run test`); the build script is `bun run build`. Builds generate output, so do not run them during an explicitly read-only task or when generated-file changes are outside scope. There is no lint script currently declared in `package.json`.
 - Do not hand-edit generated build/package output such as `dist/` or `packaging/out/` unless the task explicitly requires it.
 
 ## Reporting and verification

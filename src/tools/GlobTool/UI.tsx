@@ -1,7 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import { formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
@@ -26,7 +26,7 @@ export class GlobToolUI extends Container {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -73,7 +73,7 @@ export class GlobToolUI extends Container {
     this.contentBox.clear()
 
     if (!this.result) {
-      this.contentBox.addChild(new Text(`${icon} ${chalk.bold('Glob')} ${theme.fg('accent', shortPattern)} ${theme.dim(formatRunningStatus(this.elapsedMs))}`))
+      this.contentBox.addChild(new Text(`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)} ${theme.dim(formatRunningStatus(this.elapsedMs))}`))
       return
     }
 
@@ -84,13 +84,13 @@ export class GlobToolUI extends Container {
       const fileInfo = truncated
         ? `${numFiles} files ${theme.dim('(truncated)')}`
         : `${numFiles} files`
-      this.contentBox.addChild(new Text(`${icon} ${chalk.bold('Glob')} ${theme.fg('accent', shortPattern)}  ${theme.fg('muted', fileInfo)} ${theme.dim(`· ${formatCompletedStatus(this.elapsedMs)}`)}`))
+      this.contentBox.addChild(new Text(`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)}  ${theme.fg('muted', fileInfo)} ${theme.dim(`· ${formatCompletedStatus(this.elapsedMs)}`)}`))
     } else {
       const output = this.result.content
         ?.filter((c) => c.type === 'text')
         .map((c) => (c.text ?? '').slice(0, 200).replace(/\n/g, ' '))
         .join(' ') ?? ''
-      this.contentBox.addChild(new Text(`${icon} ${chalk.bold('Glob')} ${theme.fg('accent', shortPattern)}\n  ${theme.fg('muted', output)}`))
+      this.contentBox.addChild(new Text(`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)}\n  ${theme.fg('muted', output)}`))
     }
   }
 }

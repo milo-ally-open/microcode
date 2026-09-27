@@ -4,6 +4,7 @@ import { theme } from '../theme.ts'
 import {
   formatCompletedStatus,
   formatRunningStatus,
+  formatToolLabel,
   getProgressFrame,
 } from '../toolPresentation.ts'
 
@@ -72,7 +73,7 @@ export class ToolExecutionComponent extends Container {
         : chalk.hex('#666666')('○')
 
     const argsStr = this.formatArgs(this.args)
-    const header = `${icon} ${chalk.bold(this.toolName)}${argsStr ? chalk.hex('#666666')(` · ${argsStr}`) : ''}`
+    const header = `${formatToolLabel(icon, this.toolName)}${argsStr ? chalk.hex('#666666')(argsStr) : ''}`
 
     let content: string
     if (this.result) {

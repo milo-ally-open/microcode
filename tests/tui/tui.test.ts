@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { Fragment, h, jsx, jsxs } from '../../src/tui/jsxFactory.ts'
+import { PermissionPromptOverlay } from '../../src/tui/components/permissionPrompt.ts'
 import { getBashModeBorderColor, getEditorTheme, getMarkdownTheme, theme } from '../../src/tui/theme.ts'
 import { countContentLines, formatBytes, formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../src/tui/toolPresentation.ts'
+import { SelectList } from '@earendil-works/pi-tui'
 
 describe('tui modules', () => {
   test('theme helpers return styled strings and editor/markdown contracts', () => {
@@ -31,5 +33,19 @@ describe('tui modules', () => {
     expect(Fragment({}).render(20, 10)).toEqual([])
     expect(jsx).toBe(h)
     expect(jsxs).toBe(h)
+  })
+
+  test('permission prompt renders as a standalone selectable overlay', () => {
+    const choices = new SelectList([{ value: 'allow', label: 'Allow' }], 1, {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+      description: (text) => text,
+      scrollInfo: (text) => text,
+      noMatch: (text) => text,
+    })
+    const overlay = new PermissionPromptOverlay('Permission requested: run command?', choices)
+
+    expect(overlay.render(80).join('\n')).toContain('Permission requested: run command?')
+    expect(overlay.render(80).join('\n')).toContain('Allow')
   })
 })

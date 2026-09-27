@@ -5,11 +5,10 @@ import type { MarkdownTheme } from '@earendil-works/pi-tui'
 const COLORS = {
   accent: '#8abeb7',
   cyan: '#00d7ff',
-  blue: '#5f87ff',
   green: '#b5bd68',
   red: '#cc6666',
   yellow: '#ffff00',
-  text: '#d4d4d4',
+  text: '#ffffff',
   gray: '#808080',
   dimGray: '#666666',
 }
@@ -34,7 +33,7 @@ export const theme = {
 export function getMarkdownTheme(): MarkdownTheme {
   return {
     heading: (text: string) => chalk.hex('#f0c674').bold(text),
-    link: (text: string) => chalk.hex('#81a2be').underline(text),
+    link: (text: string) => chalk.hex(COLORS.text).underline(text),
     linkUrl: (text: string) => chalk.hex(COLORS.dimGray)(text),
     code: (text: string) => chalk.hex(COLORS.accent)(text),
     codeBlock: (text: string) => chalk.hex(COLORS.green)(text),
@@ -52,7 +51,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 
 export function getEditorTheme() {
   return {
-    borderColor: (text: string) => chalk.hex(COLORS.blue)(text),
+    borderColor: (text: string) => chalk.hex(COLORS.gray)(text),
     selectList: {
       selectedPrefix: (text: string) => chalk.hex(COLORS.cyan)(text),
       selectedText: (text: string) => chalk.hex(COLORS.cyan).bold(text),

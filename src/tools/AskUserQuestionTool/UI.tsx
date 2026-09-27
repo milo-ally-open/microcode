@@ -1,6 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
+import { formatToolLabel } from '../../tui/toolPresentation.ts'
 
 import type { ToolUIComponent, ToolResult } from '../registry.ts'
 
@@ -24,7 +25,7 @@ export class AskUserQuestionToolUI extends Container implements ToolUIComponent 
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -66,13 +67,13 @@ export class AskUserQuestionToolUI extends Container implements ToolUIComponent 
 
     if (questions.length === 0) {
       this.contentBox.addChild(
-        new Text(`${icon} ${chalk.bold('Ask')} ${theme.dim('(no questions)')}`),
+        new Text(`${formatToolLabel(icon, 'Ask')}${theme.dim('(no questions)')}`),
       )
       return
     }
 
     const count = `${questions.length} question${questions.length > 1 ? 's' : ''}`
-    const header = `${icon} ${chalk.bold('Ask')}  ${theme.dim(count)}`
+    const header = `${formatToolLabel(icon, 'Ask')}${theme.dim(count)}`
     const lines: string[] = [header]
 
     for (let i = 0; i < questions.length; i++) {

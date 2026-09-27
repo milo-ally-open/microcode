@@ -17,6 +17,6 @@ export class ThinkingBlock extends Container {
     if (complete === this.complete && this.status) return
     this.complete = complete
     const label = complete ? 'Analysis complete' : 'Analyzing…'
-    this.status.setText(`  ${theme.fg('muted', label)}`)
+    this.status.setText(theme.fg('muted', `• ${label}`))
   }
 }

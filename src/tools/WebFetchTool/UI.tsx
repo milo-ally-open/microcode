@@ -1,7 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import { formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 import type { ToolResult, ToolUIComponent } from '../registry.ts'
 
 interface WebFetchDetails {
@@ -44,7 +44,7 @@ export class WebFetchToolUI extends Container implements ToolUIComponent {
   constructor(_toolCallId: string, args: Record<string, unknown>) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -94,7 +94,7 @@ export class WebFetchToolUI extends Container implements ToolUIComponent {
     const url = typeof this.args.url === 'string'
       ? this.args.url
       : this.details?.url ?? ''
-    const header = `${icon} ${chalk.bold('WebFetch')} ${theme.fg('accent', displayUrl(url || '...'))}`
+    const header = `${formatToolLabel(icon, 'WebFetch')}${theme.fg('accent', displayUrl(url || '...'))}`
 
     this.contentBox.clear()
 

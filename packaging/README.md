@@ -1,7 +1,7 @@
 # Microcode Packaging
 
 This directory contains CLI/TUI release packaging scripts outside `src/` and
-`test/`.
+`tests/`.
 
 The scripts are platform-aware and produce native packages for the operating
 system they run on:

@@ -1,7 +1,7 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import { formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 import type { ToolResult, ToolUIComponent } from '../registry.ts'
 
 interface WebSearchDetails {
@@ -28,7 +28,7 @@ export class WebSearchToolUI extends Container implements ToolUIComponent {
   constructor(_toolCallId: string, args: Record<string, unknown>) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0)
+    this.contentBox = new Box(0, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -79,7 +79,7 @@ export class WebSearchToolUI extends Container implements ToolUIComponent {
       ? this.args.query
       : this.details?.query ?? ''
     const queryPreview = shorten(query || '...', QUERY_PREVIEW_LEN)
-    const header = `${icon} ${chalk.bold('WebSearch')} ${theme.fg('accent', queryPreview)}`
+    const header = `${formatToolLabel(icon, 'WebSearch')}${theme.fg('accent', queryPreview)}`
 
     this.contentBox.clear()
 
