@@ -2,6 +2,7 @@ import { type Component, truncateToWidth, visibleWidth } from '@earendil-works/p
 import chalk from 'chalk'
 import { execSync } from 'child_process'
 import type { MicrocodeAgent } from '../../agent/index.ts'
+import { normalizeSessionTitle } from '../sessionTitle.ts'
 
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString()
@@ -41,7 +42,7 @@ export class FooterComponent implements Component {
   }
 
   setSessionTitle(title: string | null): void {
-    this.sessionTitle = title
+    this.sessionTitle = title === null ? null : normalizeSessionTitle(title)
   }
 
   invalidate(): void {}

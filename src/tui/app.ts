@@ -57,7 +57,8 @@ import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
 import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
 import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, getMentionedImagePaths, listWorkspaceFiles } from './workspaceFiles.ts'
-import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch, stripReferencedSkillContext } from './skillMentions.ts'
+import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch } from './skillMentions.ts'
+import { createSessionTitle, normalizeSessionTitle } from './sessionTitle.ts'
 
 
 
@@ -205,6 +206,7 @@ export class App {
   private imagePathProcessing = false
   private suppressTrailingQuote = false
   private titleGenerated = false
+  private firstUserInputForTitle?: string
   private workingText: Text | null = null
   private agentActivityLabel = 'Working…'
   private workingFrameIndex = 0
@@ -255,6 +257,7 @@ export class App {
     if (currentId) {
       const existingTitle = this.sessionManager.getTitle(currentId)
       if (existingTitle) {
+        this.titleGenerated = true
         this.footer.setSessionTitle(existingTitle)
         this.footer.invalidate()
         this.ui.requestRender()
@@ -325,6 +328,10 @@ export class App {
       const images = this.getPendingImageContents()
       if (!userInput.trim() && images.length === 0) continue
       await this.sessionManager.ensureCreated(process.cwd())
+      if (!this.titleGenerated && this.firstUserInputForTitle === undefined &&
+        !this.agent.getMessages().some((message) => message.role === 'user')) {
+        this.firstUserInputForTitle = userInput
+      }
 
       // Start a new visual turn in the chat timeline.
       this.activeTurnTimeline = new TurnTimeline()
@@ -1835,6 +1842,7 @@ export class App {
     this.pendingTools.clear()
     this.turnFinalized = false
     this.titleGenerated = false
+    this.firstUserInputForTitle = undefined
     this.footer.setSessionTitle(null)
     this.footer.invalidate()
 
@@ -1847,46 +1855,43 @@ export class App {
     this.ui.requestRender()
   }
 
-  private async generateSessionTitle(): Promise<void> {
-    const messages = this.agent.getMessages()
-    const firstUser = messages.find((m) => m.role === 'user')
-    if (!firstUser) return
-
-    let text = ''
-    if (typeof firstUser.content === 'string') {
-      text = firstUser.content
-    } else if (Array.isArray(firstUser.content)) {
-      text = firstUser.content
-        .filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text)
-        .join(' ')
+  private async generateSessionTitle(originalInput?: string): Promise<void> {
+    let text = originalInput
+    if (text === undefined) {
+      const firstUser = this.agent.getMessages().find((m) => m.role === 'user')
+      if (!firstUser) return
+      if (typeof firstUser.content === 'string') {
+        text = firstUser.content.split(/\r?\n/, 1)[0] ?? ''
+      } else if (Array.isArray(firstUser.content)) {
+        text = firstUser.content
+          .filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join(' ')
+          .split(/\r?\n/, 1)[0] ?? ''
+      } else {
+        text = ''
+      }
     }
 
-    text = stripReferencedSkillContext(text).trim()
+    text = text.replace(/\s+/g, ' ').trim()
     if (!text) return
 
-    const fallbackTitle = text.length > 60 ? text.slice(0, 57) + '...' : text
-
-    let title = fallbackTitle
-    try {
+    const title = await createSessionTitle(text, async (openingSentence) => {
       const model = this.agent.getCurrentModel()
       const result = await getModels().completeSimple(model, {
         systemPrompt: 'Generate a short, concise title (5 words max) for a conversation. Reply with ONLY the title, no quotes, no explanation.',
-        messages: [{ role: 'user', content: [{ type: 'text', text: `Generate a title for a conversation that starts with: "${text.slice(0, 200)}"` }] }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: `Generate a title for a conversation that starts with: "${openingSentence.slice(0, 200)}"` }] }],
       } as any, { maxTokens: 30, temperature: 0.3 })
 
       const titleContent = result.content.find((c: any) => c.type === 'text') as any
-      if (titleContent?.text) {
-        title = titleContent.text.trim().replace(/^["']|["']$/g, '')
-      }
-    } catch {
-      // Use fallback title
-    }
+      return titleContent?.text?.trim().replace(/^["']|["']$/g, '') ?? ''
+    })
 
     const sessionId = this.sessionManager.getSessionId()
     if (sessionId) {
-      this.sessionManager.setTitle(sessionId, title)
-      this.footer.setSessionTitle(title)
+      const conciseTitle = normalizeSessionTitle(title)
+      this.sessionManager.setTitle(sessionId, conciseTitle)
+      this.footer.setSessionTitle(conciseTitle)
       this.footer.invalidate()
       this.ui.requestRender()
     }
@@ -3277,7 +3282,7 @@ export class App {
           // Generate session title from first user message
           if (!this.titleGenerated) {
             this.titleGenerated = true
-            void this.generateSessionTitle()
+            void this.generateSessionTitle(this.firstUserInputForTitle)
           }
           void this.agent.persistMessages()
           this.updateContextUsage()

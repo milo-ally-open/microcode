@@ -12,7 +12,6 @@ import {
   highlightSkillMentions,
   isSkillAutocompleteContext,
   parseSkillMentions,
-  stripReferencedSkillContext,
 } from '../../src/tui/skillMentions.ts'
 
 describe('skill mentions', () => {
@@ -49,12 +48,6 @@ describe('skill mentions', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
-  })
-
-  test('removes injected skill instructions from user-facing session title text', () => {
-    expect(stripReferencedSkillContext('Fix this bug\n\n[Referenced skills]\n### Skill: fixer\nPrivate workflow text'))
-      .toBe('Fix this bug')
-    expect(stripReferencedSkillContext('Fix this bug')).toBe('Fix this bug')
   })
 
   test('parses unique skill mentions and ignores unknown or non-invocable skills', async () => {

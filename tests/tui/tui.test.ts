@@ -7,6 +7,7 @@ import { countContentLines, formatBytes, formatCompletedStatus, formatRunningSta
 import { SelectList, Text } from '@earendil-works/pi-tui'
 import { MicrocodeEditor } from '../../src/tui/components/microcodeEditor.ts'
 import { getEditorTheme } from '../../src/tui/theme.ts'
+import { createSessionTitle, firstSentence, normalizeSessionTitle } from '../../src/tui/sessionTitle.ts'
 
 describe('tui modules', () => {
   test('theme helpers return styled strings and editor/markdown contracts', () => {
@@ -23,6 +24,31 @@ describe('tui modules', () => {
     expect(formatCompletedStatus(61_000)).toBe('completed · 1m 1s')
     expect(formatBytes(1536)).toBe('1.5 KB')
     expect(countContentLines('a\nb\n')).toBe(2)
+  })
+
+  test('session titles stay on one line and are limited by character count', () => {
+    expect(firstSentence('Fix the parser. Then add tests.')).toBe('Fix the parser.')
+    expect(firstSentence('修复解析器。然后补测试。')).toBe('修复解析器。')
+    expect(normalizeSessionTitle('Useful title\nextra line')).toBe('Useful title')
+    const longTitle = normalizeSessionTitle('界'.repeat(70))
+    expect(Array.from(longTitle)).toHaveLength(60)
+    expect(longTitle.endsWith('...')).toBe(true)
+  })
+
+  test('session title generation uses the opening sentence and falls back to clipped input', async () => {
+    let requestedSeed = ''
+    const generated = await createSessionTitle('Fix parser errors. Add tests after.', async (seed) => {
+      requestedSeed = seed
+      return 'Parser error fix'
+    })
+    expect(requestedSeed).toBe('Fix parser errors.')
+    expect(generated).toBe('Parser error fix')
+
+    const fallback = await createSessionTitle('界'.repeat(70), async () => {
+      throw new Error('title provider unavailable')
+    })
+    expect(Array.from(fallback)).toHaveLength(60)
+    expect(fallback.endsWith('...')).toBe(true)
   })
 
   test('jsx factory creates intrinsic and functional components', () => {

@@ -73,9 +73,3 @@ export function buildSkillMentionContext(input: string, skills: readonly Skill[]
   })
   return sections.length > 0 ? `${input}\n\n[Referenced skills]\n${sections.join('\n\n')}` : input
 }
-
-/** Remove model-only skill context before using a prompt as user-facing text. */
-export function stripReferencedSkillContext(input: string): string {
-  const contextStart = input.indexOf('\n\n[Referenced skills]\n')
-  return contextStart === -1 ? input : input.slice(0, contextStart)
-}
