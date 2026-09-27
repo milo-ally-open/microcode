@@ -19,6 +19,7 @@ import type { AgentToolSnapshot } from './AgentToolManager.ts'
 import type { AgentSkillSnapshot } from './AgentSkillManager.ts'
 import type { AgentSessionPersistence } from './persistence.ts'
 import type { ProjectInstructions } from '../instructions/projectInstructions.ts'
+import type { Skill } from '../skill/skill.ts'
 import type {
   CompactionSettings,
   generateSummary,
@@ -59,6 +60,8 @@ export interface CreateMicrocodeAgentOptions {
   onCompactionProgress?: (progress: CompactionProgress) => void
   permission?: AgentPermissionConfig
   skillPaths?: string[]
+  pluginSkills?: Skill[]
+  pluginDiagnostics?: string[]
   identity?: CreateAgentIdentity
   persistence?: AgentSessionPersistence
   generateSummaryFn?: typeof generateSummary

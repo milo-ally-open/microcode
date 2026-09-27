@@ -1,6 +1,6 @@
 import { Editor, type EditorOptions, type EditorTheme, type TUI } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
-import { highlightSkillMentions, isSkillAutocompleteContext } from '../skillMentions.ts'
+import { highlightSkillMentions } from '../skillMentions.ts'
 import { highlightWorkspaceFileMentions } from '../workspaceFiles.ts'
 
 /**
@@ -37,18 +37,24 @@ export class MicrocodeEditor extends Editor {
     }
     if (this.handleAppShortcuts(data)) return
 
-    const mayExtendSkillMention = data === '$' || /^[a-z0-9-]$/i.test(data) || data === '\x7f' || data === '\b'
+    const shouldOpenSkills = data === '$' && this.isAtSkillMentionBoundary()
     super.handleInput(data)
-    if (!mayExtendSkillMention || this.isShowingAutocomplete()) return
+    if (shouldOpenSkills) this.triggerSkillAutocomplete()
+  }
 
-    const currentLine = this.getText().split('\n').at(-1) ?? ''
-    if (!isSkillAutocompleteContext(currentLine)) return
+  private isAtSkillMentionBoundary(): boolean {
+    const { line, col } = this.getCursor()
+    const previousCharacter = (this.getLines()[line] ?? '')[col - 1]
+    return col === 0 || previousCharacter === undefined || /[\s([{]/.test(previousCharacter)
+  }
 
-    // pi-tui auto-triggers @ and # mentions but does not currently include $.
-    // Its regular trigger keeps the native SelectList and keyboard behavior.
-    const trigger = (this as unknown as { tryTriggerAutocomplete?: () => void }).tryTriggerAutocomplete
-    trigger?.call(this)
-    return
+  private triggerSkillAutocomplete(): void {
+    // pi-tui currently exposes no public method for opening symbol autocomplete
+    // on a custom trigger. Keep this compatibility call localized here.
+    const editor = this as unknown as {
+      tryTriggerAutocomplete?: (explicitTab?: boolean) => void
+    }
+    editor.tryTriggerAutocomplete?.call(this)
   }
 
   private handleAppShortcuts(data: string): boolean {

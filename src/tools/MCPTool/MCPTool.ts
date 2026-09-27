@@ -116,7 +116,7 @@ export function registerMcpToolsAsDeferred(clientManager: McpClientManager): voi
     const toolName = `mcp__${toolInfo.serverName}__${toolInfo.name}`
     registerDynamicDeferredTool({
       name: toolName,
-      defaultPermission: 'allow',
+      defaultPermission: 'ask',
       createTool: () => createMcpTool(clientManager, toolInfo),
       description: `[MCP:${toolInfo.serverName}] ${toolInfo.description}`,
       schema: formatMcpInputSchema(toolInfo.inputSchema),

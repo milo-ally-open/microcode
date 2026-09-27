@@ -126,6 +126,8 @@ export class MicrocodeAgent {
       cwd: this.cwd,
       skillPaths: options.skillPaths ?? [],
       includeDefaults: true,
+      pluginSkills: options.pluginSkills,
+      pluginDiagnostics: options.pluginDiagnostics,
     })
     this.toolManager = new AgentToolManager({
       cwd: this.cwd,
@@ -616,6 +618,13 @@ export class MicrocodeAgent {
   unloadSkill(skillName: string): void {
     this.refreshSkillCatalog()
     if (!this.skillManager.unload(skillName)) return
+    this.rebuildSystemPrompt()
+    this.emitStateChangedDetached('skills_changed')
+  }
+
+  setPluginSkills(skills: readonly import('../skill/skill.ts').Skill[], diagnostics: readonly string[] = []): void {
+    if (!this.skillManager.setPluginSkills(skills, diagnostics)) return
+    this.baseSystemPrompt = this.buildBaseSystemPrompt(this.core.state.model)
     this.rebuildSystemPrompt()
     this.emitStateChangedDetached('skills_changed')
   }

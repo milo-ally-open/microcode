@@ -14,6 +14,9 @@ export class TurnTimeline extends Container {
   private activity?: Text
 
   addEntry(component: Component, kind: EntryKind = 'status'): void {
+    // Streaming tool updates can revisit the same component. A timeline owns a
+    // component once; inserting it twice renders duplicate transcript rows.
+    if (this.entries.some((entry) => entry.component === component)) return
     if (this.activity) this.entries.pop()
     this.entries.push({ component, kind })
     if (this.activity) this.entries.push({ component: this.activity, kind: 'status' })

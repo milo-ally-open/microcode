@@ -44,6 +44,7 @@ export class AgentToolManager {
   private readonly deferredDefinitions = new Map<string, ToolDefinition>(
     getDeferredToolDefinitions().map((definition) => [definition.name, definition]),
   )
+  private readonly mcpToolNames = new Set<string>()
   private promptToolAllowlist?: ReadonlySet<string>
 
   constructor(private readonly options: {
@@ -84,6 +85,15 @@ export class AgentToolManager {
 
   configureMcpTools(client: McpClientManager): void {
     const mcpTools = client.getAllTools()
+    const nextNames = new Set(mcpTools.map((tool) => `mcp__${tool.serverName}__${tool.name}`))
+    for (const name of this.mcpToolNames) {
+      this.discoveredTools.delete(name)
+      this.pendingDiscovered.delete(name)
+      if (!nextNames.has(name)) {
+        this.deferredDefinitions.delete(name)
+        this.externalTools.delete(name)
+      }
+    }
     const mcpToolSchemas = new Map(
       mcpTools.map((tool) => [
         `mcp__${tool.serverName}__${tool.name}`,
@@ -91,19 +101,24 @@ export class AgentToolManager {
       ]),
     )
     for (const tool of createMcpTools(client)) {
+      if (this.coreTools.has(tool.name) || this.infrastructureTools.has(tool.name)) continue
       this.deferredDefinitions.set(tool.name, {
         name: tool.name,
-        defaultPermission: 'allow',
+        defaultPermission: 'ask',
         shouldDefer: true,
         description: tool.description,
         schema: mcpToolSchemas.get(tool.name),
         createTool: () => tool,
       })
+      this.mcpToolNames.add(tool.name)
     }
-    this.addTools([
-      createListMcpResourcesTool(client),
-      createReadMcpResourceTool(client),
-    ])
+    for (const name of this.mcpToolNames) {
+      if (!nextNames.has(name)) this.mcpToolNames.delete(name)
+    }
+    const listResources = createListMcpResourcesTool(client)
+    const readResource = createReadMcpResourceTool(client)
+    this.externalTools.set(listResources.name, listResources)
+    this.externalTools.set(readResource.name, readResource)
   }
 
   removeTools(names: readonly string[]): void {

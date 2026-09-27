@@ -11,6 +11,7 @@ import { type PermissionMode, PERMISSION_MODES } from './permissions/index.ts'
 import { cleanupImageCache } from './utils/imageUtils.ts'
 import { GitWorkTreeSystem } from './git/index.ts'
 import { loadProjectInstructions } from './instructions/projectInstructions.ts'
+import { PluginManager } from './plugins/PluginManager.ts'
 
 declare const MACRO: {
   VERSION: string
@@ -202,6 +203,8 @@ Session Management:
   }
 
   const cwd = process.cwd()
+  const pluginManager = await PluginManager.create(cwd, MACRO.VERSION)
+  const pluginSnapshot = pluginManager.getSnapshot()
   const projectInstructions = await loadProjectInstructions(cwd)
   const resumeFlagIdx = args.indexOf('--resume')
   const resumeFlag = resumeFlagIdx !== -1
@@ -299,6 +302,8 @@ Session Management:
     modelId,
     thinkingLevel,
     permission: { mode: permissionMode },
+    pluginSkills: [...pluginSnapshot.skills],
+    pluginDiagnostics: [...pluginSnapshot.diagnostics, ...pluginSnapshot.plugins.flatMap((plugin) => plugin.diagnostics.map((diagnostic) => `${plugin.name}: ${diagnostic}`))],
     persistence: sessionManager,
     identity: {
       id: `assistant-${sessionManager.getSessionId() ?? 'session'}`,
@@ -315,6 +320,45 @@ Session Management:
 
   // Create TUI app (REPL starts immediately)
   const app = new App(agent, mcpClient, sessionManager)
+  const activePluginServerNames = new Set<string>()
+  app.setPluginManager(pluginManager, async () => {
+    const snapshot = await pluginManager.refresh(MACRO.VERSION)
+    const standalone = await loadMcpConfig(cwd)
+    const desired = { ...snapshot.trustedServers }
+    const collisions: string[] = []
+    for (const [name, config] of Object.entries(standalone)) {
+      if (Object.hasOwn(desired, name)) {
+        collisions.push(`Plugin MCP server "${name}" conflicts with a configured MCP server; plugin server skipped.`)
+        continue
+      }
+      desired[name] = config
+    }
+    for (const name of activePluginServerNames) {
+      if (!Object.hasOwn(snapshot.trustedServers, name)) {
+        await mcpClient.removeServer(name)
+        activePluginServerNames.delete(name)
+      }
+    }
+    for (const [name, config] of Object.entries(snapshot.trustedServers)) {
+      const current = mcpClient.getServer(name)
+      if (standalone[name]) continue
+      if (current && JSON.stringify(current.config) === JSON.stringify(config) && current.status !== 'disconnected' && current.status !== 'disabled') {
+        activePluginServerNames.add(name)
+        continue
+      }
+      await mcpClient.connectServer(name, config)
+      activePluginServerNames.add(name)
+    }
+    agent.setPluginSkills([...snapshot.skills], [...snapshot.diagnostics, ...snapshot.plugins.flatMap((plugin) => plugin.diagnostics.map((diagnostic) => `${plugin.name}: ${diagnostic}`))])
+    app.updateMcpState(mcpClient)
+    for (const warning of collisions) app.addStartupWarning(warning)
+  })
+  for (const warning of pluginSnapshot.diagnostics) app.addStartupWarning(`Plugin discovery: ${warning}`)
+  for (const plugin of pluginSnapshot.plugins) {
+    if (plugin.health === 'invalid' || plugin.health === 'incompatible') {
+      app.addStartupWarning(`Plugin '${plugin.name}' is ${plugin.health}; inspect it with /plugins.`)
+    }
+  }
 
   // Wire permission prompt to TUI (own tool calls)
   agent.setPermissionRequestHandler(
@@ -344,14 +388,25 @@ Session Management:
 
   // Connect MCP servers in background — non-blocking
   const mcpConfigs = await loadMcpConfig(cwd)
-  if (!isMcpConfigEmpty(mcpConfigs)) {
-    void mcpClient.connectAll(mcpConfigs).then(() => {
+  const combinedMcpConfigs = { ...mcpConfigs }
+  for (const [name, config] of Object.entries(pluginSnapshot.trustedServers)) {
+    if (Object.hasOwn(combinedMcpConfigs, name)) {
+      app.addStartupWarning(`Plugin MCP server "${name}" conflicts with a configured MCP server; plugin server skipped.`)
+      continue
+    }
+    combinedMcpConfigs[name] = config
+    activePluginServerNames.add(name)
+  }
+  if (!isMcpConfigEmpty(combinedMcpConfigs)) {
+    void mcpClient.connectAll(combinedMcpConfigs).then(() => {
       // Rebuild system prompt with MCP info and deferred tool names
       app.updateMcpState(mcpClient)
 
       // Notify user in chat
       app.showMcpReady(mcpClient.getServerStates())
     })
+  } else {
+    app.updateMcpState(mcpClient)
   }
 
   // Handle graceful shutdown

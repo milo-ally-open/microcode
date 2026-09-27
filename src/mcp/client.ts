@@ -12,8 +12,16 @@ import type {
 export class McpClientManager {
   private servers = new Map<string, McpServerState>()
   private clients = new Map<string, Client>()
+  private operationIds = new Map<string, number>()
 
   async connectServer(name: string, config: McpServerConfig): Promise<void> {
+    const operationId = (this.operationIds.get(name) ?? 0) + 1
+    this.operationIds.set(name, operationId)
+    const existing = this.clients.get(name)
+    if (existing) {
+      await existing.close().catch(() => {})
+      this.clients.delete(name)
+    }
     const state: McpServerState = {
       name,
       config,
@@ -28,6 +36,7 @@ export class McpClientManager {
         { name: 'microcode', version: '0.1.0' },
         { capabilities: {} },
       )
+      this.clients.set(name, client)
 
       let transport
       if (config.type === 'sse') {
@@ -45,20 +54,31 @@ export class McpClientManager {
           command: string
           args?: string[]
           env?: Record<string, string>
+          cwd?: string
         }
         transport = new StdioClientTransport({
           command: stdioConfig.command,
           args: stdioConfig.args ?? [],
           env: stdioConfig.env,
+          cwd: stdioConfig.cwd,
           stderr: 'ignore',
         })
       }
 
       await client.connect(transport)
-      this.clients.set(name, client)
+      if (this.operationIds.get(name) !== operationId || this.servers.get(name) !== state) {
+        await client.close().catch(() => {})
+        if (this.clients.get(name) === client) this.clients.delete(name)
+        return
+      }
 
       // List tools from this server
       const toolsResult = await client.listTools()
+      if (this.operationIds.get(name) !== operationId || this.servers.get(name) !== state) {
+        await client.close().catch(() => {})
+        if (this.clients.get(name) === client) this.clients.delete(name)
+        return
+      }
       state.tools = (toolsResult.tools ?? []).map((tool) => ({
         name: tool.name,
         serverName: name,
@@ -93,6 +113,12 @@ export class McpClientManager {
 
       state.status = 'connected'
     } catch (error) {
+      const client = this.clients.get(name)
+      if (client && this.operationIds.get(name) === operationId) {
+        await client.close().catch(() => {})
+        this.clients.delete(name)
+      }
+      if (this.operationIds.get(name) !== operationId || this.servers.get(name) !== state) return
       state.status = 'failed'
       state.error = error instanceof Error ? error.message : String(error)
     }
@@ -117,6 +143,16 @@ export class McpClientManager {
 
   getServer(name: string): McpServerState | undefined {
     return this.servers.get(name)
+  }
+
+  async removeServer(name: string): Promise<boolean> {
+    this.operationIds.set(name, (this.operationIds.get(name) ?? 0) + 1)
+    const client = this.clients.get(name)
+    if (client) {
+      await client.close().catch(() => {})
+      this.clients.delete(name)
+    }
+    return this.servers.delete(name)
   }
 
   setServerEnabled(name: string, enabled: boolean): boolean {
@@ -210,6 +246,9 @@ export class McpClientManager {
   }
 
   async disconnectAll(): Promise<void> {
+    for (const name of this.servers.keys()) {
+      this.operationIds.set(name, (this.operationIds.get(name) ?? 0) + 1)
+    }
     for (const [, client] of this.clients) {
       try {
         await client.close()

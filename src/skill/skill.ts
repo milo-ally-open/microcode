@@ -112,6 +112,7 @@ export interface Skill {
   filePath: string
   baseDir: string
   disableModelInvocation: boolean
+  pluginId?: string
 }
 
 export interface LoadSkillsResult {
@@ -354,7 +355,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 
   const lines = [
     '\n\nThe following skills provide specialized instructions for specific tasks.',
-    'Users can reference a skill as $skill-name to include its instructions in that request. The skill tool can also load a skill when needed.',
+    'Users can reference a skill as $skill-name (or a plugin skill as $plugin:skill-name) to include its instructions in that request. The skill tool can also load a skill when needed.',
     '',
     '<available_skills>',
   ]

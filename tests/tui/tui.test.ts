@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { Fragment, h, jsx, jsxs } from '../../src/tui/jsxFactory.ts'
 import { InlineSelectPrompt } from '../../src/tui/components/inlineSelectPrompt.ts'
+import { TurnTimeline } from '../../src/tui/components/turnTimeline.ts'
 import { getBashModeBorderColor, getEditorTheme, getMarkdownTheme, theme } from '../../src/tui/theme.ts'
 import { countContentLines, formatBytes, formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../src/tui/toolPresentation.ts'
-import { SelectList } from '@earendil-works/pi-tui'
+import { SelectList, Text } from '@earendil-works/pi-tui'
+import { MicrocodeEditor } from '../../src/tui/components/microcodeEditor.ts'
+import { getEditorTheme } from '../../src/tui/theme.ts'
 
 describe('tui modules', () => {
   test('theme helpers return styled strings and editor/markdown contracts', () => {
@@ -53,5 +56,55 @@ describe('tui modules', () => {
     prompt.complete('answer')
     expect(prompt.render(80).join('\n')).toContain('answer')
     expect(prompt.render(80).join('\n')).not.toContain('Allow')
+  })
+
+  test('turn timeline renders the same component only once', () => {
+    const row = new Text('tool completed')
+    const timeline = new TurnTimeline()
+    timeline.addEntry(new Text('user input'), 'user')
+    timeline.addEntry(row, 'tool')
+    timeline.addEntry(row, 'tool')
+
+    expect(timeline.render(80).filter((line) => line.includes('tool completed'))).toHaveLength(1)
+  })
+
+  test('skill completion opens immediately after $ and updates while typing', async () => {
+    const editor = new MicrocodeEditor({ requestRender() {} } as any, getEditorTheme(), { paddingX: 1 })
+    editor.setAutocompleteProvider({
+      async getSuggestions(lines, cursorLine, cursorCol) {
+        const beforeCursor = (lines[cursorLine] ?? '').slice(0, cursorCol)
+        const start = beforeCursor.lastIndexOf('$')
+        if (start < 0) return null
+        const prefix = beforeCursor.slice(start)
+        return {
+          items: [
+            { value: '$note', label: '$note', description: 'Notes skill' },
+            { value: '$notes', label: '$notes', description: 'Expanded notes skill' },
+          ],
+          prefix,
+        }
+      },
+      applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        const next = [...lines]
+        const before = next[cursorLine] ?? ''
+        const start = cursorCol - prefix.length
+        next[cursorLine] = `${before.slice(0, start)}${item.value} ${before.slice(cursorCol)}`
+        return { lines: next, cursorLine, cursorCol: start + item.value.length + 1 }
+      },
+    })
+
+    editor.handleInput('$')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(editor.isShowingAutocomplete()).toBe(true)
+
+    editor.handleInput('n')
+    editor.handleInput('o')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(editor.getText()).toBe('$no')
+    expect(editor.isShowingAutocomplete()).toBe(true)
+
+    editor.handleInput('\t')
+    expect(editor.getText()).toBe('$note ')
+    expect(editor.isShowingAutocomplete()).toBe(false)
   })
 })

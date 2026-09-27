@@ -41,6 +41,8 @@ import { existsSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
+import type { PluginManager } from '../plugins/PluginManager.ts'
+import type { PluginRecord, PluginValidationResult } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
 import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.ts'
 import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
@@ -55,7 +57,7 @@ import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
 import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
 import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, getMentionedImagePaths, listWorkspaceFiles } from './workspaceFiles.ts'
-import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch } from './skillMentions.ts'
+import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch, stripReferencedSkillContext } from './skillMentions.ts'
 
 
 
@@ -155,6 +157,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
   { name: 'skills', description: 'List, enable, or disable skills' },
+  { name: 'plugins', description: 'Browse, inspect, validate, enable, or trust plugins' },
   { name: 'exit', description: 'Exit Microcode' },
   { name: 'help', description: 'Show help and available commands' },
 ]
@@ -183,6 +186,9 @@ export class App {
   private agentWorking = false
   private lastSigintTime = 0
   private mcpClient?: McpClientManager
+  private queuedMcpClient?: McpClientManager
+  private pluginManager?: PluginManager
+  private onPluginsChanged?: () => Promise<void>
   private sessionManager: SessionManager
   private compacting = false
   private compactionProgressText?: Text
@@ -228,6 +234,11 @@ export class App {
 
   getSessionManager(): SessionManager {
     return this.sessionManager
+  }
+
+  setPluginManager(manager: PluginManager, onChanged: () => Promise<void>): void {
+    this.pluginManager = manager
+    this.onPluginsChanged = onChanged
   }
 
   /** Queue a warning to be shown in the chat area after TUI initializes. */
@@ -338,6 +349,8 @@ export class App {
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
         this.appendTurnEntry(new Text(chalk.hex('#cc6666')(`Error: ${errorMessage}`), 1, 0))
+        this.finishTurn()
+        this.activeTurnTimeline = undefined
         this.chatContainer.addChild(new Spacer(1))
         this.ui.requestRender()
       }
@@ -873,6 +886,10 @@ export class App {
 
       case '/skills':
         this.handleSkillsCommand()
+        return true
+
+      case '/plugins':
+        this.handlePluginsCommand()
         return true
 
       case '/exit':
@@ -1845,7 +1862,7 @@ export class App {
         .join(' ')
     }
 
-    text = text.trim()
+    text = stripReferencedSkillContext(text).trim()
     if (!text) return
 
     const fallbackTitle = text.length > 60 ? text.slice(0, 57) + '...' : text
@@ -2165,7 +2182,24 @@ export class App {
 
   updateMcpState(mcpClient: McpClientManager): void {
     this.mcpClient = mcpClient
+    if (this.agent.isBusy()) {
+      this.queuedMcpClient = mcpClient
+      this.showStatus('MCP runtime updates are queued until the active turn ends.')
+      return
+    }
+    this.applyMcpState(mcpClient)
+  }
+
+  private applyMcpState(mcpClient: McpClientManager): void {
+    this.agent.configureMcpTools(mcpClient)
     this.rebuildSystemPrompt(mcpClient.getServerStates())
+  }
+
+  private applyQueuedMcpState(): void {
+    if (this.agent.isBusy() || !this.queuedMcpClient) return
+    const client = this.queuedMcpClient
+    this.queuedMcpClient = undefined
+    this.applyMcpState(client)
   }
 
   showMcpReady(states: McpServerState[]): void {
@@ -2389,6 +2423,213 @@ export class App {
       close()
       this.ui.requestRender()
     }
+  }
+
+  private handlePluginsCommand(): void {
+    if (!this.pluginManager) {
+      this.showError('Plugin management is unavailable in this session.')
+      return
+    }
+    this.showPluginActionMenu()
+  }
+
+  private showPluginActionMenu(): void {
+    const actions: SelectItem[] = [
+      { value: 'list', label: 'List plugins', description: 'Show package source, status, components, and health' },
+      { value: 'manage', label: 'Manage a plugin', description: 'Inspect, enable/disable, or trust its MCP servers' },
+      { value: 'validate', label: 'Validate a plugin package', description: 'Choose a discovered package folder; validation never starts servers' },
+      { value: 'cancel', label: 'Cancel', description: 'Close this menu' },
+    ]
+    this.showPluginPicker('Plugins', 'Choose an action', actions, (value) => {
+      if (value === 'list') this.showPluginList()
+      else if (value === 'manage') this.showPluginChooser((plugin) => this.showPluginManageMenu(plugin))
+      else if (value === 'validate') this.showPluginChooser((plugin) => void this.validatePlugin(plugin))
+    })
+  }
+
+  private showPluginPicker(
+    title: string,
+    subtitle: string,
+    items: SelectItem[],
+    onSelect: (value: string) => void,
+  ): void {
+    const list = new SelectList(items, Math.min(items.length, 12), {
+      selectedPrefix: (text) => chalk.cyan(text),
+      selectedText: (text) => chalk.cyan(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+      noMatch: (text) => theme.dim(text),
+    })
+    this.chatContainer.addChild(new Text(theme.fg('accent', title), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim(subtitle), 1, 0))
+    this.chatContainer.addChild(list)
+    this.ui.setFocus(list)
+    this.ui.requestRender()
+    const close = () => {
+      this.chatContainer.removeChild(list)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+    }
+    list.onSelect = (item) => {
+      close()
+      onSelect(item.value)
+      this.ui.requestRender()
+    }
+    list.onCancel = () => {
+      close()
+      this.ui.requestRender()
+    }
+  }
+
+  private showPluginChooser(onChoose: (plugin: PluginRecord) => void): void {
+    const plugins = this.pluginManager?.getPlugins() ?? []
+    if (plugins.length === 0) {
+      this.showStatus('No plugin package folders were discovered in ~/.microcode/plugins or .microcode/plugins.')
+      return
+    }
+    const items: SelectItem[] = plugins.map((plugin) => ({
+      value: plugin.name,
+      label: `${plugin.name} · ${plugin.version} · ${plugin.scope} · ${plugin.health}`,
+      description: plugin.description,
+    }))
+    this.showPluginPicker('Choose a plugin', 'Select a discovered package', items, (name) => {
+      const plugin = this.pluginManager?.findPlugin(name)
+      if (plugin) onChoose(plugin)
+    })
+  }
+
+  private showPluginList(): void {
+    const snapshot = this.pluginManager?.getSnapshot()
+    const plugins = snapshot?.plugins ?? []
+    if (plugins.length === 0) {
+      this.chatContainer.addChild(new Text(theme.dim('No plugins discovered.'), 1, 0))
+    } else {
+      this.chatContainer.addChild(new Text(theme.fg('accent', `Plugins (${plugins.length})`), 1, 0))
+      this.chatContainer.addChild(new Spacer(1))
+      for (const plugin of plugins) {
+        const trusted = plugin.trustedMcpServers.length
+        const servers = plugin.servers.length
+        const healthColor = plugin.health === 'ready' ? chalk.green : plugin.health === 'warning' ? chalk.yellow : chalk.red
+        this.chatContainer.addChild(new Text(`${theme.bold(plugin.name)} ${theme.dim(`v${plugin.version}`)} · ${plugin.scope} · ${plugin.enabled ? chalk.green('enabled') : theme.dim('disabled')} · ${healthColor(plugin.health)}`, 1, 0))
+        this.chatContainer.addChild(new Text(`  ${theme.dim(`skills ${plugin.skills.length} · MCP servers ${servers} (${trusted} trusted)`)}`, 1, 0))
+      }
+    }
+    if (snapshot?.diagnostics.length) {
+      this.chatContainer.addChild(new Spacer(1))
+      this.chatContainer.addChild(new Text(theme.fg('yellow', 'Discovery warnings'), 1, 0))
+      for (const diagnostic of snapshot.diagnostics) this.chatContainer.addChild(new Text(`  ${theme.dim(diagnostic)}`, 1, 0))
+    }
+    this.chatContainer.addChild(new Spacer(1))
+    this.ui.setFocus(this.editor)
+    this.ui.requestRender()
+  }
+
+  private showPluginManageMenu(plugin: PluginRecord): void {
+    const items: SelectItem[] = [
+      { value: 'inspect', label: 'Inspect package', description: 'Metadata, root, components, permissions, and warnings' },
+      { value: 'toggle', label: plugin.enabled ? 'Disable plugin' : 'Enable plugin', description: `Update the ${plugin.scope} plugin setting` },
+      ...plugin.servers.map((server) => ({
+        value: `server:${server.name}`,
+        label: `${plugin.trustedMcpServers.includes(server.name) ? 'Revoke trust' : 'Review and trust'} MCP: ${server.name}`,
+        description: `${server.transport} · ${server.safeCommandSummary}`,
+      })),
+      { value: 'back', label: 'Back', description: 'Return to plugin actions' },
+    ]
+    this.showPluginPicker(plugin.name, 'Choose an action', items, (value) => {
+      const latest = this.pluginManager?.findPlugin(plugin.name) ?? plugin
+      if (value === 'inspect') this.showPluginInspection(latest)
+      else if (value === 'toggle') void this.togglePlugin(latest)
+      else if (value.startsWith('server:')) {
+        const server = latest.servers.find((candidate) => candidate.name === value.slice(7))
+        if (server) this.confirmPluginServerTrust(latest, server.name, server.safeCommandSummary, latest.trustedMcpServers.includes(server.name))
+      } else this.showPluginActionMenu()
+    })
+  }
+
+  private showPluginInspection(plugin: PluginRecord): void {
+    this.chatContainer.addChild(new Text(theme.fg('accent', `${plugin.name} v${plugin.version}`), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim(plugin.description), 1, 0))
+    if (plugin.author) this.chatContainer.addChild(new Text(`Author: ${plugin.author}`, 1, 0))
+    if (plugin.license) this.chatContainer.addChild(new Text(`License: ${plugin.license}`, 1, 0))
+    if (plugin.homepage) this.chatContainer.addChild(new Text(`Homepage: ${plugin.homepage}`, 1, 0))
+    if (plugin.repository) this.chatContainer.addChild(new Text(`Repository: ${plugin.repository}`, 1, 0))
+    this.chatContainer.addChild(new Text(`Source: ${plugin.scope} · ${plugin.rootDir}`, 1, 0))
+    this.chatContainer.addChild(new Text(`Status: ${plugin.enabled ? 'enabled' : 'disabled'} · ${plugin.health} · ${plugin.valid ? 'valid' : 'invalid'}`, 1, 0))
+    this.chatContainer.addChild(new Text(`Requested integrations: ${plugin.skills.length} skill(s), ${plugin.servers.length} MCP server(s)`, 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim('MCP trust allows server startup; each tool call still follows Microcode permission rules.'), 1, 0))
+    if (plugin.skills.length) {
+      this.chatContainer.addChild(new Text(theme.bold('Skills'), 1, 0))
+      for (const skill of plugin.skills) this.chatContainer.addChild(new Text(`  ${skill.name} — ${theme.dim(skill.description)}`, 1, 0))
+    }
+    if (plugin.servers.length) {
+      this.chatContainer.addChild(new Text(theme.bold('MCP servers'), 1, 0))
+      for (const server of plugin.servers) this.chatContainer.addChild(new Text(`  ${server.name} · ${server.transport} · ${plugin.trustedMcpServers.includes(server.name) ? 'trusted' : 'not trusted'} · ${server.safeCommandSummary}`, 1, 0))
+    }
+    if (plugin.diagnostics.length) {
+      this.chatContainer.addChild(new Text(theme.fg('yellow', 'Validation warnings'), 1, 0))
+      for (const warning of plugin.diagnostics) this.chatContainer.addChild(new Text(`  ${theme.dim(warning)}`, 1, 0))
+    }
+    this.chatContainer.addChild(new Text(theme.dim('Secret environment variables and headers are intentionally not displayed.'), 1, 0))
+    this.chatContainer.addChild(new Spacer(1))
+    this.ui.setFocus(this.editor)
+    this.ui.requestRender()
+  }
+
+  private async togglePlugin(plugin: PluginRecord): Promise<void> {
+    if (this.agent.isBusy()) {
+      this.showStatus('Plugin settings were not changed: finish or interrupt the active turn, then choose the action again.')
+      return
+    }
+    try {
+      await this.pluginManager?.setEnabled(plugin.name, !plugin.enabled)
+      await this.onPluginsChanged?.()
+      this.showStatus(`${plugin.enabled ? 'Disabled' : 'Enabled'} plugin '${plugin.name}'.`)
+    } catch (error) {
+      this.showError(`Could not change plugin: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private confirmPluginServerTrust(plugin: PluginRecord, serverName: string, summary: string, trusted: boolean): void {
+    const action = trusted ? 'Revoke trust' : plugin.enabled ? 'Trust and connect' : 'Trust for when enabled'
+    this.showPluginPicker(`${action}: ${serverName}`, `${plugin.name} · ${summary}. Trust permits this integration to start and expose tools.`, [
+      { value: 'confirm', label: action, description: `Save trust at ${plugin.scope} scope` },
+      { value: 'cancel', label: 'Cancel', description: 'No settings will change' },
+    ], (value) => {
+      if (value !== 'confirm') return
+      if (this.agent.isBusy()) {
+        this.showStatus('Trust was not changed: finish or interrupt the active turn, then choose the action again.')
+        return
+      }
+      void (async () => {
+        try {
+          await this.pluginManager?.setMcpServerTrusted(plugin.name, serverName, !trusted)
+          await this.onPluginsChanged?.()
+          this.showStatus(`${trusted ? 'Revoked trust for' : 'Trusted'} MCP server '${serverName}'.`)
+        } catch (error) {
+          this.showError(`Could not update MCP trust: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })()
+    })
+  }
+
+  private async validatePlugin(plugin: PluginRecord): Promise<void> {
+    try {
+      const result = await this.pluginManager?.validatePath(plugin.rootDir)
+      if (result) this.showPluginValidation(result)
+    } catch (error) {
+      this.showError(`Validation failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private showPluginValidation(result: PluginValidationResult): void {
+    this.chatContainer.addChild(new Text(theme.fg('accent', `Validation: ${result.name ?? 'unknown plugin'} ${result.valid ? 'valid' : 'invalid'}`), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim(result.rootDir), 1, 0))
+    this.chatContainer.addChild(new Text(`Components found: ${result.skills.length} skill(s), ${result.servers.length} MCP server(s)`, 1, 0))
+    for (const warning of result.diagnostics) this.chatContainer.addChild(new Text(`  ${theme.dim(warning)}`, 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim('Validation does not start MCP servers; secret values are not shown.'), 1, 0))
+    this.chatContainer.addChild(new Spacer(1))
+    this.ui.setFocus(this.editor)
+    this.ui.requestRender()
   }
 
   private showSkillList(): void {
@@ -2739,6 +2980,7 @@ export class App {
       `  ${theme.bold('/mcp')}                Show MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
       `  ${theme.bold('/skills')}             List, enable, or disable skills`,
+      `  ${theme.bold('/plugins')}            Browse, inspect, validate, and manage plugins`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
       `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
       `  ${theme.bold('/instructions reload')} Reload project instruction files`,
@@ -3045,6 +3287,7 @@ export class App {
 
         case 'agent_end':
           if (!this.isAgentBusy()) {
+            this.applyQueuedMcpState()
             this.clearPendingToolState()
             this.finishTurn()
             this.hideWorking()
