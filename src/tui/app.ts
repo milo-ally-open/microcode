@@ -810,73 +810,106 @@ export class App {
         : `Signed in to ${provider.name}.`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (!abortController.signal.aborted && !/cancel(?:led|ed)/i.test(message)) this.showError(message)
+      if (abortController.signal.aborted || /cancel(?:led|ed)/i.test(message)) {
+        if (action === 'login') this.showStatus('Sign-in cancelled.')
+        return
+      }
+      this.showError(message)
     }
   }
 
   private async promptAuthValue(prompt: AuthPrompt, authController?: AbortController): Promise<string> {
     if (prompt.type === 'manual_code') return this.promptAuthCode(prompt, authController)
-    this.ui.stop()
-    console.log(`\n${prompt.message}`)
     const placeholder = 'placeholder' in prompt ? prompt.placeholder : undefined
-    process.stdout.write(prompt.type === 'secret' ? '> ' : `${placeholder ? `[${placeholder}] ` : ''}> `)
-    const input = process.stdin
-    try {
-      return await new Promise<string>((resolve, reject) => {
+    const secret = prompt.type === 'secret'
+    const notice = new Text(
+      theme.fg('accent', `${prompt.message}${placeholder ? ` (${placeholder})` : ''} · Enter to submit · Esc to cancel`),
+      1,
+      0,
+    )
+    const inputLine = new Text('> ', 1, 0)
+    this.chatContainer.addChild(notice)
+    this.chatContainer.addChild(inputLine)
+    this.ui.requestRender()
+
+    return new Promise<string>((resolve, reject) => {
       let value = ''
-      const wasRaw = input.isRaw
-      input.setRawMode?.(true)
-      input.resume()
       let settled = false
+      let removeInputListener = () => {}
       const cleanup = () => {
         if (settled) return
         settled = true
-        input.off('data', onData)
+        removeInputListener()
         prompt.signal?.removeEventListener('abort', onAbort)
-        if (typeof wasRaw === 'boolean') input.setRawMode?.(wasRaw)
-        process.stdout.write('\n')
+        authController?.signal.removeEventListener('abort', onAbort)
+        this.chatContainer.removeChild(inputLine)
+        this.chatContainer.removeChild(notice)
+        this.ui.setFocus(this.editor)
+        this.ui.requestRender()
       }
       const onAbort = () => {
         cleanup()
+        // A second Escape immediately after cancelling auth must not be
+        // mistaken for the app-level double-Escape exit gesture.
+        this.lastSigintTime = 0
+        if (!authController?.signal.aborted) authController?.abort()
         reject(new Error('Authentication cancelled.'))
       }
-      const onData = (chunk: Buffer) => {
-        for (const char of chunk.toString('utf8')) {
-          if (char === '\u0003' || char === '\u001b') {
-            cleanup()
-            authController?.abort()
-            reject(new Error('Authentication cancelled.'))
-            return
-          }
-          if (char === '\r' || char === '\n') {
-            cleanup()
-            let answer = value.trim()
-            if (answer || !prompt.message) resolve(answer)
-            else reject(new Error('Authentication cancelled.'))
-            return
-          }
+      const cancel = () => {
+        authController?.abort()
+        if (!settled) onAbort()
+      }
+      const updateInput = () => {
+        inputLine.setText(`> ${secret ? '*'.repeat([...value].length) : value}`)
+        this.ui.requestRender()
+      }
+      const appendText = (text: string) => {
+        for (const char of text) {
+          if (char === '\r' || char === '\n') continue
           if (char === '\u007f' || char === '\b') {
-            if (value.length) {
-              value = value.slice(0, -1)
-              process.stdout.write('\b \b')
-            }
-            continue
-          }
-          if (char >= ' ') {
+            value = [...value].slice(0, -1).join('')
+          } else if (char >= ' ') {
             value += char
-            process.stdout.write(prompt.type === 'secret' ? '*' : char)
           }
         }
+        updateInput()
       }
-      if (prompt.signal?.aborted) return onAbort()
-      prompt.signal?.addEventListener('abort', onAbort, { once: true })
-      input.on('data', onData)
+
+      removeInputListener = this.ui.addInputListener((data) => {
+        if (data === '\u001b' || data === '\u0003' || data === '\u0004') {
+          cancel()
+          return { consume: true }
+        }
+        if (data === '\r' || data === '\n') {
+          const answer = value.trim()
+          if (!answer) {
+            cancel()
+          } else {
+            cleanup()
+            resolve(answer)
+          }
+          return { consume: true }
+        }
+
+        const pasteStart = '\u001b[200~'
+        const pasteEnd = '\u001b[201~'
+        if (data.startsWith(pasteStart) && data.endsWith(pasteEnd)) {
+          appendText(data.slice(pasteStart.length, -pasteEnd.length))
+          return { consume: true }
+        }
+        if (data.startsWith('\u001b[')) {
+          // Let terminal reports through to TUI (for example, image cell size).
+          if (/^\u001b\[6;\d+;\d+t$/.test(data)) return undefined
+          return { consume: true }
+        }
+        appendText(data)
+        return { consume: true }
       })
-    } finally {
-      this.ui.start()
-      this.ui.setFocus(this.editor)
-      this.ui.requestRender()
-    }
+
+      prompt.signal?.addEventListener('abort', onAbort, { once: true })
+      authController?.signal.addEventListener('abort', onAbort, { once: true })
+      if (prompt.signal?.aborted || authController?.signal.aborted) onAbort()
+    })
   }
 
   private promptAuthCode(prompt: Extract<AuthPrompt, { type: 'manual_code' }>, authController?: AbortController): Promise<string> {
