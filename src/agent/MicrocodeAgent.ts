@@ -17,6 +17,7 @@ import {
 } from '../tools/index.ts'
 import { getSystemPrompt } from '../prompt/prompts.ts'
 import { CompactionManager } from '../session/CompactionManager.ts'
+import type { ProjectInstructions } from '../instructions/projectInstructions.ts'
 import type { McpServerState } from '../mcp/types.ts'
 import type { McpClientManager } from '../mcp/client.ts'
 import { AgentTokenTracker, type AgentTokenSnapshot } from './AgentTokenTracker.ts'
@@ -84,6 +85,7 @@ export class MicrocodeAgent {
   private readonly toolManager: AgentToolManager
   private readonly skillManager: AgentSkillManager
   private baseSystemPrompt: string
+  private projectInstructions?: ProjectInstructions
   private mcpServers?: McpServerState[]
   private persistence?: AgentSessionPersistence
   private readonly listeners = new Set<MicrocodeAgentEventListener>()
@@ -92,6 +94,7 @@ export class MicrocodeAgent {
   private askUserQuestionHandler?: AgentPermissionConfig['onAskUserQuestion']
   constructor(options: CreateMicrocodeAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd()
+    this.projectInstructions = options.projectInstructions
     this.persistence = options.persistence
     this.identity = normalizeIdentity(options)
     this.permissionRequestHandler = options.permission?.onPermissionRequest
@@ -138,6 +141,7 @@ export class MicrocodeAgent {
       mcpServers: this.mcpServers,
       skills: [...this.skillManager.getSkills()],
       deferredToolNames: deferredToolNames.length > 0 ? deferredToolNames : undefined,
+      projectInstructions: this.projectInstructions,
     }).join('\n\n')
 
     this.baseSystemPrompt = systemPrompt
@@ -636,6 +640,17 @@ export class MicrocodeAgent {
     this.core.state.messages = messages
   }
 
+  updateProjectInstructions(instructions: ProjectInstructions): void {
+    this.projectInstructions = instructions
+    this.baseSystemPrompt = this.buildBaseSystemPrompt(this.core.state.model)
+    this.rebuildSystemPrompt()
+    this.emitTokenAndState('system_prompt_changed')
+  }
+
+  getProjectInstructions(): ProjectInstructions | undefined {
+    return this.projectInstructions
+  }
+
   private buildBaseSystemPrompt(model: Model<Api>): string {
     const deferredToolNames = getDeferredToolNames()
     const prompt = getSystemPrompt({
@@ -644,6 +659,7 @@ export class MicrocodeAgent {
       mcpServers: this.mcpServers,
       skills: [...this.skillManager.getSkills()],
       deferredToolNames: deferredToolNames.length > 0 ? deferredToolNames : undefined,
+      projectInstructions: this.projectInstructions,
     }).join('\n\n')
     return prompt
   }

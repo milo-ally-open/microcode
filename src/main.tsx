@@ -10,6 +10,7 @@ import { createGitWorkTreeTool } from './tools/index.ts'
 import { type PermissionMode, PERMISSION_MODES } from './permissions/index.ts'
 import { cleanupImageCache } from './utils/imageUtils.ts'
 import { GitWorkTreeSystem } from './git/index.ts'
+import { loadProjectInstructions } from './instructions/projectInstructions.ts'
 
 declare const MACRO: {
   VERSION: string
@@ -166,6 +167,8 @@ Session Management:
   Sessions are automatically saved to ~/.microcode/sessions/
   Use --resume to continue where you left off.
   Use /compact to manually compress conversation context.
+  Use /init to create or update project guidance in MICRO.md.
+  Use /instructions to list the loaded project instruction files.
 `)
     process.exit(0)
   }
@@ -199,6 +202,7 @@ Session Management:
   }
 
   const cwd = process.cwd()
+  const projectInstructions = await loadProjectInstructions(cwd)
   const resumeFlagIdx = args.indexOf('--resume')
   const resumeFlag = resumeFlagIdx !== -1
   // Session ID is the arg after --resume, if it exists and isn't another flag
@@ -291,6 +295,7 @@ Session Management:
   const mcpClient = new McpClientManager()
   const agent = createMicrocodeAgentRuntime({
     cwd,
+    projectInstructions,
     modelId,
     thinkingLevel,
     permission: { mode: permissionMode },

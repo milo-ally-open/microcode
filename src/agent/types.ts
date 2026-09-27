@@ -18,6 +18,7 @@ import type { AgentModelSnapshot } from './AgentModelManager.ts'
 import type { AgentToolSnapshot } from './AgentToolManager.ts'
 import type { AgentSkillSnapshot } from './AgentSkillManager.ts'
 import type { AgentSessionPersistence } from './persistence.ts'
+import type { ProjectInstructions } from '../instructions/projectInstructions.ts'
 import type {
   CompactionSettings,
   generateSummary,
@@ -49,6 +50,7 @@ export interface AgentPermissionConfig {
 
 export interface CreateMicrocodeAgentOptions {
   cwd?: string
+  projectInstructions?: ProjectInstructions
   modelId?: string
   /** Protocol format (e.g., "anthropic-messages", "openai-completions"). Must match the model ID. */
   api?: Api

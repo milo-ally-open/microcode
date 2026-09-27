@@ -36,6 +36,7 @@ import {
   type CachedImage,
 } from '../utils/imageUtils.ts'
 import { existsSync } from 'fs'
+import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'path'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
@@ -45,6 +46,7 @@ import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTo
 import { TOOL_NAME as EDIT_TOOL_NAME } from '../tools/FileEditTool/FileEditTool.ts'
 import { SessionManager } from '../session/SessionManager.ts'
 import { exportSessionJsonl } from '../session/exportSession.ts'
+import { buildInitTaskPrompt, loadProjectInstructions } from '../instructions/projectInstructions.ts'
 import type { MicrocodeAgent, MicrocodeAgentEvent } from '../agent/index.ts'
 import type { Skill } from '../skill/skill.ts'
 import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
@@ -143,6 +145,8 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'mcp', description: 'Show MCP servers', argumentHint: '' },
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
   { name: 'export', description: 'Export the current conversation JSONL into .microcode/' },
+  { name: 'init', description: 'Analyze the project and create or update MICRO.md' },
+  { name: 'instructions', description: 'Show project instruction files loaded by Microcode' },
   { name: 'tasks', description: 'Browse tasks and prioritize unfinished work in the current session', argumentHint: '' },
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
@@ -714,6 +718,14 @@ export class App {
         void this.handleExportCommand()
         return true
 
+      case '/init':
+        void this.handleInitCommand()
+        return true
+
+      case '/instructions':
+        this.handleInstructionsCommand()
+        return true
+
       case '/tasks':
         this.handleTasksCommand()
         return true
@@ -771,6 +783,78 @@ export class App {
       this.showStatus(`Conversation exported to ${destinationPath}`)
     } catch (error) {
       this.showError(`Could not export conversation: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private async handleInitCommand(): Promise<void> {
+    if (this.isAgentBusy()) {
+      this.showStatus('Agent is busy — press Esc or Ctrl+C to cancel, then run /init.')
+      return
+    }
+
+    const cwd = process.cwd()
+    const targetPath = resolve(cwd, 'MICRO.md')
+    let before: string | undefined
+    try {
+      before = await readFile(targetPath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.showError(`Could not read ${targetPath}: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+
+    const timeline = new TurnTimeline()
+    timeline.addEntry(new UserMessage('/init'), 'user')
+    this.activeTurnTimeline = timeline
+    this.chatContainer.addChild(timeline)
+    this.turnFinalized = false
+    this.ui.requestRender()
+
+    let promptError: unknown
+    try {
+      await this.agent.prompt(buildInitTaskPrompt(cwd))
+    } catch (error) {
+      promptError = error
+    }
+
+    try {
+      const after = await readFile(targetPath, 'utf8').catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw error
+      })
+      const instructions = await loadProjectInstructions(cwd)
+      this.agent.updateProjectInstructions(instructions)
+      if (promptError) {
+        this.showError(`Project initialization failed: ${promptError instanceof Error ? promptError.message : String(promptError)}`)
+        return
+      }
+      this.showStatus(after !== undefined && after !== before
+        ? `Project instructions saved to ${targetPath} and reloaded.`
+        : 'No changes were made to MICRO.md.')
+    } catch (error) {
+      this.showError(`Could not reload project instructions: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private handleInstructionsCommand(): void {
+    const instructions = this.agent.getProjectInstructions()
+    if (!instructions || instructions.files.length === 0) {
+      this.showStatus('No project instruction files are currently loaded.')
+    } else {
+      this.showStatus(`Loaded project instructions (${instructions.totalBytes} bytes):`)
+      for (const file of instructions.files) {
+        this.chatContainer.addChild(new Text(`  ${file.path}${file.truncated ? ' (truncated)' : ''}`, 1, 0))
+      }
+      this.ui.requestRender()
+    }
+
+    for (const diagnostic of instructions?.diagnostics ?? []) {
+      this.chatContainer.addChild(new Text(`  ${theme.dim(diagnostic)}`, 1, 0))
+    }
+    if (instructions?.diagnostics.length) {
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.requestRender()
     }
   }
 
@@ -2447,6 +2531,9 @@ export class App {
       `  ${theme.bold('/mcp')}                Show MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
+      `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
+      `  ${theme.bold('/init')}               Analyze the project and create or update MICRO.md`,
+      `  ${theme.bold('/export')}             Export the current conversation JSONL`,
       `  ${theme.bold('/new')}                Start a new conversation session`,
       `  ${theme.bold('/permission')} [mode]  Show or switch permission mode`,
       `  ${theme.bold('/exit')}               Exit Microcode`,

@@ -14,6 +14,8 @@ import {
   getToneAndStyleSection,
 } from './base.ts'
 import { getEnvInfoSection } from './environment.ts'
+import { getProjectInstructionsSection } from './projectInstructions.ts'
+import type { ProjectInstructions } from '../instructions/projectInstructions.ts'
 
 /**
  * Central prompt assembler.
@@ -28,6 +30,7 @@ export interface GetSystemPromptOptions {
   skills?: Skill[]
   /** Names of tools that are deferred (discovered via ToolSearchTool). */
   deferredToolNames?: string[]
+  projectInstructions?: ProjectInstructions
 }
 
 function getSkillsInstructionsSection(skills: Skill[] | undefined): string | null {
@@ -38,7 +41,7 @@ function getSkillsInstructionsSection(skills: Skill[] | undefined): string | nul
 
 /** Compose the model-facing system prompt in the order expected by the agent runtime. */
 export function getSystemPrompt(options: GetSystemPromptOptions): string[] {
-  const { cwd, modelId, mcpServers, skills, deferredToolNames } = options
+  const { cwd, modelId, mcpServers, skills, deferredToolNames, projectInstructions } = options
 
   return [
     getIntroSection(),
@@ -51,6 +54,7 @@ export function getSystemPrompt(options: GetSystemPromptOptions): string[] {
     getAskUserQuestionSection(),
     getTaskToolSection(),
     getEnvInfoSection(cwd, modelId),
+    getProjectInstructionsSection(projectInstructions),
     getMcpInstructionsSection(mcpServers),
     getSkillsInstructionsSection(skills),
     getDeferredToolsSection(deferredToolNames),

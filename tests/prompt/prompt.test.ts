@@ -44,4 +44,24 @@ describe('prompt modules', () => {
     expect(prompt.at(-1)).toContain('test-model')
   })
 
+  test('system prompt includes loaded project instruction files', () => {
+    const prompt = getSystemPrompt({
+      cwd: '/tmp/project',
+      modelId: 'test-model',
+      projectInstructions: {
+        projectRoot: '/tmp/project',
+        workingDirectory: '/tmp/project',
+        files: [{ path: '/tmp/project/AGENTS.md', content: 'Use Bun.', bytes: 9, truncated: false }],
+        diagnostics: [],
+        totalBytes: 9,
+      },
+    })
+
+    const sectionIndex = prompt.findIndex((section) => section === '# Project instructions'
+      || section.startsWith('# Project instructions\n'))
+    expect(sectionIndex).toBeGreaterThan(-1)
+    expect(prompt[sectionIndex]).toContain('/tmp/project/AGENTS.md')
+    expect(prompt[sectionIndex]).toContain('Use Bun.')
+  })
+
 })
