@@ -24,6 +24,7 @@ import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
 import { getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
 import { UserMessage } from './components/userMessage.ts'
+import { TurnTimeline } from './components/turnTimeline.ts'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import { modelSupportsImages } from '../models/index.ts'
 import {
@@ -163,6 +164,10 @@ export class App {
   private pendingTools = new Map<string, ToolUIComponent>()
   private pendingToolStartedAt = new Map<string, number>()
   private streamingToolLastRenderAt = new Map<string, number>()
+  private toolRows = new Map<string, ToolUIComponent>()
+  private activeTurnTimeline?: TurnTimeline
+  private toolDetailsExpanded = false
+  private turnFinalized = false
   private toolElapsedTimer?: ReturnType<typeof setInterval>
   private agentWorking = false
   private lastSigintTime = 0
@@ -182,6 +187,7 @@ export class App {
   private suppressTrailingQuote = false
   private titleGenerated = false
   private workingText: Text | null = null
+  private agentActivityLabel = 'Working…'
   private workingFrameIndex = 0
   private workingTimer: ReturnType<typeof setInterval> | undefined
   onExit?: () => void | Promise<void>
@@ -295,8 +301,10 @@ export class App {
       await this.sessionManager.ensureCreated(process.cwd())
 
       // Add user message to chat (with grey background)
-      this.chatContainer.addChild(new UserMessage(userInput, images.length > 0 ? images : undefined))
-      this.chatContainer.addChild(new Spacer(1))
+      this.activeTurnTimeline = new TurnTimeline()
+      this.activeTurnTimeline.addEntry(new UserMessage(userInput, images.length > 0 ? images : undefined))
+      this.chatContainer.addChild(this.activeTurnTimeline)
+      this.turnFinalized = false
       this.ui.requestRender()
 
       try {
@@ -308,9 +316,7 @@ export class App {
         this.clearPendingImages()
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
-        this.chatContainer.addChild(
-          new Text(chalk.hex('#cc6666')(`Error: ${errorMessage}`), 1, 0),
-        )
+        this.appendTurnEntry(new Text(chalk.hex('#cc6666')(`Error: ${errorMessage}`), 1, 0))
         this.chatContainer.addChild(new Spacer(1))
         this.ui.requestRender()
       }
@@ -325,6 +331,7 @@ export class App {
     const compactInstructions = [
       theme.dim('escape') + theme.dim(' interrupt'),
       theme.dim('ctrl+c/ctrl+d') + theme.dim(' exit'),
+      theme.dim('ctrl+o') + theme.dim(' tool details'),
       theme.dim('/') + theme.dim(' commands'),
       theme.dim('!') + theme.dim(' shell'),
     ].join(theme.dim(' · '))
@@ -441,6 +448,11 @@ export class App {
     }
     this.editor.onCtrlD = () => {
       this.exit()
+    }
+    this.editor.onCtrlO = () => {
+      this.toolDetailsExpanded = !this.toolDetailsExpanded
+      for (const row of this.toolRows.values()) row.setExpanded(this.toolDetailsExpanded)
+      this.ui.requestRender()
     }
 
     this.ui.addInputListener((data) => {
@@ -656,6 +668,10 @@ export class App {
     switch (command) {
       case '/clear':
         this.chatContainer.clear()
+        this.activeTurnTimeline = undefined
+        this.toolRows.clear()
+        this.pendingTools.clear()
+        this.turnFinalized = false
         this.showStatus('Conversation cleared.')
         return true
 
@@ -1479,6 +1495,10 @@ export class App {
 
     // Reset state
     this.agent.clearMessages()
+    this.activeTurnTimeline = undefined
+    this.toolRows.clear()
+    this.pendingTools.clear()
+    this.turnFinalized = false
     this.titleGenerated = false
     this.footer.setSessionTitle(null)
     this.footer.invalidate()
@@ -1549,6 +1569,10 @@ export class App {
    */
   private rerenderChat(messages: AgentMessage[]): void {
     this.chatContainer.clear()
+    this.toolRows.clear()
+    this.pendingTools.clear()
+    this.activeTurnTimeline = undefined
+    this.turnFinalized = false
 
     for (const msg of messages) {
       if (msg.role === 'user') {
@@ -1562,18 +1586,53 @@ export class App {
           const imageParts = msg.content.filter((c: any) => c.type === 'image') as ImageContent[]
           if (imageParts.length > 0) images = imageParts
         }
-        this.chatContainer.addChild(new UserMessage(text, images))
-        this.chatContainer.addChild(new Spacer(1))
+        const timeline = new TurnTimeline()
+        timeline.addEntry(new UserMessage(text, images))
+        this.chatContainer.addChild(timeline)
+        this.activeTurnTimeline = timeline
+        this.turnFinalized = false
       } else if (msg.role === 'assistant') {
+        if (!this.activeTurnTimeline) {
+          this.activeTurnTimeline = new TurnTimeline()
+          this.chatContainer.addChild(this.activeTurnTimeline)
+        }
         const component = new AssistantMessageComponent(getMarkdownTheme())
         component.updateContent(msg as any)
-        this.chatContainer.addChild(component)
-        this.chatContainer.addChild(new Spacer(1))
+        this.activeTurnTimeline.addEntry(component)
+
+        for (const block of msg.content) {
+          if (block.type !== 'toolCall') continue
+          const row = this.createToolRow(block.id, block.name, block.arguments ?? {})
+          row.markExecutionStarted()
+          this.activeTurnTimeline.addEntry(row)
+        }
+
+        if (msg.stopReason === 'aborted') {
+          this.activeTurnTimeline.addEntry(new Text(theme.fg('error', 'Interrupted'), 1, 0))
+          this.turnFinalized = true
+        } else if (msg.stopReason === 'error') {
+          this.activeTurnTimeline.addEntry(new Text(theme.fg('error', `Error: ${msg.errorMessage || 'Unknown error'}`), 1, 0))
+          this.turnFinalized = true
+        } else if (msg.stopReason === 'stop') {
+          this.activeTurnTimeline.addEntry(new Text(theme.fg('muted', 'Completed'), 1, 0))
+          this.turnFinalized = true
+        }
       } else if ((msg as any).role === 'toolResult') {
-        // Tool results are rendered as part of their parent assistant message
-        // Skip standalone rendering
+        const toolResult = msg as any
+        let row = this.toolRows.get(toolResult.toolCallId)
+        if (!row) {
+          row = this.createToolRow(toolResult.toolCallId, toolResult.toolName, {})
+          row.markExecutionStarted()
+          this.appendTurnEntry(row)
+        }
+        row.updateResult({ content: toolResult.content ?? [], isError: toolResult.isError === true })
+        if (row.updateDetails && toolResult.details && typeof toolResult.details === 'object') {
+          row.updateDetails(toolResult.details)
+        }
       }
     }
+
+    this.activeTurnTimeline = undefined
   }
 
   private handleModelCommand(searchTerm?: string): void {
@@ -2491,6 +2550,33 @@ export class App {
     })
   }
 
+  private appendTurnEntry(component: Component): void {
+    if (this.activeTurnTimeline) {
+      this.activeTurnTimeline.addEntry(component)
+    } else {
+      this.chatContainer.addChild(component)
+    }
+  }
+
+  private createToolRow(toolCallId: string, toolName: string, args: any): ToolUIComponent {
+    const UIConstructor = getToolUIConstructor(toolName)
+    const component: ToolUIComponent = UIConstructor
+      ? new UIConstructor(toolCallId, args)
+      : new ToolExecutionComponent(toolName, toolCallId, args)
+    component.setExpanded(this.toolDetailsExpanded)
+    this.toolRows.set(toolCallId, component)
+    return component
+  }
+
+  private finishTurn(label?: string): void {
+    if (this.turnFinalized) return
+    this.activeTurnTimeline?.setActivity(undefined)
+    if (label) {
+      this.appendTurnEntry(new Text(theme.fg('muted', label), 1, 0))
+    }
+    this.turnFinalized = true
+  }
+
   private setupAgentSubscription(): void {
     this.agent.subscribe((event: MicrocodeAgentEvent) => {
       const process = () => {
@@ -2500,14 +2586,15 @@ export class App {
           break
 
         case 'agent_start':
-          this.showWorking()
+          this.showWorking('Thinking…')
           break
 
         case 'message_start':
           if (event.message.role === 'assistant') {
             this.streamingComponent = new AssistantMessageComponent(getMarkdownTheme())
             this.streamingMessage = event.message
-            this.chatContainer.addChild(this.streamingComponent)
+            this.appendTurnEntry(this.streamingComponent)
+            this.showWorking('Thinking…')
             this.streamingComponent.updateContent(this.streamingMessage)
             this.ui.requestRender()
           }
@@ -2545,23 +2632,20 @@ export class App {
 
         case 'tool_execution_start': {
           const existing = this.pendingTools.get(event.toolCallId)
-          const UIConstructor = getToolUIConstructor(event.toolName)
-          const component: ToolUIComponent = existing ?? (
-            UIConstructor
-              ? new UIConstructor(event.toolCallId, event.args)
-              : new ToolExecutionComponent(event.toolName, event.toolCallId, event.args)
-          )
+          const alreadyVisible = this.toolRows.has(event.toolCallId)
+          const component: ToolUIComponent = existing ?? this.toolRows.get(event.toolCallId)
+            ?? this.createToolRow(event.toolCallId, event.toolName, event.args)
           component.updateArgs?.(event.args)
-          component.setExpanded(false)
+          component.setExpanded(this.toolDetailsExpanded)
           component.markExecutionStarted()
-          if (!existing) {
-            this.chatContainer.addChild(component)
+          if (!alreadyVisible) {
+            this.appendTurnEntry(component)
           }
           this.pendingTools.set(event.toolCallId, component)
           this.pendingToolStartedAt.set(event.toolCallId, performance.now())
           this.startToolElapsedTimer()
           // Keep the global working indicator alive across the model -> tool handoff.
-          this.showWorking()
+          this.showWorking(`Running ${event.toolName}…`)
           this.commitToolFrame()
           break
         }
@@ -2603,6 +2687,7 @@ export class App {
           this.pendingToolStartedAt.delete(event.toolCallId)
           this.streamingToolLastRenderAt.delete(event.toolCallId)
           this.stopToolElapsedTimerIfIdle()
+          this.showWorking(this.pendingTools.size > 0 ? 'Running tools…' : 'Thinking…')
           this.ui.requestRender()
           break
         }
@@ -2613,23 +2698,26 @@ export class App {
             (event.message.stopReason === 'aborted' || event.message.stopReason === 'error')
           ) {
             this.clearPendingToolState()
+            this.activeTurnTimeline?.setActivity(undefined)
+            const isInterrupted = event.message.stopReason === 'aborted'
+            this.appendTurnEntry(new Text(
+              theme.fg('error', isInterrupted
+                ? 'Interrupted'
+                : `Error: ${event.message.errorMessage || 'Unknown error'}`),
+              1,
+              0,
+            ))
+            this.turnFinalized = true
             this.hideWorking()
           // A streamed tool call may already be pending before tool_execution_start.
           // Do not hide Working during that model -> tool handoff.
           } else if (this.pendingTools.size > 0) {
-            this.showWorking()
+            this.showWorking('Running tools…')
           } else {
             this.hideWorking()
           }
-          if (event.message.role === 'assistant' && event.message.stopReason === 'aborted') {
-            this.chatContainer.addChild(
-              new Text(chalk.hex('#cc6666').bold('\nInterrupted\n'), 1, 0),
-            )
-          } else if (event.message.role === 'assistant' && event.message.stopReason === 'error') {
-            const errMsg = event.message.errorMessage || 'Unknown error'
-            this.chatContainer.addChild(
-              new Text(chalk.hex('#cc6666')(`\nError: ${errMsg}\n`), 1, 0),
-            )
+          if (event.message.role === 'assistant' && event.message.stopReason === 'stop') {
+            this.finishTurn('Completed')
           }
           this.chatContainer.addChild(new Spacer(1))
           // Generate session title from first user message
@@ -2646,6 +2734,7 @@ export class App {
         case 'agent_end':
           if (!this.isAgentBusy()) {
             this.clearPendingToolState()
+            this.finishTurn(this.turnFinalized ? undefined : 'Completed')
             this.hideWorking()
             this.ui.requestRender()
             break
@@ -2653,9 +2742,10 @@ export class App {
           // Some agent implementations emit agent_end for the model turn before
           // executing its requested tools. Pending tools still mean real work remains.
           if (this.pendingTools.size === 0) {
+            this.finishTurn('Completed')
             this.hideWorking()
           } else {
-            this.showWorking()
+            this.showWorking('Running tools…')
           }
           this.ui.requestRender()
           break
@@ -2682,9 +2772,16 @@ export class App {
       this.workingFrameIndex++
       const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
       const frame = frames[Math.floor(this.workingFrameIndex / 2) % frames.length]
-      const label = `${theme.fg('accent', frame)} Working...`
-      if (this.workingText) this.workingText.setText(label)
-      else {
+      const label = `${theme.fg('accent', frame)} ${this.agentActivityLabel}`
+      if (this.activeTurnTimeline) {
+        this.activeTurnTimeline.setActivity(this.pendingTools.size > 0 ? undefined : label)
+        if (this.workingText) {
+          this.workingContainer.removeChild(this.workingText)
+          this.workingText = null
+        }
+      } else if (this.workingText) {
+        this.workingText.setText(label)
+      } else {
         this.workingText = new Text(label, 1, 0)
         this.workingContainer.addChild(this.workingText)
       }
@@ -2704,6 +2801,7 @@ export class App {
       this.workingContainer.removeChild(this.workingText)
       this.workingText = null
     }
+    this.activeTurnTimeline?.setActivity(undefined)
     this.workingFrameIndex = 0
   }
   private updateStreamingToolCall(message: AgentMessage, forceRender: boolean): void {
@@ -2712,20 +2810,16 @@ export class App {
     const toolCalls = message.content.filter((block) => block.type === 'toolCall')
     for (const toolCall of toolCalls) {
       const args = toolCall.arguments ?? {}
-      let component = this.pendingTools.get(toolCall.id)
+      let component = this.pendingTools.get(toolCall.id) ?? this.toolRows.get(toolCall.id)
 
       if (!component) {
-        const UIConstructor = getToolUIConstructor(toolCall.name)
-        component = UIConstructor
-          ? new UIConstructor(toolCall.id, args)
-          : new ToolExecutionComponent(toolCall.name, toolCall.id, args)
-        component.setExpanded(false)
+        component = this.createToolRow(toolCall.id, toolCall.name, args)
         component.markExecutionStarted()
-        this.chatContainer.addChild(component)
+        this.appendTurnEntry(component)
         this.pendingTools.set(toolCall.id, component)
         // The tool is pending as soon as its call starts streaming. Waiting for
         // tool_execution_start creates a visible gap where Working disappears.
-        this.showWorking()
+        this.showWorking('Preparing tool calls…')
       } else {
         component.updateArgs?.(args)
       }
@@ -2893,15 +2987,18 @@ export class App {
     }
   }
 
-  private showWorking(): void {
-    if (this.agentWorking) return
+  private showWorking(label = 'Working…'): void {
+    this.agentActivityLabel = label
     this.agentWorking = true
     this.updateWorkingIndicator()
     this.ui.requestRender()
   }
 
   private hideWorking(): void {
-    if (!this.agentWorking) return
+    if (!this.agentWorking) {
+      this.activeTurnTimeline?.setActivity(undefined)
+      return
+    }
     this.agentWorking = false
     this.updateWorkingIndicator()
     this.ui.requestRender()

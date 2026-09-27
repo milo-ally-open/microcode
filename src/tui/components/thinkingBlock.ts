@@ -1,39 +1,22 @@
-import { Box, Container, Spacer, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
+import { Container, Text } from '@earendil-works/pi-tui'
 import { theme } from '../theme.ts'
 
-/**
- * Component that renders a thinking block with a subtle background.
- * Always displays the full thinking content.
- */
+/** Shows a concise reasoning activity status without rendering raw thinking text. */
 export class ThinkingBlock extends Container {
-  private contentBox: Box
-  private thinking = ''
+  private status: Text
+  private complete?: boolean
 
   constructor() {
     super()
-    this.contentBox = new Box(1, 0, (text: string) => theme.bg('thinkingBg', text))
-    this.addChild(new Spacer(1))
-    this.addChild(this.contentBox)
-    this.updateDisplay()
+    this.status = new Text('', 1, 0)
+    this.addChild(this.status)
+    this.update(false)
   }
 
-  update(thinking: string): void {
-    if (thinking === this.thinking) return
-    this.thinking = thinking
-    this.updateDisplay()
-  }
-
-  private updateDisplay(): void {
-    this.contentBox.clear()
-
-    const header = chalk.hex('#808080').bold('Thinking...')
-    if (!this.thinking) {
-      this.contentBox.addChild(new Text(header, 0, 0))
-      return
-    }
-
-    const content = `${header}\n${chalk.hex('#666666')(this.thinking)}`
-    this.contentBox.addChild(new Text(content, 0, 0))
+  update(complete: boolean): void {
+    if (complete === this.complete && this.status) return
+    this.complete = complete
+    const label = complete ? 'Analysis complete' : 'Analyzing…'
+    this.status.setText(`  ${theme.fg('muted', label)}`)
   }
 }

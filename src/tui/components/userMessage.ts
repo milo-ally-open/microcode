@@ -12,6 +12,7 @@ export class UserMessage extends Container {
   constructor(text: string, images?: ImageContent[]) {
     super()
     this.contentBox = new Box(1, 1, (content: string) => theme.bg('userMessageBg', content))
+    this.contentBox.addChild(new Text(theme.fg('muted', 'You'), 0, 0))
     this.contentBox.addChild(
       new Markdown(text, 0, 0, getMarkdownTheme(), {
         color: (content: string) => theme.fg('text', content),

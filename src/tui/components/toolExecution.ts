@@ -82,21 +82,21 @@ export class ToolExecutionComponent extends Container {
         : chalk.hex('#666666')('○')
 
     const argsStr = this.formatArgs(this.args)
-    const header = `${icon} ${chalk.bold(this.toolName)}${argsStr ? chalk.hex('#666666')(`(${argsStr})`) : ''}`
+    const header = `${icon} ${chalk.bold(this.toolName)}${argsStr ? chalk.hex('#666666')(` · ${argsStr}`) : ''}`
 
     let content: string
     if (this.result) {
       const output = this.getOutputText()
       if (this.executionStarted) {
-        const preview = output
-          ? (this.expanded ? output : output.slice(0, 300).replace(/\n/g, ' '))
-          : formatRunningStatus(this.elapsedMs)
-        content = `${header}\n${chalk.hex('#808080')(preview)}`
+        const preview = output ? this.formatOutput(output) : formatRunningStatus(this.elapsedMs)
+        content = this.expanded
+          ? `${header}\n${chalk.hex('#808080')(preview)}`
+          : `${header} ${chalk.hex('#666666')(preview)}`
       } else if (output.trim()) {
-        const preview = this.expanded
-          ? output
-          : output.slice(0, 300).replace(/\n/g, ' ')
-        content = `${header} ${chalk.hex('#666666')(formatCompletedStatus(this.elapsedMs))}\n${chalk.hex('#808080')(preview)}`
+        const preview = this.formatOutput(output)
+        content = this.expanded
+          ? `${header} ${chalk.hex('#666666')(formatCompletedStatus(this.elapsedMs))}\n${chalk.hex('#808080')(preview)}`
+          : `${header} ${chalk.hex('#666666')(formatCompletedStatus(this.elapsedMs))} · ${chalk.hex('#808080')(preview)}`
       } else {
         content = `${header} ${chalk.hex('#808080')(`completed with no output · ${formatCompletedStatus(this.elapsedMs)}`)}`
       }
@@ -119,13 +119,24 @@ export class ToolExecutionComponent extends Container {
 
   private formatArgs(args: any): string {
     if (!args) return ''
+    if (this.expanded) return JSON.stringify(args, null, 2) ?? ''
     const entries = Object.entries(args)
     if (entries.length === 0) return ''
-    return entries
+    const summary = entries
       .map(([key, value]) => {
-        const val = typeof value === 'string' ? `"${value.slice(0, 50)}"` : String(value)
+        const serialized = JSON.stringify(value)
+        const val = (serialized ?? String(value)).replace(/\s+/g, ' ')
         return `${key}=${val}`
       })
       .join(', ')
+    return summary.length > 112 ? `${summary.slice(0, 109)}…` : summary
+  }
+
+  private formatOutput(output: string): string {
+    if (this.expanded) return output
+    const firstLine = output.split(/\r?\n/).find((line) => line.trim())?.trim() ?? ''
+    const summary = firstLine.replace(/\s+/g, ' ')
+    if (!summary) return ''
+    return summary.length > 120 ? `${summary.slice(0, 117)}…` : summary
   }
 }

@@ -1,6 +1,6 @@
-import { Container, type MarkdownTheme } from '@earendil-works/pi-tui'
+import { Container, Text, type MarkdownTheme } from '@earendil-works/pi-tui'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
-import { getMarkdownTheme } from '../theme.ts'
+import { getMarkdownTheme, theme } from '../theme.ts'
 import { ThinkingBlock } from './thinkingBlock.ts'
 import { Markdown } from './markdown.ts'
 
@@ -14,7 +14,7 @@ export class AssistantMessageComponent extends Container {
   private blockComponents: BlockComponent[] = []
   private markdownTheme: MarkdownTheme
   private lastText = ''
-  private lastThinking = ''
+  private hasText = false
   private lastBlockSignature = ''
 
   constructor(markdownTheme: MarkdownTheme = getMarkdownTheme()) {
@@ -25,9 +25,8 @@ export class AssistantMessageComponent extends Container {
   updateContent(message: AssistantMessage): void {
     const blocks = message.content
     const textBlocks = blocks.filter((c) => c.type === 'text')
-    const thinkingBlocks = blocks.filter((c) => c.type === 'thinking')
     const text = textBlocks.map((c) => c.text).join('')
-    const thinking = thinkingBlocks.map((c) => c.thinking).join('')
+    this.hasText = text.trim().length > 0
 
     // Build a signature that captures block types and whether text blocks have content.
     // This ensures we rebuild when a text block transitions from empty to non-empty
@@ -40,6 +39,7 @@ export class AssistantMessageComponent extends Container {
       this.lastBlockSignature = signature
       this.clear()
       this.blockComponents = []
+      this.addChild(new Text(theme.fg('accent', 'Microcode'), 1, 0))
 
       for (const block of blocks) {
         if (block.type === 'text') {
@@ -48,35 +48,32 @@ export class AssistantMessageComponent extends Container {
           this.blockComponents.push({ type: 'text', component: md })
         } else if (block.type === 'thinking') {
           const tb = new ThinkingBlock()
-          tb.update(block.thinking)
+          tb.update(this.hasText)
           this.addChild(tb)
           this.blockComponents.push({ type: 'thinking', component: tb })
         }
       }
 
       this.lastText = text
-      this.lastThinking = thinking
       return
     }
 
     // Signature unchanged — update the last block's content for streaming
-    if (text !== this.lastText || thinking !== this.lastThinking) {
-      const lastBlock = blocks[blocks.length - 1]
-      const lastComponent = this.blockComponents[this.blockComponents.length - 1]
+    if (text !== this.lastText) {
+      const lastTextBlock = [...blocks].reverse().find((block) => block.type === 'text')
+      const lastTextComponent = [...this.blockComponents]
+        .reverse()
+        .find((block) => block.type === 'text')
 
-      if (lastBlock && lastComponent) {
-        if (lastBlock.type === 'text' && lastComponent.type === 'text' && text !== this.lastText) {
-          const newMd = new Markdown(lastBlock.text.trim() ? lastBlock.text : ' ', 1, 0, this.markdownTheme)
-          this.removeChild(lastComponent.component)
-          this.addChild(newMd)
-          this.blockComponents[this.blockComponents.length - 1] = { type: 'text', component: newMd }
-        } else if (lastBlock.type === 'thinking' && lastComponent.type === 'thinking' && thinking !== this.lastThinking) {
-          lastComponent.component.update(lastBlock.thinking)
-        }
+      if (lastTextBlock?.type === 'text' && lastTextComponent?.type === 'text') {
+        lastTextComponent.component.setText(lastTextBlock.text.trim() ? lastTextBlock.text : ' ')
       }
 
       this.lastText = text
-      this.lastThinking = thinking
+    }
+
+    for (const blockComponent of this.blockComponents) {
+      if (blockComponent.type === 'thinking') blockComponent.component.update(this.hasText)
     }
   }
 
