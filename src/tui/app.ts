@@ -36,6 +36,7 @@ import {
   storeImage,
   type CachedImage,
 } from '../utils/imageUtils.ts'
+import { readClipboardImage } from '../utils/clipboardImage.ts'
 import { existsSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import type { McpClientManager } from '../mcp/client.ts'
@@ -54,6 +55,7 @@ import type { Skill } from '../skill/skill.ts'
 import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
 import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
+import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, listWorkspaceFiles } from './workspaceFiles.ts'
 
 
 
@@ -192,6 +194,7 @@ export class App {
   private bashCancelRequested = false
   private startupWarnings: string[] = []
   private pendingImages: CachedImage[] = []
+  private workspaceFileIndex?: Promise<string[]>
   private imagePathProcessing = false
   private suppressTrailingQuote = false
   private titleGenerated = false
@@ -317,10 +320,11 @@ export class App {
       this.ui.requestRender()
 
       try {
+        const promptInput = await this.addMentionedFileContext(userInput)
         if (images.length > 0) {
-          await this.agent.prompt(userInput, images)
+          await this.agent.prompt(promptInput, images)
         } else {
-          await this.agent.prompt(userInput)
+          await this.agent.prompt(promptInput)
         }
         this.clearPendingImages()
       } catch (error: unknown) {
@@ -463,6 +467,9 @@ export class App {
       for (const row of this.toolRows.values()) row.setExpanded(this.toolDetailsExpanded)
       this.ui.requestRender()
     }
+    this.editor.onPasteImage = () => {
+      void this.pasteClipboardImage()
+    }
 
     this.ui.addInputListener((data) => {
       return undefined
@@ -493,6 +500,28 @@ export class App {
       ) => {
         const currentLine = lines[cursorLine] ?? ''
         const textBeforeCursor = currentLine.slice(0, cursorCol)
+
+        const atIndex = textBeforeCursor.lastIndexOf('@')
+        const atPrefix = atIndex >= 0 ? textBeforeCursor.slice(atIndex) : ''
+        const isFileMention = atPrefix.startsWith('@') &&
+          (atIndex === 0 || /[\s([{]/.test(textBeforeCursor[atIndex - 1] ?? ''))
+        if (isFileMention) {
+          const query = atPrefix.startsWith('@"')
+            ? atPrefix.slice(2).toLowerCase()
+            : atPrefix.slice(1).toLowerCase()
+          this.workspaceFileIndex ??= listWorkspaceFiles(this.agent.getSnapshot().cwd)
+          const files = await this.workspaceFileIndex
+          const matches = filterWorkspaceFiles(files, query).slice(0, 100)
+          if (matches.length === 0) return null
+          return {
+            items: matches.map((path) => ({
+              value: formatFileMention(path),
+              label: path,
+              description: 'Workspace file',
+            })),
+            prefix: atPrefix,
+          }
+        }
 
         if (!textBeforeCursor.startsWith('/')) return null
 
@@ -533,6 +562,9 @@ export class App {
         _prefix: string,
       ) => {
         const newLines = [...lines]
+        if (_prefix.startsWith('@')) {
+          return applyWorkspaceFileCompletion(lines, cursorLine, _cursorCol, _prefix, item.label)
+        }
         newLines[cursorLine] = item.value + ' '
         return {
           lines: newLines,
@@ -543,6 +575,54 @@ export class App {
     }
 
     this.editor.setAutocompleteProvider(provider)
+  }
+
+  private async addMentionedFileContext(input: string): Promise<string> {
+    const cwd = this.agent.getSnapshot().cwd
+    this.workspaceFileIndex ??= listWorkspaceFiles(cwd)
+    const indexedFiles = new Set(await this.workspaceFileIndex)
+    return buildWorkspaceFileContext(cwd, input, indexedFiles, async (path) => {
+      const permissionInput = { file_path: resolve(cwd, path) }
+      const permission = this.agent.checkPermission(READ_TOOL_NAME, permissionInput)
+      if (!permission.allowed) {
+        if (permission.reason !== 'ask') return false
+        if (!await this.agent.requestToolPermission(
+          READ_TOOL_NAME,
+          permissionInput,
+          `Read workspace file ${path} as context for this message`,
+        )) {
+          return false
+        }
+      }
+      return true
+    })
+  }
+
+  private async pasteClipboardImage(): Promise<void> {
+    const image = await readClipboardImage()
+    if (!image) {
+      this.showStatus('Clipboard has no supported image, or image clipboard access is unavailable.')
+      return
+    }
+    if (!modelSupportsImages(this.agent.getCurrentModel())) {
+      this.showStatus('Current model does not support image input. Switch to a vision-capable model.')
+      return
+    }
+    const sessionId = this.sessionManager.getSessionId() ?? 'unknown'
+    const stored = storeImage(image.data, image.mimeType, sessionId)
+    const cached: CachedImage = {
+      cachePath: stored.cachePath,
+      fileName: stored.fileName,
+      mimeType: image.mimeType,
+      base64Data: image.data,
+    }
+    this.pendingImages.push(cached)
+    this.imagePathProcessing = true
+    const currentText = this.editor.getText()
+    const marker = `[Image: ${cached.fileName}]`
+    this.editor.setText(currentText ? `${currentText} ${marker}` : marker)
+    this.imagePathProcessing = false
+    this.showStatus(`Added clipboard image ${cached.fileName}.`)
   }
 
   private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
@@ -2638,6 +2718,8 @@ export class App {
       `  ${theme.bold('Shift+Enter')}         New line in editor`,
       `  ${theme.bold('Up/Down')}             Browse command history`,
       `  ${theme.bold('Tab')}                 Accept autocomplete suggestion`,
+      `  ${theme.bold('@')}                   Search and attach workspace files`,
+      `  ${theme.bold('Ctrl+V / Shift+Insert')} Paste clipboard image`,
       '',
       `${theme.fg('accent', 'Environment Variables:')}`,
       '',

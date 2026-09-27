@@ -12,6 +12,15 @@ export const TOOL_DEFAULT_PERMISSION: PermissionBehavior = 'allow'
 export const LARGE_FILE_WARNING_BYTES = 50 * 1024 * 1024
 const STREAMING_FILE_BYTES = 200 * 1024 * 1024
 const DEFAULT_LIMIT = 2000
+export const MENTION_FILE_MAX_BYTES = 64 * 1024
+const TEXT_EXTENSIONS = new Set([
+  'c', 'cc', 'cfg', 'conf', 'cpp', 'cs', 'css', 'csv', 'go', 'h', 'hpp', 'html', 'ini', 'java',
+  'js', 'jsx', 'json', 'kt', 'log', 'md', 'mdx', 'mjs', 'mts', 'php', 'py', 'rb', 'rs', 'sh',
+  'sql', 'svelte', 'swift', 'toml', 'ts', 'tsx', 'txt', 'vue', 'xml', 'yaml', 'yml', 'zsh',
+])
+const TEXT_BASENAMES = new Set([
+  '.dockerignore', '.editorconfig', '.env', '.gitignore', 'dockerfile', 'makefile', 'readme',
+])
 
 const readSchema = Type.Object({
   file_path: Type.String({ description: 'Path to the file to read (relative or absolute)' }),
@@ -43,17 +52,81 @@ function addLineNumbers(lines: readonly string[], startLine: number): string {
     .join('\n')
 }
 
+function hasTextExtension(filePath: string): boolean {
+  const baseName = filePath.split(/[\\/]/).at(-1)?.toLowerCase() ?? ''
+  const extension = baseName.includes('.') ? baseName.split('.').at(-1) ?? '' : ''
+  return TEXT_BASENAMES.has(baseName) || TEXT_EXTENSIONS.has(extension)
+}
+
+export function supportsMentionedTextFile(filePath: string): boolean {
+  return hasTextExtension(filePath)
+}
+
+function decodeTextBytes(bytes: Uint8Array, streaming = false): string | undefined {
+  if (bytes.includes(0)) return undefined
+  const sample = Buffer.from(bytes.subarray(0, 1024)).toString('latin1')
+  const prefix = sample.slice(0, 16)
+  if (
+    /^\s*%PDF-/.test(sample) || prefix.startsWith('PK\x03\x04') || prefix.startsWith('PK\x05\x06') ||
+    prefix.startsWith('PK\x07\x08') || prefix.startsWith('\x7fELF') || prefix.startsWith('SQLite format 3') ||
+    prefix.startsWith('\x1f\x8b') || prefix.startsWith('\xd0\xcf\x11\xe0') || prefix.startsWith('7z\xbc\xaf\x27\x1c') ||
+    prefix.startsWith('Rar!') || prefix.startsWith('\x89PNG\r\n\x1a\n') || prefix.startsWith('\xff\xd8\xff') ||
+    prefix.startsWith('GIF8') || prefix.startsWith('RIFF') || prefix.startsWith('BM')
+  ) return undefined
+  for (const byte of bytes) {
+    if (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) return undefined
+    if (byte === 0x7f) return undefined
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: streaming })
+  } catch {
+    return undefined
+  }
+}
+
 async function assertTextFile(filePath: string): Promise<void> {
+  if (!hasTextExtension(filePath)) {
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)
+    const tip = isImage ? ' Use the vision tool to analyze image files.' : ''
+    throw new Error(`Cannot read binary file or unsupported format: ${filePath}.${tip}`)
+  }
   const handle = await open(filePath, 'r')
   try {
     const sample = Buffer.alloc(512)
     const { bytesRead } = await handle.read(sample, 0, sample.length, 0)
-    if (!sample.subarray(0, bytesRead).includes(0)) return
-
+    if (decodeTextBytes(sample.subarray(0, bytesRead), true) !== undefined) return
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)
     const tip = isImage ? ' Use the vision tool to analyze image files.' : ''
-    throw new Error(`Cannot read binary file: ${filePath}.${tip}`)
+    throw new Error(`Cannot read binary or invalid text file: ${filePath}.${tip}`)
+  } finally {
+    await handle.close()
+  }
+}
+
+/** Safely read a bounded prefix for explicit @file context; unsupported/invalid formats return undefined. */
+export async function readMentionedTextFile(
+  cwd: string,
+  relativePath: string,
+  maxBytes = MENTION_FILE_MAX_BYTES,
+): Promise<{ content: string; truncated: boolean } | undefined> {
+  if (!hasTextExtension(relativePath)) return undefined
+  const filePath = resolve(cwd, relativePath)
+  const relativePathCheck = filePath.slice(resolve(cwd).length).replace(/^[\\/]/, '')
+  if (!relativePathCheck || relativePathCheck.startsWith('..') || isAbsolute(relativePathCheck)) return undefined
+  await access(filePath, constants.R_OK)
+  const fileStat = await stat(filePath)
+  if (!fileStat.isFile()) return undefined
+  const handle = await open(filePath, 'r')
+  try {
+    const bytes = Buffer.alloc(Math.max(1, maxBytes) + 1)
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0)
+    const truncated = bytesRead > maxBytes || fileStat.size > maxBytes
+    const visibleBytes = bytes.subarray(0, Math.min(bytesRead, maxBytes))
+    if (decodeTextBytes(visibleBytes, truncated) === undefined) return undefined
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(visibleBytes, { stream: truncated })
+    return { content, truncated }
   } finally {
     await handle.close()
   }

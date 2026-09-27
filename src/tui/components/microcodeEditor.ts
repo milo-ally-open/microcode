@@ -10,12 +10,20 @@ export class MicrocodeEditor extends Editor {
   public onCtrlC?: () => void
   public onCtrlD?: () => void
   public onCtrlO?: () => void
+  public onPasteImage?: () => void
 
   constructor(tui: TUI, theme: EditorTheme, options?: EditorOptions) {
     super(tui, theme, options)
   }
 
   handleInput(data: string): void {
+    // Ctrl+V and Shift+Insert are common terminal clipboard paste shortcuts.
+    // Image-only clipboard data has no text sequence for the Editor to paste.
+    if (data === '\x16' || data === '\x1b[2~' || data === '\x1b[2;2~') {
+      this.onPasteImage?.()
+      return
+    }
+
     // Escape — only if autocomplete is NOT active
     if (data === '\x1b') {
       if (!this.isShowingAutocomplete()) {
