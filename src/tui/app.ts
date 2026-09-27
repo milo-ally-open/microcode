@@ -224,6 +224,8 @@ export class App {
     this.sessionManager = sessionManager ?? new SessionManager()
     this.agent.setPersistence(this.sessionManager)
     this.ui = new TUI(new ProcessTerminal())
+    // Clear stale rows when a long injected prompt disappears; otherwise Windows consoles can retain it below the footer.
+    this.ui.setClearOnShrink(true)
     this.headerContainer = new Container()
     this.chatContainer = new Container()
     this.statusContainer = new Container()
