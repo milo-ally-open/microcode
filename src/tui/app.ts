@@ -44,6 +44,7 @@ import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.
 import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
 import { TOOL_NAME as EDIT_TOOL_NAME } from '../tools/FileEditTool/FileEditTool.ts'
 import { SessionManager } from '../session/SessionManager.ts'
+import { exportSessionJsonl } from '../session/exportSession.ts'
 import type { MicrocodeAgent, MicrocodeAgentEvent } from '../agent/index.ts'
 import type { Skill } from '../skill/skill.ts'
 import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
@@ -141,6 +142,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'thinking', description: 'Show or set thinking depth (usage: /thinking [level])', argumentHint: '[off|minimal|low|medium|high|xhigh|max]' },
   { name: 'mcp', description: 'Show MCP servers', argumentHint: '' },
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
+  { name: 'export', description: 'Export the current conversation JSONL into .microcode/' },
   { name: 'tasks', description: 'Browse tasks and prioritize unfinished work in the current session', argumentHint: '' },
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
@@ -708,6 +710,10 @@ export class App {
         this.handleSessionCommand(args)
         return true
 
+      case '/export':
+        void this.handleExportCommand()
+        return true
+
       case '/tasks':
         this.handleTasksCommand()
         return true
@@ -749,6 +755,22 @@ export class App {
         this.showError(`Unknown command: ${command}. Type /help for available commands.`)
         return true
       }
+    }
+  }
+
+  private async handleExportCommand(): Promise<void> {
+    try {
+      await this.agent.persistMessages()
+      const metadata = this.sessionManager.getMetadata()
+      if (!metadata) {
+        this.showError('There is no saved conversation to export yet.')
+        return
+      }
+
+      const destinationPath = await exportSessionJsonl(metadata.path, process.cwd())
+      this.showStatus(`Conversation exported to ${destinationPath}`)
+    } catch (error) {
+      this.showError(`Could not export conversation: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 

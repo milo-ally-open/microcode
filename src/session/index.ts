@@ -3,3 +3,4 @@ export { CompactionManager, type CompactionProgress } from './CompactionManager.
 export { estimateTokens, estimateMessagesTokens } from './TokenEstimator.ts'
 export { getCompactPrompt, formatCompactSummary, getCompactUserSummaryMessage } from './compactPrompt.ts'
 export { NodeFileSystem } from './NodeFileSystem.ts'
+export { exportSessionJsonl } from './exportSession.ts'
