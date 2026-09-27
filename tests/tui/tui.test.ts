@@ -8,6 +8,7 @@ import { SelectList, Text } from '@earendil-works/pi-tui'
 import { MicrocodeEditor } from '../../src/tui/components/microcodeEditor.ts'
 import { getEditorTheme } from '../../src/tui/theme.ts'
 import { createSessionTitle, firstSentence, normalizeSessionTitle } from '../../src/tui/sessionTitle.ts'
+import { parseBashInput } from '../../src/tui/bashInput.ts'
 
 describe('tui modules', () => {
   test('theme helpers return styled strings and editor/markdown contracts', () => {
@@ -49,6 +50,13 @@ describe('tui modules', () => {
     })
     expect(Array.from(fallback)).toHaveLength(60)
     expect(fallback.endsWith('...')).toBe(true)
+  })
+
+  test('bash input distinguishes normal, excluded, empty, and ordinary prompts', () => {
+    expect(parseBashInput('! pwd')).toEqual({ command: 'pwd', excludeFromContext: false })
+    expect(parseBashInput('!! git status')).toEqual({ command: 'git status', excludeFromContext: true })
+    expect(parseBashInput('!')).toEqual({ command: '', excludeFromContext: false })
+    expect(parseBashInput('hello')).toBeNull()
   })
 
   test('jsx factory creates intrinsic and functional components', () => {

@@ -23,6 +23,7 @@ import { FooterComponent } from './components/footer.ts'
 import { AssistantMessageComponent } from './components/assistantMessage.ts'
 import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
+import { parseBashInput } from './bashInput.ts'
 import { getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
 import { UserMessage } from './components/userMessage.ts'
 import { TurnTimeline } from './components/turnTimeline.ts'
@@ -279,14 +280,13 @@ export class App {
       if (!rawInput.trim()) continue
 
       // Handle bash commands (! for normal, !! for excluded from context)
-      if (rawInput.startsWith('!')) {
-        const isExcluded = rawInput.startsWith('!!')
-        const command = isExcluded ? rawInput.slice(2).trim() : rawInput.slice(1).trim()
-        if (command) {
-          await this.handleBashCommand(command, isExcluded)
+      const bashInput = parseBashInput(rawInput)
+      if (bashInput) {
+        if (bashInput.command) {
+          await this.handleBashCommand(bashInput.command, bashInput.excludeFromContext)
           this.isBashMode = false
-          continue
         }
+        continue
       }
 
       // Handle slash commands locally
@@ -3081,7 +3081,17 @@ export class App {
         return
       }
       if (text.startsWith('!')) {
-        this.showStatus('Agent is busy — press Esc or Ctrl+C to cancel, then run the command.')
+        const bashInput = parseBashInput(text)
+        if (!bashInput?.command) {
+          this.showStatus('Enter a terminal command after !.')
+          return
+        }
+        if (this.bashComponent || this.activeBashProcess) {
+          this.showStatus('A terminal command is already running. Wait for it to finish before starting another.')
+          return
+        }
+        this.isBashMode = false
+        void this.handleBashCommand(bashInput.command, bashInput.excludeFromContext)
         return
       }
       this.showStatus(
