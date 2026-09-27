@@ -1,4 +1,4 @@
-import { Box, Container, Spacer, Text } from '@earendil-works/pi-tui'
+import { Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../theme.ts'
 import {
@@ -13,7 +13,7 @@ interface ToolResult {
 }
 
 /**
- * Component that renders a tool execution with grey/green/red background (matching pi-coding-agent).
+ * Component that renders a compact tool activity row without a status panel.
  */
 export class ToolExecutionComponent extends Container {
   private toolName: string
@@ -22,16 +22,15 @@ export class ToolExecutionComponent extends Container {
   private executionStarted = false
   private elapsedMs = 0
   private result?: ToolResult
-  private contentBox: Box
+  private content: Text
 
   constructor(toolName: string, _toolCallId: string, args: any) {
     super()
     this.toolName = toolName
     this.args = args
 
-    this.contentBox = new Box(1, 1, (text: string) => theme.bg('toolPendingBg', text))
-    this.addChild(new Spacer(1))
-    this.addChild(this.contentBox)
+    this.content = new Text('')
+    this.addChild(this.content)
     this.updateDisplay()
   }
 
@@ -64,15 +63,6 @@ export class ToolExecutionComponent extends Container {
   }
 
   private updateDisplay(): void {
-    // Update background color based on state
-    const bgFn = this.result
-      ? this.result.isError
-        ? (text: string) => theme.bg('toolErrorBg', text)
-        : (text: string) => theme.bg('toolSuccessBg', text)
-      : (text: string) => theme.bg('toolPendingBg', text)
-
-    this.contentBox.setBgFn(bgFn)
-
     const icon = this.result
       ? this.result.isError
         ? chalk.hex('#cc6666')('✗')
@@ -104,9 +94,7 @@ export class ToolExecutionComponent extends Container {
       content = `${header} ${chalk.hex('#666666')(formatRunningStatus(this.elapsedMs))}`
     }
 
-    // Replace content in box
-    this.contentBox.clear()
-    this.contentBox.addChild(new Text(content, 0, 0))
+    this.content.setText(content)
   }
 
   private getOutputText(): string {

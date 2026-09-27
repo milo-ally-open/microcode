@@ -27,7 +27,7 @@ export class BashToolUI extends Container implements ToolUIComponent {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(1, 0, (text: string) => theme.bg('toolPendingBg', text))
+    this.contentBox = new Box(1, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -66,13 +66,6 @@ export class BashToolUI extends Container implements ToolUIComponent {
   }
 
   private rebuild(): void {
-    const bgFn = this.result && !this.executionStarted
-      ? this.result.isError
-        ? (text: string) => theme.bg('toolErrorBg', text)
-        : (text: string) => theme.bg('toolSuccessBg', text)
-      : (text: string) => theme.bg('toolPendingBg', text)
-    this.contentBox.setBgFn(bgFn)
-
     const icon = this.result && !this.executionStarted
       ? this.result.isError
         ? theme.fg('error', '✗')   // ✗

@@ -12,13 +12,6 @@ const COLORS = {
   text: '#d4d4d4',
   gray: '#808080',
   dimGray: '#666666',
-  darkGray: '#505050',
-  // Background colors
-  userMsgBg: '#343541',
-  toolPendingBg: '#282832',
-  toolSuccessBg: '#283228',
-  toolErrorBg: '#3c2828',
-  thinkingBg: '#2a2a30',
 }
 
 export const theme = {
@@ -31,16 +24,6 @@ export const theme = {
       case 'warning': return chalk.hex(COLORS.yellow)(text)
       case 'success': return chalk.hex(COLORS.green)(text)
       case 'text': return chalk.hex(COLORS.text)(text)
-      default: return text
-    }
-  },
-  bg: (color: string, text: string) => {
-    switch (color) {
-      case 'userMessageBg': return chalk.bgHex(COLORS.userMsgBg)(text)
-      case 'toolPendingBg': return chalk.bgHex(COLORS.toolPendingBg)(text)
-      case 'toolSuccessBg': return chalk.bgHex(COLORS.toolSuccessBg)(text)
-      case 'toolErrorBg': return chalk.bgHex(COLORS.toolErrorBg)(text)
-      case 'thinkingBg': return chalk.bgHex(COLORS.thinkingBg)(text)
       default: return text
     }
   },

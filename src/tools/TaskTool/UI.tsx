@@ -24,7 +24,7 @@ export class TaskToolUI extends Container implements ToolUIComponent {
   constructor(_toolCallId: string, args: any) {
     super()
     this.args = args
-    this.contentBox = new Box(2, 1, (text: string) => theme.bg('thinkingBg', text))
+    this.contentBox = new Box(2, 0)
     this.addChild(this.contentBox)
     this.rebuild()
   }
@@ -62,7 +62,6 @@ export class TaskToolUI extends Container implements ToolUIComponent {
       return
     }
 
-    this.contentBox.setBgFn((text: string) => theme.bg('thinkingBg', text))
 
     const action = this.details?.action ?? this.args?.action
     const list = this.details?.list
@@ -117,7 +116,6 @@ export class TaskToolUI extends Container implements ToolUIComponent {
   }
 
   private renderError(): void {
-    this.contentBox.setBgFn((text: string) => theme.bg('toolErrorBg', text))
     this.contentBox.addChild(
       new Text([
         `${theme.fg('error', '!')} ${chalk.bold('Tasks')}  ${theme.fg('error', 'Could not update task list')}`,
