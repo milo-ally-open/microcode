@@ -25,7 +25,7 @@ describe('models and config modules', () => {
     const current = getModelConfig()
 
     expect(current.model.id).toBe('gemini-2.5-flash')
-    expect(current.provider).toBe('google')
+    expect(current.model.provider).toBe('google')
   })
 
   test('custom model conversion preserves capabilities and explicit key env', () => {
