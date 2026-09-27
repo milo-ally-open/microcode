@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { Fragment, h, jsx, jsxs } from '../../src/tui/jsxFactory.ts'
-import { PermissionPromptOverlay } from '../../src/tui/components/permissionPrompt.ts'
+import { InlineSelectPrompt } from '../../src/tui/components/inlineSelectPrompt.ts'
 import { getBashModeBorderColor, getEditorTheme, getMarkdownTheme, theme } from '../../src/tui/theme.ts'
 import { countContentLines, formatBytes, formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../src/tui/toolPresentation.ts'
 import { SelectList } from '@earendil-works/pi-tui'
@@ -35,7 +35,7 @@ describe('tui modules', () => {
     expect(jsxs).toBe(h)
   })
 
-  test('permission prompt renders as a standalone selectable overlay', () => {
+  test('inline select prompt stays in the turn and becomes a result after selection', () => {
     const choices = new SelectList([{ value: 'allow', label: 'Allow' }], 1, {
       selectedPrefix: (text) => text,
       selectedText: (text) => text,
@@ -43,9 +43,15 @@ describe('tui modules', () => {
       scrollInfo: (text) => text,
       noMatch: (text) => text,
     })
-    const overlay = new PermissionPromptOverlay('Permission requested: run command?', choices)
+    const prompt = new InlineSelectPrompt('Question: What should I do?', choices)
 
-    expect(overlay.render(80).join('\n')).toContain('Permission requested: run command?')
-    expect(overlay.render(80).join('\n')).toContain('Allow')
+    expect(prompt.render(80).join('\n')).toContain('Question: What should I do?')
+    expect(prompt.render(80).join('\n')).toContain('Allow')
+
+    prompt.complete('selected answer')
+    expect(prompt.render(80).join('\n')).toContain('selected answer')
+    prompt.complete('answer')
+    expect(prompt.render(80).join('\n')).toContain('answer')
+    expect(prompt.render(80).join('\n')).not.toContain('Allow')
   })
 })

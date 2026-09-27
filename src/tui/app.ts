@@ -25,7 +25,7 @@ import { BashExecutionComponent } from './components/bashExecution.ts'
 import { getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
 import { UserMessage } from './components/userMessage.ts'
 import { TurnTimeline } from './components/turnTimeline.ts'
-import { PermissionPromptOverlay } from './components/permissionPrompt.ts'
+import { InlineSelectPrompt } from './components/inlineSelectPrompt.ts'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import { modelSupportsImages } from '../models/index.ts'
 import {
@@ -2244,11 +2244,12 @@ export class App {
         noMatch: (text) => theme.dim(text),
       })
 
-      // Show question header and the select list
+      // Keep the question at the end of the active turn so subsequent output
+      // appears below it instead of inserting controls into the chat history.
       const headerLabel = theme.fg('accent', `${q.header}:`)
-      this.chatContainer.addChild(new Text(`${headerLabel} ${q.question}`, 1, 0))
-      this.chatContainer.addChild(selectList)
-      this.ui.setFocus(selectList)
+      const prompt = new InlineSelectPrompt(`${headerLabel} ${q.question}`, selectList)
+      this.appendTurnEntry(prompt, 'status')
+      this.ui.setFocus(prompt)
       this.ui.requestRender()
 
       let finished = false
@@ -2258,8 +2259,7 @@ export class App {
           finished = true
           removeListener()
           this.permissionPromptActive = false
-          this.chatContainer.removeChild(selectList)
-          this.chatContainer.addChild(new Spacer(1))
+          prompt.complete(theme.dim('Cancelled'))
           this.ui.setFocus(this.editor)
           this.ui.requestRender()
           this.flushPendingEventsWhilePermission()
@@ -2274,33 +2274,31 @@ export class App {
         finished = true
         removeListener()
         this.permissionPromptActive = false
-        this.chatContainer.removeChild(selectList)
+        if (value === '__other__') {
+          prompt.complete(theme.dim('Type your answer and press Enter:'))
+        } else if (value === undefined) {
+          prompt.complete(theme.dim('Cancelled'))
+        } else {
+          prompt.complete(`  ${chalk.cyan(value)}`)
+        }
         this.flushPendingEventsWhilePermission()
 
         if (value === '__other__') {
-          // Show "Other" prompt — let user type free-text
-          this.chatContainer.addChild(
-            new Text(theme.dim('Type your answer and press Enter:'), 1, 0),
-          )
           this.ui.setFocus(this.editor)
           this.ui.requestRender()
 
           // Wait for user to type in the editor
           void this.getUserInput().then((text) => {
             const trimmed = text.trim()
-            this.chatContainer.addChild(new Text(`  ${chalk.cyan(trimmed)}`, 1, 0))
-            this.chatContainer.addChild(new Spacer(1))
+            prompt.complete(`  ${chalk.cyan(trimmed)}`)
+            this.showWorking()
+            this.ui.setFocus(this.editor)
             this.ui.requestRender()
             resolve(trimmed || undefined)
           })
           return
         }
 
-        // Show selected answer
-        this.chatContainer.addChild(
-          new Text(`  ${chalk.cyan(value ?? '')}`, 1, 0),
-        )
-        this.chatContainer.addChild(new Spacer(1))
         this.showWorking()
         this.ui.setFocus(this.editor)
         this.ui.requestRender()
@@ -2313,7 +2311,7 @@ export class App {
   }
 
   /**
-   * Prompt user for tool permission in an overlay without changing chat history layout.
+   * Prompt user for tool permission at the end of the active turn timeline.
    * Returns true if approved, false if denied.
    */
   async promptPermission(
@@ -2346,10 +2344,9 @@ export class App {
       })
 
       const permLabel = theme.fg('accent', 'Permission requested:')
-      const overlay = this.ui.showOverlay(
-        new PermissionPromptOverlay(`${permLabel} ${description}`, selectList),
-        { anchor: 'center', width: '90%', maxHeight: '50%', margin: 1 },
-      )
+      const prompt = new InlineSelectPrompt(`${permLabel} ${description}`, selectList)
+      this.appendTurnEntry(prompt, 'status')
+      this.ui.setFocus(prompt)
       this.ui.requestRender()
 
       // Intercept Ctrl+C before it reaches SelectList — exit app instead of deny
@@ -2359,7 +2356,7 @@ export class App {
           finished = true
           removeListener()
           this.permissionPromptActive = false
-          overlay.hide()
+          prompt.complete(chalk.red('✗ Denied'))
           this.flushPendingEventsWhilePermission()
           this.exit()
           return { consume: true }
@@ -2372,7 +2369,7 @@ export class App {
         finished = true
         removeListener()
         this.permissionPromptActive = false
-        overlay.hide()
+        prompt.complete(approved ? chalk.green('✓ Approved') : chalk.red('✗ Denied'))
         this.flushPendingEventsWhilePermission()
         // Start timing from approval, when execution is allowed to continue.
         if (approved) {
