@@ -35,3 +35,6 @@ bun.lockb
 .agents
 .codex
 .microcode
+
+# playwright-cli 
+.playwright-cli/
