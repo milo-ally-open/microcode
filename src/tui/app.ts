@@ -14,6 +14,7 @@ import {
   type SlashCommand,
 } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
+import { createTwoFilesPatch } from 'diff'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
 import { getAllModels, getModels, resolveApiKey } from '../models/index.ts'
 import { theme, getEditorTheme, getMarkdownTheme, getBashModeBorderColor } from './theme.ts'
@@ -36,7 +37,6 @@ import {
   type CachedImage,
 } from '../utils/imageUtils.ts'
 import { existsSync } from 'fs'
-import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'path'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
@@ -46,7 +46,9 @@ import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTo
 import { TOOL_NAME as EDIT_TOOL_NAME } from '../tools/FileEditTool/FileEditTool.ts'
 import { SessionManager } from '../session/SessionManager.ts'
 import { exportSessionJsonl } from '../session/exportSession.ts'
-import { buildInitTaskPrompt, loadProjectInstructions } from '../instructions/projectInstructions.ts'
+import { DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES, loadProjectInstructions } from '../instructions/projectInstructions.ts'
+import { buildInitTaskPrompt, extractInitDraft, getInitProjectFileOutline } from '../instructions/initProjectGuidance.ts'
+import { readMicroFile, writeMicroFile, type MicroFileSnapshot } from '../instructions/writeMicroFile.ts'
 import type { MicrocodeAgent, MicrocodeAgentEvent } from '../agent/index.ts'
 import type { Skill } from '../skill/skill.ts'
 import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
@@ -146,7 +148,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
   { name: 'export', description: 'Export the current conversation JSONL into .microcode/' },
   { name: 'init', description: 'Analyze the project and create or update MICRO.md' },
-  { name: 'instructions', description: 'Show project instruction files loaded by Microcode' },
+  { name: 'instructions', description: 'Show or reload project instruction files', argumentHint: '[reload]' },
   { name: 'tasks', description: 'Browse tasks and prioritize unfinished work in the current session', argumentHint: '' },
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
@@ -723,7 +725,7 @@ export class App {
         return true
 
       case '/instructions':
-        this.handleInstructionsCommand()
+        void this.handleInstructionsCommand(args)
         return true
 
       case '/tasks':
@@ -793,15 +795,20 @@ export class App {
     }
 
     const cwd = process.cwd()
-    const targetPath = resolve(cwd, 'MICRO.md')
-    let before: string | undefined
+    let before: MicroFileSnapshot
     try {
-      before = await readFile(targetPath, 'utf8')
+      before = await readMicroFile(cwd)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        this.showError(`Could not read ${targetPath}: ${error instanceof Error ? error.message : String(error)}`)
-        return
-      }
+      this.showError(`Could not read MICRO.md: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    const targetPath = before.path
+    let fileOutline: string[]
+    try {
+      fileOutline = await getInitProjectFileOutline(cwd)
+    } catch (error) {
+      this.showError(`Could not inspect project layout: ${error instanceof Error ? error.message : String(error)}`)
+      return
     }
 
     const timeline = new TurnTimeline()
@@ -811,33 +818,115 @@ export class App {
     this.turnFinalized = false
     this.ui.requestRender()
 
+    const messageCountBeforeInit = this.agent.getMessages().length
     let promptError: unknown
     try {
-      await this.agent.prompt(buildInitTaskPrompt(cwd))
+      await this.agent.promptReadOnly(buildInitTaskPrompt(cwd, fileOutline))
     } catch (error) {
       promptError = error
     }
 
+    if (promptError) {
+      this.showError(`Project initialization failed: ${promptError instanceof Error ? promptError.message : String(promptError)}`)
+      return
+    }
+
     try {
-      const after = await readFile(targetPath, 'utf8').catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-        throw error
-      })
-      const instructions = await loadProjectInstructions(cwd)
-      this.agent.updateProjectInstructions(instructions)
-      if (promptError) {
-        this.showError(`Project initialization failed: ${promptError instanceof Error ? promptError.message : String(promptError)}`)
+      const latestAssistant = this.agent.getMessages().slice(messageCountBeforeInit).reverse()
+        .find((message): message is AssistantMessage => message.role === 'assistant')
+      const response = latestAssistant?.content
+        .reduce((text, block) => block.type === 'text' ? `${text}${block.text}\n` : text, '') ?? ''
+      const proposal = extractInitDraft(response)
+      if (proposal === undefined) {
+        this.showError('The project analysis did not return a complete MICRO.md proposal. No files were changed.')
         return
       }
-      this.showStatus(after !== undefined && after !== before
-        ? `Project instructions saved to ${targetPath} and reloaded.`
-        : 'No changes were made to MICRO.md.')
+      if (Buffer.byteLength(proposal, 'utf8') > DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES) {
+        this.showError(`The MICRO.md proposal exceeds the ${DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES}-byte project instruction limit. Ask for a shorter proposal.`)
+        return
+      }
+      if (proposal === before.content) {
+        this.showStatus('MICRO.md already matches the proposed project guidance.')
+        return
+      }
+
+      const proposalDiff = createTwoFilesPatch(
+        targetPath,
+        targetPath,
+        before.content ?? '',
+        proposal,
+        'current',
+        'proposed',
+      )
+      this.chatContainer.addChild(new Spacer(1))
+      this.chatContainer.addChild(new Text(proposalDiff, 1, 0))
+      this.ui.requestRender()
+
+      const decision = await this.selectAuthOption(`Apply the proposed ${targetPath}?`, [
+        { value: 'apply', label: 'Apply MICRO.md', description: 'Write the reviewed proposal to this file' },
+        { value: 'cancel', label: 'Cancel', description: 'Leave MICRO.md unchanged' },
+      ])
+      if (decision !== 'apply') {
+        this.showStatus('MICRO.md update cancelled. No files were changed.')
+        return
+      }
+
+      const currentInstructions = await loadProjectInstructions(cwd)
+      const otherInstructionBytes = currentInstructions.files
+        .filter((file) => file.path !== targetPath)
+        .reduce((total, file) => total + file.bytes, 0)
+      if (otherInstructionBytes + Buffer.byteLength(proposal, 'utf8') > DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES) {
+        this.showError('The proposal does not fit in the remaining project instruction budget. Shorten existing instruction files or ask for a shorter MICRO.md proposal.')
+        return
+      }
+
+      await writeMicroFile(cwd, before, proposal)
     } catch (error) {
-      this.showError(`Could not reload project instructions: ${error instanceof Error ? error.message : String(error)}`)
+      this.showError(`Could not save MICRO.md: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+
+    try {
+      const instructions = await loadProjectInstructions(cwd)
+      this.agent.updateProjectInstructions(instructions)
+      const loadedFile = instructions.files.find((file) => file.path === targetPath)
+      if (!loadedFile || loadedFile.truncated || loadedFile.content !== proposal) {
+        this.showError(`MICRO.md was saved, but the complete file could not be loaded within the ${DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES}-byte combined instruction limit.`)
+        return
+      }
+      this.showStatus(`Project instructions saved to ${targetPath} and reloaded.`)
+    } catch (error) {
+      this.showError(`MICRO.md was saved, but project instructions could not be reloaded: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  private handleInstructionsCommand(): void {
+  private async handleInstructionsCommand(args: string): Promise<void> {
+    const option = args.trim().toLowerCase()
+    if (option && option !== 'reload') {
+      this.showError('Usage: /instructions [reload]')
+      return
+    }
+
+    if (option === 'reload') {
+      if (this.isAgentBusy()) {
+        this.showStatus('Agent is busy — wait for the current turn to finish before reloading instructions.')
+        return
+      }
+      try {
+        const instructions = await loadProjectInstructions(process.cwd())
+        this.agent.updateProjectInstructions(instructions)
+        this.showStatus(`Reloaded project instructions (${instructions.files.length} files, ${instructions.totalBytes} bytes).`)
+        for (const diagnostic of instructions.diagnostics) {
+          this.chatContainer.addChild(new Text(`  ${theme.dim(diagnostic)}`, 1, 0))
+        }
+        if (instructions.diagnostics.length) this.chatContainer.addChild(new Spacer(1))
+        this.ui.requestRender()
+      } catch (error) {
+        this.showError(`Could not reload project instructions: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
+
     const instructions = this.agent.getProjectInstructions()
     if (!instructions || instructions.files.length === 0) {
       this.showStatus('No project instruction files are currently loaded.')
@@ -2532,6 +2621,7 @@ export class App {
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
       `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
+      `  ${theme.bold('/instructions reload')} Reload project instruction files`,
       `  ${theme.bold('/init')}               Analyze the project and create or update MICRO.md`,
       `  ${theme.bold('/export')}             Export the current conversation JSONL`,
       `  ${theme.bold('/new')}                Start a new conversation session`,

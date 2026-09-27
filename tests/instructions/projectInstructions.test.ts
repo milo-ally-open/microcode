@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildInitTaskPrompt, loadProjectInstructions } from '../../src/instructions/projectInstructions.ts'
+import { loadProjectInstructions } from '../../src/instructions/projectInstructions.ts'
+import { buildInitTaskPrompt } from '../../src/instructions/initProjectGuidance.ts'
 
 describe('project instructions', () => {
   test('loads supported files from project root to cwd in deterministic order', async () => {
@@ -104,7 +105,7 @@ describe('project instructions', () => {
     const prompt = buildInitTaskPrompt(cwd)
 
     expect(prompt).toContain(join(cwd, 'MICRO.md'))
-    expect(prompt).toContain('Never modify AGENTS.md, CLAUDE.md, or any other file')
-    expect(prompt).toContain('use the Ask tool to ask the user')
+    expect(prompt).toContain('safe project file outline')
+    expect(prompt).toContain('Do not attempt to write or edit any file')
   })
 })

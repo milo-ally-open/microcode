@@ -317,6 +317,21 @@ export class MicrocodeAgent {
     return this.core.prompt(input)
   }
 
+  async promptReadOnly(input: string): Promise<void> {
+    if (this.isBusy()) throw new Error('Cannot change the available tools while the agent is busy.')
+
+    this.toolManager.setPromptReadOnly(true)
+    this.core.state.tools = this.toolManager.getTools()
+    this.emitStateChangedDetached('tools_changed')
+    try {
+      await this.core.prompt(input)
+    } finally {
+      this.toolManager.setPromptReadOnly(false)
+      this.core.state.tools = this.toolManager.getTools()
+      this.emitStateChangedDetached('tools_changed')
+    }
+  }
+
   abort(): void {
     this.core.abort()
   }

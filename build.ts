@@ -9,7 +9,8 @@
  */
 import * as path from 'path'
 import * as os from 'os'
-import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync, unlinkSync, renameSync } from 'fs'
+import { randomUUID } from 'crypto'
 
 // ============================================================================
 // ANSI helpers
@@ -63,7 +64,7 @@ const COMPILED_BINARY = path.join(PROJECT_DIR, 'dist', BINARY_NAME)
 
 function getInstallDir(): string {
   if (IS_WINDOWS) {
-    return path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'microcode')
+    return path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'microcode', 'bin')
   }
   return path.join(os.homedir(), '.local', 'bin')
 }
@@ -102,8 +103,22 @@ async function runBuild(): Promise<StepResult> {
   })
 
   const stdoutReader = proc.stdout.getReader()
-  const decoder = new TextDecoder()
+  const stderrReader = proc.stderr.getReader()
   let stdoutBuf = ''
+  let stderrBuf = ''
+
+  const consume = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    append: (chunk: string) => void,
+  ) => {
+    const decoder = new TextDecoder()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      append(decoder.decode(value, { stream: true }))
+    }
+    append(decoder.decode())
+  }
 
   const poll = setInterval(() => {
     const elapsed = Date.now() - startTime
@@ -111,14 +126,22 @@ async function runBuild(): Promise<StepResult> {
     write(`${CLEAR_LINE}  ${fg.cyan(frame)}  ${dim('compiling')} ${renderBar(Math.min(elapsed / 3000, 0.95))} ${dim(formatMs(elapsed))}`)
   }, 80)
 
-  while (true) {
-    const { done, value } = await stdoutReader.read()
-    if (done) break
-    stdoutBuf += decoder.decode(value, { stream: true })
+  let exitCode: number
+  try {
+    const results = await Promise.all([
+      consume(stdoutReader, (chunk) => { stdoutBuf += chunk }),
+      consume(stderrReader, (chunk) => { stderrBuf += chunk }),
+      proc.exited,
+    ])
+    exitCode = results[2]
+  } finally {
+    clearInterval(poll)
   }
 
-  clearInterval(poll)
-  await proc.exited
+  if (exitCode !== 0) {
+    const diagnostic = stderrBuf.trim() || stdoutBuf.trim()
+    throw new Error(`Compiler exited with code ${exitCode}${diagnostic ? `:\n${diagnostic}` : '.'}`)
+  }
 
   const bundleMatch = stdoutBuf.match(/\[(\d+)ms\]\s+bundle\s+(\d+)\s+modules/)
   const compileMatch = stdoutBuf.match(/\[(\d+)ms\]\s+compile/)
@@ -179,10 +202,14 @@ async function main() {
     if (!existsSync(installDir)) {
       mkdirSync(installDir, { recursive: true })
     }
-    try { unlinkSync(installPath) } catch {}
-    copyFileSync(COMPILED_BINARY, installPath)
-    if (!IS_WINDOWS) {
-      chmodSync(installPath, 0o755)
+    const temporaryInstallPath = `${installPath}.tmp-${process.pid}-${randomUUID()}`
+    try {
+      copyFileSync(COMPILED_BINARY, temporaryInstallPath)
+      if (!IS_WINDOWS) chmodSync(temporaryInstallPath, 0o755)
+      renameSync(temporaryInstallPath, installPath)
+    } catch (error) {
+      try { unlinkSync(temporaryInstallPath) } catch {}
+      throw error
     }
 
     stepDone('install', installPath)
@@ -199,12 +226,16 @@ async function main() {
   if (!skipInstall && IS_WINDOWS) {
     const installDir = getInstallDir()
     const pathDirs = (process.env.PATH ?? '').split(';')
-    if (!pathDirs.includes(installDir)) {
+    const normalizedInstallDir = path.resolve(installDir).toLowerCase()
+    if (!pathDirs.some((entry) => path.resolve(entry).toLowerCase() === normalizedInstallDir)) {
       write(`  ${fg.yellow('!')}  ${dim(`${installDir} is not in PATH`)}\n`)
       write(`  ${dim('  restart your terminal, or run:')}\n`)
-      write(`  ${dim('  ')}${fg.cyan(`[Environment]::SetEnvironmentVariable("Path", $env:Path + ";${installDir}", "User")`)}\n\n`)
+      write(`  ${dim('  ')}${fg.cyan(`[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";${installDir}", "User")`)}\n\n`)
     }
   }
 }
 
-void main()
+void main().catch((error: unknown) => {
+  write(`${CLEAR_LINE}${fg.red('✗')}  ${bold('build failed')}: ${error instanceof Error ? error.message : String(error)}\n`)
+  process.exitCode = 1
+})

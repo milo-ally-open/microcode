@@ -156,7 +156,7 @@ Environment Variables:
 
 Custom Models:
   Define custom models in ~/.microcode/config.json (user) or
-  .microcode/config.json (project). See CLAUDE.md for the config format.
+  .microcode/config.json (project). See README.md for the config format.
   Custom models appear in /model list alongside built-in ones.
 
 MCP Configuration:
@@ -168,7 +168,7 @@ Session Management:
   Use --resume to continue where you left off.
   Use /compact to manually compress conversation context.
   Use /init to create or update project guidance in MICRO.md.
-  Use /instructions to list the loaded project instruction files.
+  Use /instructions to list or /instructions reload to refresh project instruction files.
 `)
     process.exit(0)
   }

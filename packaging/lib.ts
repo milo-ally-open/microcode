@@ -79,10 +79,6 @@ export async function resetDir(path: string): Promise<string> {
   return path
 }
 
-export async function copyDir(from: string, to: string): Promise<void> {
-  await cp(from, to, { recursive: true, force: true })
-}
-
 export async function copyFileExecutable(from: string, to: string): Promise<void> {
   await mkdir(dirname(to), { recursive: true })
   await cp(from, to, { force: true })

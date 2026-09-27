@@ -14,6 +14,7 @@ import {
 import type { Skill } from '../skill/skill.ts'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { AgentSessionPersistence } from './persistence.ts'
+import { assertInitReadPath } from '../instructions/initReadScope.ts'
 
 export interface AgentToolSnapshot {
   readonly names: readonly string[]
@@ -24,6 +25,7 @@ export interface AgentToolSnapshot {
 }
 
 type ToolMap = Map<string, AgentTool<any, any>>
+const READ_ONLY_PROMPT_TOOL_NAMES = new Set(['read'])
 
 function toToolMap(tools: readonly AgentTool<any, any>[]): ToolMap {
   return new Map(tools.map((tool) => [tool.name, tool]))
@@ -42,6 +44,7 @@ export class AgentToolManager {
   private readonly deferredDefinitions = new Map<string, ToolDefinition>(
     getDeferredToolDefinitions().map((definition) => [definition.name, definition]),
   )
+  private promptToolAllowlist?: ReadonlySet<string>
 
   constructor(private readonly options: {
     cwd: string
@@ -118,6 +121,18 @@ export class AgentToolManager {
   }
 
   getTools(): AgentTool<any, any>[] {
+    if (this.promptToolAllowlist) {
+      return [...this.coreTools.values()]
+        .filter((tool) => this.promptToolAllowlist?.has(tool.name))
+        .map((tool) => tool.name === 'read' ? {
+          ...tool,
+          execute: async (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: (partial: any) => void) => {
+            await assertInitReadPath(this.options.cwd, params.file_path)
+            return tool.execute(toolCallId, params, signal, onUpdate)
+          },
+        } as AgentTool<any, any> : tool)
+    }
+
     const merged = new Map<string, AgentTool<any, any>>()
     for (const collection of [
       this.coreTools,
@@ -129,7 +144,12 @@ export class AgentToolManager {
         merged.set(name, tool)
       }
     }
-    return [...merged.values()]
+    const tools = [...merged.values()]
+    return tools
+  }
+
+  setPromptReadOnly(enabled: boolean): void {
+    this.promptToolAllowlist = enabled ? READ_ONLY_PROMPT_TOOL_NAMES : undefined
   }
 
   commitPendingDiscoveredTools(): AgentTool<any, any>[] {
@@ -143,12 +163,17 @@ export class AgentToolManager {
   }
 
   getSnapshot(): Readonly<AgentToolSnapshot> {
+    const allowed = this.promptToolAllowlist
+    const visibleCoreTools = allowed
+      ? new Map([...this.coreTools].filter(([name]) => allowed.has(name)))
+      : this.coreTools
+    const emptyTools: ToolMap = new Map()
     return Object.freeze({
       names: Object.freeze(this.getTools().map((tool) => tool.name)),
-      core: freezeNames(this.coreTools),
-      infrastructure: freezeNames(this.infrastructureTools),
-      discovered: freezeNames(this.discoveredTools),
-      external: freezeNames(this.externalTools),
+      core: freezeNames(visibleCoreTools),
+      infrastructure: allowed ? freezeNames(emptyTools) : freezeNames(this.infrastructureTools),
+      discovered: allowed ? freezeNames(emptyTools) : freezeNames(this.discoveredTools),
+      external: allowed ? freezeNames(emptyTools) : freezeNames(this.externalTools),
     })
   }
 

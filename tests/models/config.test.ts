@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { createModelForId, getAvailableModelIds, getApiKeyForProvider, resolveConfig } from '../../src/config.ts'
 import { customModelToModel, loadCustomModels, type CustomModelDef } from '../../src/models/custom.ts'
-import { findModel, getAllModels, getModels, resolveApiKey } from '../../src/models/registry.ts'
+import { findModel, getAllModels, getModelConfig, getModels, resolveApiKey, setCurrentModel } from '../../src/models/registry.ts'
 
 describe('models and config modules', () => {
-  test('exposes built-in model ids through the compatibility config facade', () => {
-    expect(getAvailableModelIds()).toContain('deepseek-v4-pro')
-    expect(getAvailableModelIds()).toContain('gemini-2.5-flash')
+  test('exposes built-in model ids through the model registry', () => {
+    const modelIds = getAllModels().map((model) => model.id)
+    expect(modelIds).toContain('deepseek-v4-pro')
+    expect(modelIds).toContain('gemini-2.5-flash')
   })
 
   test('resolves models by provider and model id, retaining API compatibility lookup', () => {
@@ -18,11 +18,12 @@ describe('models and config modules', () => {
     expect(deepseek?.api).toBe('openai-completions')
   })
 
-  test('createModelForId updates the active resolved config', () => {
-    const selected = createModelForId('gemini-2.5-flash', 'google-generative-ai')
-    const current = resolveConfig()
+  test('setCurrentModel updates the active model config', () => {
+    const selectedModel = findModel('gemini-2.5-flash', 'google-generative-ai')
+    expect(selectedModel).toBeDefined()
+    setCurrentModel(selectedModel!)
+    const current = getModelConfig()
 
-    expect(selected.model.id).toBe('gemini-2.5-flash')
     expect(current.model.id).toBe('gemini-2.5-flash')
     expect(current.provider).toBe('google')
   })
@@ -77,9 +78,8 @@ describe('models and config modules', () => {
     }
   })
 
-  test('registry returns a non-empty model list and provider key fallback is stable', () => {
+  test('registry returns a non-empty model list', () => {
     expect(getAllModels().length).toBeGreaterThan(0)
-    expect(getApiKeyForProvider('not-current-provider')).toBe(process.env.API_KEY)
   })
 
   test('registers Anthropic and Codex subscription OAuth alongside API-key providers', () => {
