@@ -76,9 +76,6 @@ export function registerIpc(): void {
   ipcMain.handle('microcode:toggleSkill', async (_event, skillName: string) => {
     await (await getRuntime()).toggleSkill(skillName)
   })
-  ipcMain.handle('microcode:deleteAgent', async (_event, agentId: string) => {
-    await (await getRuntime()).deleteAgent(agentId)
-  })
   ipcMain.handle('microcode:remindTask', async (_event, listId: string, taskId: string, reminder: boolean) => {
     await (await getRuntime()).remindTask(listId, taskId, reminder)
   })

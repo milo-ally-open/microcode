@@ -1,13 +1,10 @@
 import type { BrowserWindow } from 'electron'
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
-import { execFile } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
-import { promisify } from 'util'
 import { ensureBootstrapMacro } from '../../macro.ts'
 import type { PermissionMode } from '../../permissions/index.ts'
-import { GitWorkTreeSystem } from '../../git/index.ts'
 import { createMicrocodeRuntime, type MicrocodeRuntime } from '../runtime/createMicrocodeRuntime.ts'
 import type { GuiIpcEvent, GuiWorkspaceItem } from '../shared/types.ts'
 
@@ -27,7 +24,6 @@ let unsubscribeRuntime: (() => void) | undefined
 ensureBootstrapMacro()
 
 const WORKSPACES_PATH = join(homedir(), '.microcode', 'gui-workspaces.json')
-const execFileAsync = promisify(execFile)
 
 function readWorkspaceItems(): GuiWorkspaceItem[] {
   try {
@@ -71,18 +67,6 @@ function getInitialCwd(options?: RuntimeStartOptions): string {
   return recent?.path ?? process.cwd()
 }
 
-async function ensureGitWorkspace(cwd: string): Promise<void> {
-  try {
-    await GitWorkTreeSystem.open(cwd)
-    return
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (!message.includes('must run inside a Git repository')) throw error
-  }
-  await execFileAsync('git', ['init'], { cwd })
-  await GitWorkTreeSystem.open(cwd)
-}
-
 export function attachMainWindow(window: BrowserWindow | undefined): void {
   mainWindow = window
 }
@@ -122,7 +106,6 @@ export async function getRuntime(options?: RuntimeStartOptions): Promise<Microco
 
 export async function openWorkspace(cwd: string): Promise<MicrocodeRuntime> {
   const nextCwd = ensureWorkspaceDirectory(cwd)
-  await ensureGitWorkspace(nextCwd)
   if (runtime?.getSnapshot().cwd === nextCwd) {
     rememberWorkspace(nextCwd)
     return runtime

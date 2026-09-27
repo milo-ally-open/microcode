@@ -7,7 +7,6 @@ import { getSystemPrompt } from '../../src/prompt/prompts.ts'
 import { getAskUserQuestionSection } from '../../src/tools/AskUserQuestionTool/prompt.ts'
 import { getTaskToolSection } from '../../src/tools/TaskTool/prompt.ts'
 import { getDeferredToolsSection, getUsingYourToolsSection } from '../../src/tools/prompt.ts'
-import { getWorkerPrompt, SUPERVISOR_WORKER_PROMPT } from '../../src/swarm/prompts.ts'
 
 beforeAll(() => {
   ensureBootstrapMacro()
@@ -45,10 +44,4 @@ describe('prompt modules', () => {
     expect(prompt.at(-1)).toContain('test-model')
   })
 
-  test('swarm prompts encode coordinator and worker boundaries', () => {
-    expect(SUPERVISOR_WORKER_PROMPT).toContain('You are a COORDINATOR')
-    const worker = getWorkerPrompt('parent', 'do work', '/tmp/wt', ['read', 'write'])
-    expect(worker).toContain('Coordinator: parent')
-    expect(worker).toContain('You ONLY have these tools: read, write')
-  })
 })

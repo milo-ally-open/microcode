@@ -1,7 +1,6 @@
 import * as path from 'path'
 import * as os from 'os'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { mkdir, readFile, rename, writeFile } from 'fs/promises'
 import {
   type JsonlSessionMetadata,
   type AgentMessage,
@@ -20,12 +19,10 @@ import {
   type TaskMarkUpdate,
   type TaskReminderUpdate,
 } from '../tasks/TaskSystem.ts'
-import type { AgentBatch, AgentMeta, AgentTask } from '../swarm/types.ts'
 
 const SESSIONS_DIR = path.join(os.homedir(), '.microcode', 'sessions')
 const TITLES_FILE = path.join(SESSIONS_DIR, '.titles.json')
 const TASKS_DIR = path.join(SESSIONS_DIR, '.tasks')
-const AGENTS_DIR = path.join(SESSIONS_DIR, '.agents')
 
 export interface SessionListItem extends JsonlSessionMetadata {
   title?: string
@@ -44,17 +41,14 @@ export class SessionManager implements AgentSessionPersistence {
   private savedMessageCount = 0
   private titleCache: Map<string, string> | null = null
   private readonly taskSystem: TaskSystem
-  private readonly agentsRoot: string
-  private readonly manifestQueues = new Map<string, Promise<void>>()
 
-  constructor(options: { sessionsRoot?: string; tasksRoot?: string; agentsRoot?: string } = {}) {
+  constructor(options: { sessionsRoot?: string; tasksRoot?: string } = {}) {
     const fs = new NodeFileSystem('/')
     this.repo = new JsonlSessionRepo({
       fileSystem: fs,
       sessionsRoot: options.sessionsRoot ?? SESSIONS_DIR,
     })
     this.taskSystem = new TaskSystem(options.tasksRoot ?? TASKS_DIR)
-    this.agentsRoot = options.agentsRoot ?? AGENTS_DIR
   }
 
   /**
@@ -239,131 +233,6 @@ export class SessionManager implements AgentSessionPersistence {
     tasks: readonly TaskMarkUpdate[]
   }): Promise<TaskList> {
     return this.taskSystem.markTasks(await this.ensureCreated(), input)
-  }
-
-  private requireSessionId(): string {
-    const sessionId = this.getSessionId()
-    if (!sessionId) throw new Error('No active session.')
-    return sessionId
-  }
-
-  async saveAgentManifest(
-    tasks: readonly AgentTask[],
-    batches: readonly AgentBatch[] = [],
-    agentMetas: readonly AgentMeta[] = [],
-  ): Promise<void> {
-    if (!this.getSessionId() && tasks.length === 0 && batches.length === 0 && agentMetas.length === 0) {
-      return
-    }
-    await this.ensureCreated()
-    return this.withManifestLock(() => this.writeManifestUnsafe(tasks, batches, agentMetas))
-  }
-
-  private async writeManifestUnsafe(
-    tasks: readonly AgentTask[],
-    batches: readonly AgentBatch[],
-    agentMetas: readonly AgentMeta[],
-  ): Promise<void> {
-    const dir = this.getAgentSessionDir()
-    await mkdir(dir, { recursive: true })
-    await this.atomicWrite(
-      path.join(dir, 'manifest.json'),
-      JSON.stringify({ version: 3, tasks, batches, agentMetas }, null, 2),
-    )
-  }
-
-  private withManifestLock<T>(operation: () => Promise<T>): Promise<T> {
-    const key = this.requireSessionId()
-    const previous = this.manifestQueues.get(key) ?? Promise.resolve()
-    const result = previous.catch(() => undefined).then(operation)
-    const tail = result.then(() => undefined, () => undefined)
-    this.manifestQueues.set(key, tail as Promise<void>)
-    return result.finally(() => {
-      if (this.manifestQueues.get(key) === (tail as Promise<void>)) {
-        this.manifestQueues.delete(key)
-      }
-    })
-  }
-
-  async loadAgentManifest(): Promise<{ tasks: AgentTask[]; batches?: AgentBatch[]; agentMetas?: AgentMeta[] }> {
-    if (!this.getSessionId()) return { tasks: [] }
-    const file = path.join(this.getAgentSessionDir(), 'manifest.json')
-    try {
-      const parsed = JSON.parse(await readFile(file, 'utf8')) as {
-        version?: number
-        tasks?: AgentTask[]
-        batches?: AgentBatch[]
-        agentMetas?: AgentMeta[]
-      }
-      return {
-        tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
-        batches: Array.isArray(parsed.batches) ? parsed.batches : undefined,
-        agentMetas: Array.isArray(parsed.agentMetas) ? parsed.agentMetas : undefined,
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { tasks: [] }
-      throw error
-    }
-  }
-
-  async loadAgentBatches(): Promise<AgentBatch[]> {
-    if (!this.getSessionId()) return []
-    const file = path.join(this.getAgentSessionDir(), 'manifest.json')
-    try {
-      const parsed = JSON.parse(await readFile(file, 'utf8')) as {
-        batches?: AgentBatch[]
-      }
-      return Array.isArray(parsed.batches) ? parsed.batches : []
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw error
-    }
-  }
-
-  async saveAgentTranscript(
-    agentId: string,
-    messages: readonly AgentMessage[],
-  ): Promise<void> {
-    await this.ensureCreated()
-    if (!/^[a-zA-Z0-9._-]+$/.test(agentId)) {
-      throw new Error('Invalid agent ID.')
-    }
-    const dir = path.join(this.getAgentSessionDir(), 'agents')
-    await mkdir(dir, { recursive: true })
-    const serialized = messages
-      .map((message) => JSON.stringify(replaceImageBlocksForPersistence(message)))
-      .join('\n')
-    await this.atomicWrite(
-      path.join(dir, `${agentId}.jsonl`),
-      serialized ? `${serialized}\n` : '',
-    )
-  }
-
-  async loadAgentTranscript(agentId: string): Promise<AgentMessage[]> {
-    if (!this.getSessionId()) return []
-    if (!/^[a-zA-Z0-9._-]+$/.test(agentId)) {
-      throw new Error('Invalid agent ID.')
-    }
-    try {
-      const raw = await readFile(
-        path.join(this.getAgentSessionDir(), 'agents', `${agentId}.jsonl`),
-        'utf8',
-      )
-      return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw error
-    }
-  }
-
-  private getAgentSessionDir(): string {
-    return path.join(this.agentsRoot, this.requireSessionId())
-  }
-
-  private async atomicWrite(file: string, content: string): Promise<void> {
-    const temp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
-    await writeFile(temp, content, 'utf8')
-    await rename(temp, file)
   }
 
   /**

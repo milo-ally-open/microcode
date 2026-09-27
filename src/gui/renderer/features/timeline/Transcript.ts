@@ -27,14 +27,13 @@ export function Transcript({ timeline, snapshot }: { timeline: GuiChatItem[]; sn
 
   useEffect(() => {
     if (autoScrollRef.current) requestAnimationFrame(scrollToBottom)
-  }, [timeline, snapshot?.agents, snapshot?.runningWorkers])
+  }, [timeline])
 
   return React.createElement('main', { className: 'transcript', ref: scrollRef, onScroll: handleScroll },
     timeline.length === 0 && React.createElement('div', { className: 'welcome' },
       React.createElement('h1', null, '今天有什么计划？'),
       React.createElement('div', { className: 'prompt-suggestions' },
         React.createElement('button', { onClick: () => void window.microcode.command('/model') }, '切换模型'),
-        React.createElement('button', { onClick: () => void window.microcode.command('/agents') }, '查看代理'),
         React.createElement('button', { onClick: () => void window.microcode.command('/mcp') }, '检查 MCP'),
       ),
     ),

@@ -8,7 +8,7 @@ import { promisify } from 'util'
 const execFileAsync = promisify(execFile)
 
 export interface GitWorkTree {
-  agentId: string
+  id: string
   path: string
   branch: string
   baseCommit: string
@@ -79,27 +79,26 @@ export class GitWorkTreeSystem {
       repositoryRoot = result.stdout.trim()
     } catch {
       throw new Error(
-        `Microcode must run inside a Git repository so agents can use isolated worktrees: ${cwd}`,
+        `Worktrees are only available inside a Git repository: ${cwd}`,
       )
     }
 
     return new GitWorkTreeSystem(repositoryRoot, options)
   }
 
-  async create(agentId: string): Promise<GitWorkTree> {
-    return this.withMutation(() => this.createUnlocked(agentId))
+  async create(id: string): Promise<GitWorkTree> {
+    return this.withMutation(() => this.createUnlocked(id))
   }
 
-  private async createUnlocked(agentId: string): Promise<GitWorkTree> {
-    const existing = this.worktrees.get(agentId)
+  private async createUnlocked(id: string): Promise<GitWorkTree> {
+    const existing = this.worktrees.get(id)
     if (existing) return { ...existing }
-    this.assertAgentId(agentId)
-    await this.assertMainWorkspaceClean()
+    this.assertId(id)
     await mkdir(this.worktreesRoot, { recursive: true })
 
     const baseCommit = (await this.git(['rev-parse', 'HEAD'])).trim()
-    const branch = `microcode/${agentId}`
-    const path = join(this.worktreesRoot, agentId)
+    const branch = `microcode/${id}`
+    const path = join(this.worktreesRoot, id)
 
     try {
       await access(path)
@@ -111,17 +110,17 @@ export class GitWorkTreeSystem {
     try {
       await this.git(['worktree', 'add', '-b', branch, path, baseCommit])
     } catch (error) {
-      throw new Error(`Failed to create worktree for ${agentId}: ${commandError(error)}`)
+      throw new Error(`Failed to create worktree ${id}: ${commandError(error)}`)
     }
 
     const worktree: GitWorkTree = {
-      agentId,
+      id,
       path,
       branch,
       baseCommit,
       createdAt: Date.now(),
     }
-    this.worktrees.set(agentId, worktree)
+    this.worktrees.set(id, worktree)
     return { ...worktree }
   }
 
@@ -130,19 +129,19 @@ export class GitWorkTreeSystem {
   }
 
   private async restoreUnlocked(worktree: GitWorkTree): Promise<GitWorkTree> {
-    this.assertAgentId(worktree.agentId)
+    this.assertId(worktree.id)
     try {
       await access(worktree.path)
     } catch {
       await mkdir(this.worktreesRoot, { recursive: true })
       await this.git(['worktree', 'add', worktree.path, worktree.branch])
     }
-    this.worktrees.set(worktree.agentId, { ...worktree })
+    this.worktrees.set(worktree.id, { ...worktree })
     return { ...worktree }
   }
 
-  get(agentId: string): GitWorkTree | undefined {
-    const worktree = this.worktrees.get(agentId)
+  get(id: string): GitWorkTree | undefined {
+    const worktree = this.worktrees.get(id)
     return worktree ? { ...worktree } : undefined
   }
 
@@ -150,8 +149,8 @@ export class GitWorkTreeSystem {
     return [...this.worktrees.values()].map((worktree) => ({ ...worktree }))
   }
 
-  async status(agentId: string): Promise<GitWorkTreeStatus> {
-    const worktree = this.require(agentId)
+  async status(id: string): Promise<GitWorkTreeStatus> {
+    const worktree = this.require(id)
     const porcelain = await this.git(
       ['status', '--porcelain=v1', '--untracked-files=all'],
       worktree.path,
@@ -167,8 +166,8 @@ export class GitWorkTreeSystem {
     }
   }
 
-  async diff(agentId: string): Promise<string> {
-    const worktree = this.require(agentId)
+  async diff(id: string): Promise<string> {
+    const worktree = this.require(id)
     const [trackedDiff, untracked, aheadText] = await Promise.all([
       this.git(['diff', '--no-ext-diff', '--binary', worktree.baseCommit], worktree.path),
       this.git(
@@ -184,36 +183,36 @@ export class GitWorkTreeSystem {
     const ahead = Number.parseInt(aheadText.trim(), 10) || 0
 
     const parts: string[] = []
-    parts.push(`agent: ${agentId}`)
+    parts.push(`worktree: ${id}`)
     parts.push(`commits ahead of base: ${ahead}`)
     parts.push(`untracked files: ${untrackedFiles.length > 0 ? untrackedFiles.join(', ') : '(none)'}`)
 
     if (trackedDiff.trim()) {
       parts.push(`\n${trackedDiff.trim()}`)
     } else if (ahead === 0 && untrackedFiles.length === 0) {
-      parts.push(`(no tracked changes, no untracked files — agent produced no output in this worktree)`)
+      parts.push(`(no tracked changes or untracked files)`)
     } else if (ahead === 0 && untrackedFiles.length > 0) {
-      parts.push(`(agent wrote files but did not commit — merge will auto-stage and commit)`)
+      parts.push(`(untracked files will be staged and committed during merge)`)
     }
 
     return parts.join('\n')
   }
 
-  async merge(agentId: string): Promise<GitWorkTreeMergeResult> {
-    return this.withMutation(() => this.mergeUnlocked(agentId))
+  async merge(id: string): Promise<GitWorkTreeMergeResult> {
+    return this.withMutation(() => this.mergeUnlocked(id))
   }
 
-  private async mergeUnlocked(agentId: string): Promise<GitWorkTreeMergeResult> {
-    const worktree = this.require(agentId)
+  private async mergeUnlocked(id: string): Promise<GitWorkTreeMergeResult> {
+    const worktree = this.require(id)
     await this.assertMainWorkspaceClean()
 
-    const status = await this.status(agentId)
+    const status = await this.status(id)
     if (status.changes.length > 0) {
       await this.git(['add', '-A'], worktree.path)
       await this.git([
         '-c', 'user.name=Microcode',
         '-c', 'user.email=microcode@localhost',
-        'commit', '-m', `microcode: agent ${agentId}`,
+        'commit', '-m', `microcode: worktree ${id}`,
       ], worktree.path)
     }
 
@@ -224,13 +223,13 @@ export class GitWorkTreeSystem {
       10,
     ) || 0
     if (ahead === 0) {
-      return { merged: false, message: `Agent ${agentId} has no changes to merge.` }
+      return { merged: false, message: `Worktree ${id} has no changes to merge.` }
     }
     if (await this.isAncestor(worktree.branch, 'HEAD')) {
       worktree.integratedAt = Date.now()
       return {
         merged: false,
-        message: `Agent ${agentId} changes are already present in the main workspace.`,
+        message: `Worktree ${id} changes are already present in the main workspace.`,
       }
     }
 
@@ -239,12 +238,12 @@ export class GitWorkTreeSystem {
       await this.git([
         '-c', 'user.name=Microcode',
         '-c', 'user.email=microcode@localhost',
-        'commit', '-m', `Merge worktree ${agentId}`,
+        'commit', '-m', `Merge worktree ${id}`,
       ])
     } catch (error) {
       await this.git(['merge', '--abort']).catch(() => undefined)
       throw new Error(
-        `Worktree ${agentId} could not be merged cleanly; the merge was aborted: ${commandError(error)}`,
+        `Worktree ${id} could not be merged cleanly; the merge was aborted: ${commandError(error)}`,
       )
     }
 
@@ -257,60 +256,60 @@ export class GitWorkTreeSystem {
     }
   }
 
-  async remove(agentId: string, force = false): Promise<void> {
-    return this.withMutation(() => this.removeUnlocked(agentId, force))
+  async remove(id: string, force = false): Promise<void> {
+    return this.withMutation(() => this.removeUnlocked(id, force))
   }
 
-  private async removeUnlocked(agentId: string, force: boolean): Promise<void> {
-    const worktree = this.worktrees.get(agentId)
+  private async removeUnlocked(id: string, force: boolean): Promise<void> {
+    this.assertId(id)
+    const worktree = this.worktrees.get(id)
     if (!worktree) {
       // Map entry missing — maybe the in-memory state was lost (session switch,
-      // crash recovery, etc.) but git state may still exist. Try to clean up.
-      const branch = `microcode/${agentId}`
-      const branches = await this.git(['branch', '--list', branch]).catch(() => '')
-      if (branches.trim()) {
-        await this.git(['branch', '-D', branch]).catch(() => undefined)
-      }
+      // process restart, etc.) but Git state may still exist. Try to clean up.
+      const branch = `microcode/${id}`
       const worktrees = await this.git(['worktree', 'list', '--porcelain']).catch(() => '')
-      const worktreePath = worktrees
-        .split('\n')
-        .filter((line, i, lines) => line.startsWith('worktree ') && lines[i + 1]?.trim() === branch)
-        .map((line) => line.slice('worktree '.length))
-        .find(() => true)
+      const block = worktrees.split(/\r?\n\r?\n/).find((entry) =>
+        entry.split(/\r?\n/).includes(`branch refs/heads/${branch}`)
+      )
+      const worktreePath = block?.split(/\r?\n/)
+        .find((line) => line.startsWith('worktree '))
+        ?.slice('worktree '.length)
       if (worktreePath) {
         await this.git(['worktree', 'remove', ...(force ? ['--force'] : []), worktreePath]).catch(() => undefined)
       }
+      const branches = await this.git(['branch', '--list', branch]).catch(() => '')
+      if (branches.trim()) await this.git(['branch', '-D', branch]).catch(() => undefined)
       return
     }
 
-    const status = await this.status(agentId)
+    const status = await this.status(id)
     const merged = await this.isAncestor(worktree.branch, 'HEAD')
     if (!force && (status.changes.length > 0 || !merged)) {
       throw new Error(
-        `Worktree ${agentId} has unmerged changes. Merge it first or remove it with force=true.`,
+        `Worktree ${id} has unmerged changes. Merge it first or remove it with force=true.`,
       )
     }
     await this.git(['worktree', 'remove', ...(force ? ['--force'] : []), worktree.path])
     await this.git(['branch', '-D', worktree.branch]).catch(() => undefined)
-    this.worktrees.delete(agentId)
+    this.worktrees.delete(id)
   }
 
-  private require(agentId: string): GitWorkTree {
-    const worktree = this.worktrees.get(agentId)
+  private require(id: string): GitWorkTree {
+    this.assertId(id)
+    const worktree = this.worktrees.get(id)
     if (!worktree) {
       throw new Error(
-        `No worktree record for agent ${agentId}. The in-memory state may have been lost ` +
-        `(e.g. after a session switch). The git branch microcode/${agentId} may still exist — ` +
-        `check \`git branch --list microcode/${agentId}\` and merge or delete it manually. ` +
-        `Use \`worktree remove\` with this agent_id to clean up orphaned git state.`,
+        `No worktree record for ${id}. The in-memory state may have been lost. ` +
+        `The git branch microcode/${id} may still exist — check \`git branch --list microcode/${id}\` ` +
+        `and merge or delete it manually.`,
       )
     }
     return worktree
   }
 
-  private assertAgentId(agentId: string): void {
-    if (!/^[a-zA-Z0-9._-]+$/.test(agentId)) {
-      throw new Error(`Invalid agent ID: ${agentId}`)
+  private assertId(id: string): void {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) {
+      throw new Error(`Invalid worktree ID: ${id}`)
     }
   }
 
@@ -318,7 +317,7 @@ export class GitWorkTreeSystem {
     const status = await this.git(['status', '--porcelain=v1'])
     if (status.trim()) {
       throw new Error(
-        'The main Git workspace has uncommitted changes. Commit or stash them before spawning or merging agents.',
+        'The main Git workspace has uncommitted changes. Commit or stash them before merging a worktree.',
       )
     }
   }

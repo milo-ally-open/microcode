@@ -1,4 +1,3 @@
-import { AgentControlToolRenderer } from './AgentControlToolRenderer.ts'
 import { AskToolRenderer } from './AskToolRenderer.ts'
 import { BashToolRenderer } from './BashToolRenderer.ts'
 import { FallbackToolRenderer } from './FallbackToolRenderer.ts'
@@ -12,6 +11,7 @@ import { SkillToolRenderer } from './SkillToolRenderer.ts'
 import { TaskToolRenderer } from './TaskToolRenderer.ts'
 import { ToolSearchRenderer } from './ToolSearchRenderer.ts'
 import { VisionToolRenderer } from './VisionToolRenderer.ts'
+import { WorktreeToolRenderer } from './WorktreeToolRenderer.ts'
 import { WebFetchToolRenderer } from './WebFetchToolRenderer.ts'
 import { WebSearchToolRenderer } from './WebSearchToolRenderer.ts'
 import type { ToolRenderer } from './types.ts'
@@ -28,12 +28,7 @@ const renderers = new Map<string, ToolRenderer>([
   ['vision', VisionToolRenderer],
   ['task', TaskToolRenderer],
   ['Ask', AskToolRenderer],
-  ['spawn', AgentControlToolRenderer],
-  ['message', AgentControlToolRenderer],
-  ['stop', AgentControlToolRenderer],
-  ['delete', AgentControlToolRenderer],
-  ['status', AgentControlToolRenderer],
-  ['worktree', AgentControlToolRenderer],
+  ['worktree', WorktreeToolRenderer],
   ['skill', SkillToolRenderer],
   ['search', ToolSearchRenderer],
 ])

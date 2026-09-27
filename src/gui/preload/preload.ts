@@ -27,7 +27,6 @@ const api: GuiApi = {
   switchSession: (sessionId: string) => ipcRenderer.invoke('microcode:switchSession', sessionId),
   newSession: () => ipcRenderer.invoke('microcode:newSession'),
   toggleSkill: (skillName: string) => ipcRenderer.invoke('microcode:toggleSkill', skillName),
-  deleteAgent: (agentId: string) => ipcRenderer.invoke('microcode:deleteAgent', agentId),
   remindTask: (listId: string, taskId: string, reminder: boolean) =>
     ipcRenderer.invoke('microcode:remindTask', listId, taskId, reminder),
   mcpAction: (action: 'enable' | 'disable' | 'reconnect', serverName: string) =>

@@ -3,7 +3,6 @@ import type { Api } from '@earendil-works/pi-ai'
 import type { PermissionMode } from '../../permissions/index.ts'
 import type { MicrocodeAgentSnapshot } from '../../agent/index.ts'
 import type { McpServerState } from '../../mcp/types.ts'
-import type { AgentRuntimeState } from '../../swarm/types.ts'
 import type { TaskList } from '../../tasks/TaskSystem.ts'
 
 export type GuiChatRole = 'user' | 'assistant' | 'system'
@@ -97,7 +96,7 @@ export interface GuiPermissionItem {
   id: string
   kind: 'permission'
   requestId: string
-  requestKind: 'tool' | 'question' | 'delegated'
+  requestKind: 'tool' | 'question'
   toolName: string
   input: Record<string, unknown>
   description?: string
@@ -127,7 +126,7 @@ export interface GuiQuestion {
 
 export interface GuiPermissionRequest {
   id: string
-  kind: 'tool' | 'delegated'
+  kind: 'tool'
   toolName: string
   input: Record<string, unknown>
   description: string
@@ -146,10 +145,7 @@ export interface GuiRuntimeSnapshot {
   sessionId: string | null
   sessionTitle?: string
   mcpServers: McpServerState[]
-  agents: AgentRuntimeState[]
   tasks: TaskList[]
-  runningWorkers: number
-  maxWorkers: number
   busy: boolean
   activePermission?: GuiPermissionRequest
   activeQuestion?: GuiQuestionRequest
@@ -261,7 +257,6 @@ export interface GuiApi {
   switchSession(sessionId: string): Promise<void>
   newSession(): Promise<void>
   toggleSkill(skillName: string): Promise<void>
-  deleteAgent(agentId: string): Promise<void>
   remindTask(listId: string, taskId: string, reminder: boolean): Promise<void>
   mcpAction(action: 'enable' | 'disable' | 'reconnect', serverName: string): Promise<void>
   addMcpConfig(rawJson: string): Promise<GuiConfigPasteResult>

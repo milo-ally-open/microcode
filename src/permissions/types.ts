@@ -4,8 +4,6 @@ export type ApprovalMode = Exclude<PermissionMode, 'plan'>
 
 export type PermissionBehavior = 'allow' | 'deny' | 'ask'
 
-export type NonInteractivePermissionStrategy = 'deny' | 'delegate-to-parent'
-
 export type PermissionRuleSource =
   | 'globalSettings'
   | 'projectSettings'
@@ -43,7 +41,6 @@ export interface ToolPermissionContext {
 export interface PermissionSnapshot {
   readonly mode: PermissionMode
   readonly approvalMode: ApprovalMode
-  readonly nonInteractiveStrategy: NonInteractivePermissionStrategy
   readonly allowRules: readonly Readonly<PermissionRule>[]
   readonly denyRules: readonly Readonly<PermissionRule>[]
   readonly askRules: readonly Readonly<PermissionRule>[]

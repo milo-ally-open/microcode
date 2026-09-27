@@ -4,14 +4,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Type } from 'typebox'
 import { createAskUserQuestionTool } from '../../src/tools/AskUserQuestionTool/AskUserQuestionTool.ts'
-import { createDeleteAgentTool } from '../../src/tools/DeleteAgentTool/DeleteAgentTool.ts'
-import { createGetAgentStatusTool } from '../../src/tools/GetAgentStatusTool/GetAgentStatusTool.ts'
 import { createListMcpResourcesTool } from '../../src/tools/ListMcpResourcesTool/ListMcpResourcesTool.ts'
 import { createReadMcpResourceTool } from '../../src/tools/ReadMcpResourceTool/ReadMcpResourceTool.ts'
-import { createSendAgentMessageTool } from '../../src/tools/SendAgentMessageTool/SendAgentMessageTool.ts'
 import { createSkillToolWithAgent } from '../../src/tools/SkillTool/SkillTool.ts'
-import { createSpawnAgentTool } from '../../src/tools/SpawnAgentTool/SpawnAgentTool.ts'
-import { createStopAgentTool } from '../../src/tools/StopAgentTool/StopAgentTool.ts'
 import { createTaskTool } from '../../src/tools/TaskTool/TaskTool.ts'
 import { createToolSearchTool } from '../../src/tools/ToolSearchTool/ToolSearchTool.ts'
 
@@ -114,29 +109,6 @@ describe('control tools', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
-  })
-
-  test('swarm control tools call supervisor methods and status rate limit', async () => {
-    const calls: string[] = []
-    const supervisor = {
-      spawn: async (request: any) => {
-        calls.push(`spawn:${request.parentAgentId}:${request.description}`)
-        return { agentId: 'agent-1', description: request.description, status: 'queued', batchId: 'batch-1' }
-      },
-      send: async (agentId: string, message: string) => calls.push(`send:${agentId}:${message}`),
-      stop: async (agentId: string) => calls.push(`stop:${agentId}`),
-      delete: async (agentId: string) => calls.push(`delete:${agentId}`),
-      listAgents: () => [{ task: { agentId: 'agent-1', status: 'running', description: 'Work' }, activity: 'Reading' }],
-    } as any
-
-    expect((await createSpawnAgentTool(supervisor, 'parent').execute('spawn', { description: 'Work', prompt: 'Do work' })).content[0]?.text).toContain('Launched agent-1')
-    expect((await createSendAgentMessageTool(supervisor, 'parent').execute('msg', { agent_id: 'agent-1', message: 'next' })).content[0]?.text).toContain('Message sent')
-    expect((await createStopAgentTool(supervisor, 'parent').execute('stop', { agent_id: 'agent-1' })).content[0]?.text).toContain('Stopped')
-    expect((await createDeleteAgentTool(supervisor, 'parent').execute('delete', { agent_id: 'agent-1' })).content[0]?.text).toContain('Permanently deleted')
-    const status = createGetAgentStatusTool(supervisor, 'parent')
-    expect((await status.execute('status', {})).content[0]?.text).toContain('agent-1 running')
-    expect((await status.execute('status', {})).isError).toBe(true)
-    expect(calls).toContain('spawn:parent:Work')
   })
 
   test('MCP resource tools list and read client resources', async () => {

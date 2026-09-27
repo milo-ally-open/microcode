@@ -4,11 +4,8 @@ import { getAllToolDefinitions, getAllDeferredToolDefinitions, getCoreToolDefini
 import { joinSummaryParts, producedText, statusPrefix, text } from './summary.ts'
 import { createSkillToolWithAgent, TOOL_DEFAULT_PERMISSION as skillDefault, TOOL_NAME as SKILL_TOOL_NAME } from './SkillTool/SkillTool.ts'
 import { TOOL_SEARCH_TOOL_NAME } from './ToolSearchTool/ToolSearchTool.ts'
-import { TOOL_NAME as SPAWN_AGENT_TOOL_NAME } from './SpawnAgentTool/SpawnAgentTool.ts'
-import { TOOL_NAME as SEND_AGENT_MESSAGE_TOOL_NAME } from './SendAgentMessageTool/SendAgentMessageTool.ts'
-import { TOOL_NAME as STOP_AGENT_TOOL_NAME } from './StopAgentTool/StopAgentTool.ts'
-import { TOOL_NAME as GET_AGENT_STATUS_TOOL_NAME } from './GetAgentStatusTool/GetAgentStatusTool.ts'
 import { TOOL_NAME as VISION_TOOL_NAME } from './VisionTool/VisionTool.ts'
+import { TOOL_NAME as WORKTREE_TOOL_NAME } from './GitWorkTreeTool/GitWorkTreeTool.ts'
 
 // Import tool registrations (side effects — each calls registerTool())
 import './BashTool/index.ts'
@@ -42,11 +39,6 @@ export { createWebSearchTool, TOOL_NAME as WEB_SEARCH_TOOL_NAME, TOOL_DEFAULT_PE
 export { createWebFetchTool, TOOL_NAME as WEB_FETCH_TOOL_NAME, TOOL_DEFAULT_PERMISSION as WEB_FETCH_DEFAULT_PERMISSION } from './WebFetchTool/WebFetchTool.ts'
 export { createVisionTool, TOOL_NAME as VISION_TOOL_NAME, TOOL_DEFAULT_PERMISSION as VISION_DEFAULT_PERMISSION } from './VisionTool/VisionTool.ts'
 export { createTaskTool, TOOL_NAME as TASK_TOOL_NAME, TOOL_DEFAULT_PERMISSION as TASK_DEFAULT_PERMISSION } from './TaskTool/TaskTool.ts'
-export { createSpawnAgentTool, TOOL_NAME as SPAWN_AGENT_TOOL_NAME, TOOL_DEFAULT_PERMISSION as SPAWN_AGENT_DEFAULT_PERMISSION } from './SpawnAgentTool/SpawnAgentTool.ts'
-export { createSendAgentMessageTool, TOOL_NAME as SEND_AGENT_MESSAGE_TOOL_NAME, TOOL_DEFAULT_PERMISSION as SEND_AGENT_MESSAGE_DEFAULT_PERMISSION } from './SendAgentMessageTool/SendAgentMessageTool.ts'
-export { createStopAgentTool, TOOL_NAME as STOP_AGENT_TOOL_NAME, TOOL_DEFAULT_PERMISSION as STOP_AGENT_DEFAULT_PERMISSION } from './StopAgentTool/StopAgentTool.ts'
-export { createDeleteAgentTool, TOOL_NAME as DELETE_AGENT_TOOL_NAME, TOOL_DEFAULT_PERMISSION as DELETE_AGENT_DEFAULT_PERMISSION } from './DeleteAgentTool/DeleteAgentTool.ts'
-export { createGetAgentStatusTool, TOOL_NAME as GET_AGENT_STATUS_TOOL_NAME, TOOL_DEFAULT_PERMISSION as GET_AGENT_STATUS_DEFAULT_PERMISSION } from './GetAgentStatusTool/GetAgentStatusTool.ts'
 export { createGitWorkTreeTool, TOOL_NAME as GIT_WORKTREE_TOOL_NAME, TOOL_DEFAULT_PERMISSION as GIT_WORKTREE_DEFAULT_PERMISSION } from './GitWorkTreeTool/GitWorkTreeTool.ts'
 /** Get the names of all deferred tool definitions (for system prompt listing). */
 export function getDeferredToolNames(): string[] {
@@ -57,10 +49,7 @@ export function getDeferredToolNames(): string[] {
 export const TOOL_DEFAULT_PERMISSIONS: Record<string, PermissionBehavior> = {
   ...getToolDefaultPermissions(),
   [SKILL_TOOL_NAME]: skillDefault,
-  [SPAWN_AGENT_TOOL_NAME]: 'ask',
-  [SEND_AGENT_MESSAGE_TOOL_NAME]: 'allow',
-  [STOP_AGENT_TOOL_NAME]: 'allow',
-  [GET_AGENT_STATUS_TOOL_NAME]: 'allow',
+  [WORKTREE_TOOL_NAME]: 'ask',
 }
 
 // ============================================================================

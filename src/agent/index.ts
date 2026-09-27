@@ -22,8 +22,6 @@ export type {
   MicrocodeAgentCoreEvent,
   MicrocodeAgentEvent,
   MicrocodeAgentEventListener,
-  MicrocodeAgentHandle,
-  MicrocodeAgentRegistry,
   MicrocodeAgentSnapshot,
 } from './types.ts'
 export type {

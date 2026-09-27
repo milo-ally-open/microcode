@@ -45,13 +45,10 @@ import { SessionManager } from '../session/SessionManager.ts'
 import type { MicrocodeAgent, MicrocodeAgentEvent } from '../agent/index.ts'
 import type { Skill } from '../skill/skill.ts'
 import { type PermissionMode, PERMISSION_MODES } from '../permissions/index.ts'
-import { TOOL_NAME as SPAWN_TOOL_NAME } from '../tools/SpawnAgentTool/SpawnAgentTool.ts'
-import { promptSpawnPermission } from '../tools/SpawnAgentTool/UI.tsx'
 import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
 
 
-import type { AgentSupervisor } from '../swarm/index.ts'
 
 declare const MACRO: {
   VERSION: string
@@ -143,7 +140,6 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'mcp', description: 'Show MCP servers', argumentHint: '' },
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
   { name: 'tasks', description: 'Browse tasks and prioritize unfinished work in the current session', argumentHint: '' },
-  { name: 'agents', description: 'Browse delegated agents', argumentHint: '' },
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
   { name: 'skills', description: 'Show available skills' },
@@ -168,7 +164,7 @@ export class App {
   private pendingToolStartedAt = new Map<string, number>()
   private streamingToolLastRenderAt = new Map<string, number>()
   private toolElapsedTimer?: ReturnType<typeof setInterval>
-  private coordinatorWorking = false
+  private agentWorking = false
   private lastSigintTime = 0
   private mcpClient?: McpClientManager
   private sessionManager: SessionManager
@@ -185,23 +181,19 @@ export class App {
   private imagePathProcessing = false
   private suppressTrailingQuote = false
   private titleGenerated = false
-  private supervisor?: AgentSupervisor
-  private agentTreeWidgets: Text[] = []
-  private agentTreeTimer: ReturnType<typeof setInterval> | null = null
-  private agentTreeWorkingText: Text | null = null
-  private agentTreeFrameIndex = 0
+  private workingText: Text | null = null
+  private workingFrameIndex = 0
+  private workingTimer: ReturnType<typeof setInterval> | undefined
   onExit?: () => void | Promise<void>
 
   constructor(
     agent: MicrocodeAgent,
     mcpClient?: McpClientManager,
     sessionManager?: SessionManager,
-    supervisor?: AgentSupervisor,
   ) {
     this.agent = agent
     this.mcpClient = mcpClient
     this.sessionManager = sessionManager ?? new SessionManager()
-    this.supervisor = supervisor
     this.agent.setPersistence(this.sessionManager)
     this.ui = new TUI(new ProcessTerminal())
     this.headerContainer = new Container()
@@ -212,12 +204,6 @@ export class App {
     this.footer = new FooterComponent(
       agent,
       process.cwd(),
-      supervisor
-        ? () => ({
-            running: supervisor.getRunningCount(),
-            max: supervisor.getMaxWorkers(),
-          })
-        : undefined,
     )
   }
 
@@ -233,7 +219,6 @@ export class App {
   async run(): Promise<void> {
     this.init()
     this.setupAgentSubscription()
-    this.setupSwarmSubscription()
 
     // Show existing session title in footer (e.g., from --resume)
     const currentId = this.sessionManager.getSessionId()
@@ -428,11 +413,6 @@ export class App {
     }
 
     // App-level key handlers on the Editor (pi-coding-agent pattern)
-    const stopAllSubAgents = () => {
-      if (!this.supervisor) return
-      void this.supervisor.stopAll().catch(() => {})
-    }
-
     this.editor.onEscape = () => {
       const now = Date.now()
       if (now - this.lastSigintTime < 500) {
@@ -444,11 +424,6 @@ export class App {
         this.cancelBashCommand()
       } else if (this.isAgentBusy()) {
         this.agent.abort()
-        stopAllSubAgents()
-      } else if (this.supervisor && this.supervisor.listAgents().some(
-        s => s.task.status === 'running' || s.task.status === 'queued'
-      )) {
-        stopAllSubAgents()
       } else {
         this.editor.setText('')
       }
@@ -460,11 +435,6 @@ export class App {
         this.cancelBashCommand()
       } else if (this.isAgentBusy()) {
         this.agent.abort()
-        stopAllSubAgents()
-      } else if (this.supervisor && this.supervisor.listAgents().some(
-        s => s.task.status === 'running' || s.task.status === 'queued'
-      )) {
-        stopAllSubAgents()
       } else {
         this.exit()
       }
@@ -474,10 +444,6 @@ export class App {
     }
 
     this.ui.addInputListener((data) => {
-      if (data === '\x01' && this.supervisor && !this.permissionPromptActive) {
-        this.handleAgentsCommand()
-        return { consume: true }
-      }
       return undefined
     })
 
@@ -729,9 +695,6 @@ export class App {
         this.handleTasksCommand()
         return true
 
-      case '/agents':
-        this.handleAgentsCommand()
-        return true
 
       case '/permission':
         this.handlePermissionCommand(args)
@@ -1040,200 +1003,6 @@ export class App {
     }
   }
 
-  private handleAgentsCommand(): void {
-    if (!this.supervisor) {
-      this.showError('Multi-agent mode is unavailable.')
-      return
-    }
-    const states = this.supervisor.listAgents()
-    if (states.length === 0) {
-      this.showStatus('No delegated agents.')
-      return
-    }
-    const items: SelectItem[] = states.map(({ task, activity }) => ({
-      value: task.agentId,
-      label: `${this.agentStatusIcon(task.status)} ${task.description}`,
-      description: `${task.status} · ${task.usage.tokens.toLocaleString()} tokens${activity ? ` · ${activity}` : ''}`,
-    }))
-    const selectList = new SelectList(items, Math.min(items.length, 10), {
-      selectedPrefix: (text) => chalk.cyan(text),
-      selectedText: (text) => chalk.cyan(text),
-      description: (text) => theme.dim(text),
-      scrollInfo: (text) => theme.dim(text),
-      noMatch: (text) => theme.dim(text),
-    })
-    this.chatContainer.addChild(
-      new Text(theme.fg('accent', 'Agents — Enter: details  Esc: back'), 1, 0),
-    )
-    this.chatContainer.addChild(selectList)
-    this.ui.setFocus(selectList)
-    this.ui.requestRender()
-
-    let finished = false
-    const finish = () => {
-      if (finished) return
-      finished = true
-      this.chatContainer.removeChild(selectList)
-      this.chatContainer.addChild(new Spacer(1))
-      this.ui.setFocus(this.editor)
-      this.ui.requestRender()
-    }
-
-    selectList.onSelect = (item) => {
-      finish()
-      void this.showAgentDetails(item.value)
-    }
-    selectList.onCancel = finish
-  }
-
-  private async showAgentDetails(agentId: string): Promise<void> {
-    if (!this.supervisor) return
-    const state = this.supervisor.listAgents().find(
-      (item) => item.task.agentId === agentId,
-    )
-    if (!state) {
-      this.showError(`Agent not found: ${agentId}`)
-      return
-    }
-    const { task } = state
-    const duration = task.startedAt
-      ? Math.max(0, (task.completedAt ?? Date.now()) - task.startedAt)
-      : 0
-
-    const secs = Math.round(duration / 1000)
-    const durationStr = secs < 60
-      ? `${secs}s`
-      : secs < 3600
-        ? `${Math.floor(secs / 60)}m ${secs % 60}s`
-        : `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
-
-    const detailContainer = new Container()
-    const dim = theme.dim
-    const accent = (s: string) => theme.fg('accent', s)
-
-    const addDetail = (text: string) => detailContainer.addChild(new Text(text, 1, 0))
-
-    const lines: string[] = [
-      accent(`${this.agentStatusIcon(task.status)} ${task.description}`),
-      dim('│'),
-      `├─ ${dim('ID')}        ${task.agentId.slice(0, 40)}`,
-      `├─ ${dim('Status')}    ${task.status}${task.error ? ` — ${task.error}` : ''}`,
-      `├─ ${dim('Role')}      ${task.role}`,
-      `├─ ${dim('Time')}      ${durationStr} · ${task.usage.tokens.toLocaleString()} tokens · ${task.usage.toolCalls} tools`,
-    ]
-
-    // Available tools
-    const toolNames = this.supervisor!.registry.get(agentId)?.getSnapshot().toolNames ?? []
-    if (toolNames.length > 0) {
-      lines.push(`├─ ${accent('Tools')} ${dim(`(${toolNames.length})`)} ${dim('─'.repeat(Math.max(0, 48 - 9)))}`)
-      for (const name of toolNames) {
-        lines.push(`${dim('│')}  ${name}`)
-      }
-    }
-    lines.push(dim('│'))
-
-    // Prompt section
-    const promptLines = task.prompt.split('\n')
-    lines.push(`├─ ${accent('Prompt')} ${dim('─'.repeat(Math.max(0, 50 - 9)))}`)
-    for (const pl of promptLines.slice(0, 20)) {
-      lines.push(`${dim('│')}  ${pl}`)
-    }
-    if (promptLines.length > 20) lines.push(`${dim('│')}  …and ${promptLines.length - 20} more lines`)
-
-    // Transcript — last 6 tool calls only
-    const liveTranscript = this.supervisor.registry.get(agentId)?.getMessages()
-    const transcript = (liveTranscript && liveTranscript.length > 0
-      ? liveTranscript
-      : await this.sessionManager.loadAgentTranscript(agentId)) ?? []
-    const toolMessages = transcript
-      .filter((m) => m.role === 'toolResult')
-      .slice(-6)
-    const transcriptLines: string[] = []
-    if (toolMessages.length > 0) {
-      transcriptLines.push('')
-      transcriptLines.push(accent(`Last ${toolMessages.length} tool calls`))
-      for (const m of toolMessages) {
-        const name = m.toolName ?? 'unknown'
-        transcriptLines.push(`${dim('  ▸')} ${name}`)
-      }
-    }
-
-    for (const line of lines) addDetail(line)
-
-    if (task.blockers.length > 0) {
-      addDetail(dim('│'))
-      addDetail(`├─ ${accent('Blocked')} ${dim('─'.repeat(Math.max(0, 48 - 10)))}`)
-      for (const blocker of task.blockers) addDetail(`│  ${blocker.toolName}: ${blocker.reason}`)
-    }
-
-    if (task.error) {
-      addDetail(dim('│'))
-      addDetail(`└─ ${accent('Error')} ${dim('─'.repeat(Math.max(0, 48 - 8)))}`)
-      addDetail(`   ${task.error}`)
-    }
-
-    for (const line of transcriptLines) addDetail(line)
-
-    // Delete / Back
-    const deleteItems: SelectItem[] = [
-      { value: 'delete', label: 'Delete agent', description: 'Permanently remove this agent and all its traces' },
-      { value: 'back', label: 'Back', description: 'Return to agent list' },
-    ]
-    const deleteSelect = new SelectList(deleteItems, 2, {
-      selectedPrefix: (text) => chalk.cyan(text),
-      selectedText: (text) => chalk.cyan(text),
-      description: (text) => theme.dim(text),
-      scrollInfo: (text) => theme.dim(text),
-      noMatch: (text) => theme.dim(text),
-    })
-    detailContainer.addChild(new Spacer(1))
-    detailContainer.addChild(deleteSelect)
-    this.chatContainer.addChild(detailContainer)
-    this.chatContainer.addChild(new Spacer(1))
-    this.ui.setFocus(deleteSelect)
-    this.ui.requestRender()
-
-    let deleteFinished = false
-    const goBack = () => {
-      if (deleteFinished) return
-      deleteFinished = true
-      this.chatContainer.removeChild(detailContainer)
-      this.handleAgentsCommand()
-    }
-
-    deleteSelect.onSelect = (item) => {
-      if (item.value === 'delete') {
-        void this.supervisor!.delete(agentId).then(() => {
-          this.chatContainer.removeChild(detailContainer)
-          this.chatContainer.addChild(
-            new Text(theme.fg('accent', `✓ Deleted agent ${state.task.description} permanently.`), 1, 0),
-          )
-          this.chatContainer.addChild(new Spacer(1))
-          this.updateAgentTree()
-          this.ui.setFocus(this.editor)
-          this.ui.requestRender()
-        }).catch((err: Error) => {
-          this.chatContainer.removeChild(detailContainer)
-          this.showError(`Failed to delete agent: ${err.message}`)
-        })
-      } else {
-        goBack()
-      }
-    }
-    deleteSelect.onCancel = goBack
-  }
-
-  private agentStatusIcon(status: string): string {
-    switch (status) {
-      case 'queued': return '○'
-      case 'running': return '●'
-      case 'blocked': return '!'
-      case 'completed': return '✓'
-      case 'failed': return '✗'
-      default: return '■'
-    }
-  }
-
   private async handleCompactCommand(args: string): Promise<void> {
     if (this.compacting) {
       this.showError('Compaction already in progress.')
@@ -1306,7 +1075,7 @@ export class App {
       `  Breakdown  system ${formatTokens(usage.systemPromptTokens)} + messages ${formatTokens(usage.messageTokens)}`,
     )
 
-    // Aggregate byModel across all agents (coordinator + sub-agents)
+    // Show the current session's accumulated usage by model.
     const mergedByModel: Record<string, { modelId: string; provider: string; api: string; requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number; totalCost: number }> = {}
 
     const mergeStats = (stats: Readonly<import('../agent/AgentTokenTracker.js').AgentTokenSnapshot>) => {
@@ -1327,13 +1096,6 @@ export class App {
     }
 
     mergeStats(tokenStats)
-
-    if (this.supervisor) {
-      for (const { task } of this.supervisor.listAgents()) {
-        const handle = this.supervisor.registry.get(task.agentId)
-        if (handle) mergeStats(handle.getTokenStats())
-      }
-    }
 
     const modelUsages = Object.values(mergedByModel)
     if (modelUsages.length > 0) {
@@ -1440,9 +1202,7 @@ export class App {
 
       try {
         await this.agent.persistMessages()
-        await this.supervisor?.prepareSessionSwitch()
         const messages = await this.sessionManager.switchToSession(selected)
-        await this.supervisor?.restore()
 
         // Replace messages on agent
         this.agent.replaceMessages(messages, 'rebuild')
@@ -1682,10 +1442,7 @@ export class App {
 
   private async handleNewSession(): Promise<void> {
     await this.agent.persistMessages()
-    await this.supervisor?.prepareSessionSwitch()
-
     this.sessionManager.beginDraft(process.cwd())
-    await this.supervisor?.restore()
 
     // Reset state
     this.agent.clearMessages()
@@ -2074,7 +1831,6 @@ export class App {
 
         if (selectedMode) {
           this.agent.setPermissionMode(selectedMode)
-          this.supervisor?.syncPermissionsToWorkers(true)
           this.showStatus(`Permission mode set to: ${selectedMode}`)
         }
 
@@ -2100,7 +1856,6 @@ export class App {
     }
 
     this.agent.setPermissionMode(mode)
-    this.supervisor?.syncPermissionsToWorkers(true)
     this.showStatus(`Permission mode set to: ${mode}`)
   }
 
@@ -2474,10 +2229,6 @@ export class App {
     input: Record<string, unknown>,
     description: string,
   ): Promise<boolean> {
-    if (toolName === SPAWN_TOOL_NAME) {
-      return this.promptSpawnPermission(input, description)
-    }
-
     return new Promise<boolean>((resolve) => {
       // Permission waiting is not tool execution time.
       this.pauseToolElapsedTimer()
@@ -2554,66 +2305,11 @@ export class App {
       selectList.onSelect = (item) => {
         if (item.value === 'allow-session') {
           this.agent.addSessionPermission(toolName, ruleContent)
-          this.supervisor?.syncPermissionsToWorkers()
         }
         finish(item.value === 'allow' || item.value === 'allow-session')
       }
       selectList.onCancel = () => finish(false)
     })
-  }
-
-  private async promptSpawnPermission(
-    input: Record<string, unknown>,
-    _description: string,
-  ): Promise<boolean> {
-    this.pauseToolElapsedTimer()
-    this.hideWorking()
-    this.permissionPromptActive = true
-
-    // Intercept Ctrl+C to exit app
-    let finished = false
-    const removeListener = this.ui.addInputListener((data) => {
-      if (data === '\x03') {
-        finished = true
-        removeListener()
-        this.permissionPromptActive = false
-        this.flushPendingEventsWhilePermission()
-        this.exit()
-        return { consume: true }
-      }
-      return undefined
-    })
-
-    const result = await promptSpawnPermission({
-      input,
-      parentToolNames: this.agent.getSnapshot().toolNames,
-      chatContainer: this.chatContainer,
-      setFocus: (c) => this.ui.setFocus(c),
-      requestRender: () => this.ui.requestRender(),
-    })
-
-    if (!finished) {
-      removeListener()
-    }
-    this.permissionPromptActive = false
-    this.flushPendingEventsWhilePermission()
-
-    if (result.allowSession) {
-      this.agent.addSessionPermission(SPAWN_TOOL_NAME)
-      this.supervisor?.syncPermissionsToWorkers()
-    }
-
-    if (result.approved) {
-      this.resumeToolElapsedTimer()
-      this.showWorking()
-    } else {
-      this.clearPendingToolState()
-      this.hideWorking()
-      this.agent.abort()
-    }
-    this.ui.setFocus(this.editor)
-    this.ui.requestRender()
-    return result.approved
   }
 
   private extractRuleContent(toolName: string, input: Record<string, unknown>): string | undefined {
@@ -2948,168 +2644,35 @@ export class App {
     }
   }
 
-  private setupSwarmSubscription(): void {
-    if (!this.supervisor) return
-    this.supervisor.subscribe(() => {
-      const process = () => {
-        this.updateAgentTree()
-        this.footer.invalidate()
-        this.ui.requestRender()
-      }
-      if (this.permissionPromptActive) {
-        this.pendingEventsWhilePermission.push(() => process())
-      } else {
-        process()
-      }
-    })
-    this.updateAgentTree()
-  }
-
-  private updatingAgentTree = false
-  private agentTreeDirty = false
-
-  private updateAgentTree(): void {
-    if (this.updatingAgentTree) {
-      this.agentTreeDirty = true
-      return
-    }
-    this.updatingAgentTree = true
-    this.agentTreeDirty = false
-    try {
-    const dim = (s: string) => theme.dim(s)
-    const accent = (s: string) => theme.fg('accent', s)
-    const active = new Set(['queued', 'running'])
-
-    // ── Coordinator "Working..." spinner — render in its own container ──
-    if (this.coordinatorWorking) {
-      this.agentTreeFrameIndex++
+  private updateWorkingIndicator(): void {
+    if (this.agentWorking) {
+      this.workingFrameIndex++
       const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-      const frame = frames[Math.floor(this.agentTreeFrameIndex / 2) % frames.length]
-      const label = `${accent(frame)} Working...`
-      if (this.agentTreeWorkingText) {
-        this.agentTreeWorkingText.setText(label)
-      } else {
-        this.agentTreeWorkingText = new Text(label, 1, 0)
-        this.workingContainer.addChild(this.agentTreeWorkingText)
+      const frame = frames[Math.floor(this.workingFrameIndex / 2) % frames.length]
+      const label = `${theme.fg('accent', frame)} Working...`
+      if (this.workingText) this.workingText.setText(label)
+      else {
+        this.workingText = new Text(label, 1, 0)
+        this.workingContainer.addChild(this.workingText)
       }
-    } else if (this.agentTreeWorkingText) {
-      this.workingContainer.removeChild(this.agentTreeWorkingText)
-      this.agentTreeWorkingText = null
-      this.agentTreeFrameIndex = 0
-    }
-
-    if (!this.supervisor) return
-    const states = this.supervisor.listAgents()
-
-    // ── Build the agent status lines ──
-    const now = Date.now()
-    const fmtElapsed = (ms: number) => {
-      const totalSecs = ms / 1000
-      if (totalSecs < 1) return `${totalSecs.toFixed(1)}s`
-      if (totalSecs < 60) return `${Math.floor(totalSecs)}s`
-      const mins = Math.floor(totalSecs / 60)
-      const secs = Math.floor(totalSecs % 60)
-      return `${mins}m ${secs}s`
-    }
-
-    const toolIcon = (e: { done: boolean; error: boolean }) =>
-      !e.done ? accent('●') : e.error ? theme.fg('red', '✗') : theme.fg('green', '✓')
-
-    const lines: string[] = []
-    lines.push(dim('─ Agents ─'))
-
-    const activeStates = states.filter((s) => active.has(s.task.status))
-    const showable = new Set(['completed', 'failed', 'blocked'])
-    const terminalStates = states
-      .filter((s) => showable.has(s.task.status))
-      .sort((a, b) => (b.task.completedAt ?? 0) - (a.task.completedAt ?? 0))
-
-    if (!this.coordinatorWorking && activeStates.length === 0 && terminalStates.length === 0) {
-      for (const w of this.agentTreeWidgets.splice(0)) {
-        this.statusContainer.removeChild(w)
+      if (!this.workingTimer) {
+        this.workingTimer = setInterval(() => {
+          this.updateWorkingIndicator()
+          this.ui.requestRender()
+        }, 80)
       }
       return
     }
-
-    for (let i = 0; i < activeStates.length; i++) {
-      const { task, toolHistory, activity } = activeStates[i]
-      const isLastActive = i === activeStates.length - 1 && terminalStates.length === 0
-      const branch = isLastActive ? '└─' : '├─'
-      const elapsed = task.startedAt ? now - task.startedAt : 0
-      const sub = task.status === 'queued' ? 'waiting' : activity || 'running'
-      lines.push(`${branch} ${this.agentStatusIcon(task.status)} ${task.description}  ${dim(fmtElapsed(elapsed))} · ${dim(sub)}`)
-
-      const prefix = isLastActive ? '   ' : '│  '
-      const tools = toolHistory.slice(-4)
-      for (let j = 0; j < tools.length; j++) {
-        const tool = tools[j]
-        const lastTool = j === tools.length - 1
-        const statusStr = !tool.done && tool.status ? ` ${accent(tool.status)}` : ''
-        const detail = tool.detail ? ` ${dim(tool.detail)}` : ''
-        const elapsed = !tool.done && tool.startedAt ? ` ${dim(fmtElapsed(now - tool.startedAt))}` : ''
-        lines.push(`${prefix}${lastTool ? '└─' : '├─'} ${toolIcon(tool)} ${tool.name}${statusStr}${detail}${elapsed}`)
-      }
-      if (toolHistory.length > 4) {
-        lines.push(`${prefix}   ${dim(`…${toolHistory.length - 4} more`)}`)
-      }
+    if (this.workingTimer) {
+      clearInterval(this.workingTimer)
+      this.workingTimer = undefined
     }
-
-    for (let i = 0; i < terminalStates.length; i++) {
-      const { task, toolHistory } = terminalStates[i]
-      const isLast = i === terminalStates.length - 1 && activeStates.length === 0
-      const branch = isLast ? '└─' : '├─'
-      const tools = toolHistory.slice(-1)
-      const summary = tools.length > 0
-        ? ` ${toolIcon(tools[0])} ${tools[0].name}${tools[0].detail ? ` ${dim(tools[0].detail)}` : ''}${toolHistory.length > 1 ? `  (${toolHistory.length})` : ''}`
-        : ''
-      lines.push(dim(`${branch} ${this.agentStatusIcon(task.status)} ${task.description}${summary}`))
+    if (this.workingText) {
+      this.workingContainer.removeChild(this.workingText)
+      this.workingText = null
     }
-
-    // ── Diff update: reconcile generated lines with existing widgets ──
-    const statusWidgets = this.agentTreeWidgets
-
-    // Add/update widgets for each line
-    for (let i = 0; i < lines.length; i++) {
-      if (i < statusWidgets.length) {
-        // Update existing widget
-        statusWidgets[i].setText(lines[i])
-      } else {
-        // Create new widget
-        const w = new Text(lines[i], 1, 0)
-        this.statusContainer.addChild(w)
-        this.agentTreeWidgets.push(w)
-      }
-    }
-
-    // Remove excess widgets
-    while (statusWidgets.length > lines.length) {
-      const w = statusWidgets.pop()!
-      this.statusContainer.removeChild(w)
-      const idx = this.agentTreeWidgets.indexOf(w)
-      if (idx !== -1) this.agentTreeWidgets.splice(idx, 1)
-    }
-
-    // ── Start/stop the animation timer ──
-    const hasActive = activeStates.length > 0 || this.coordinatorWorking
-    if (hasActive && !this.agentTreeTimer) {
-      // 80ms ≈ 60fps, smoothly animates the spinner
-      this.agentTreeTimer = setInterval(() => {
-        this.updateAgentTree()
-        this.ui.requestRender()
-      }, 80)
-    } else if (!hasActive && this.agentTreeTimer) {
-      clearInterval(this.agentTreeTimer)
-      this.agentTreeTimer = null
-    }
-    } finally {
-      this.updatingAgentTree = false
-      if (this.agentTreeDirty) {
-        this.agentTreeDirty = false
-        this.updateAgentTree()
-      }
-    }
+    this.workingFrameIndex = 0
   }
-
   private updateStreamingToolCall(message: AgentMessage, forceRender: boolean): void {
     if (message.role !== 'assistant') return
 
@@ -3298,16 +2861,16 @@ export class App {
   }
 
   private showWorking(): void {
-    if (this.coordinatorWorking) return
-    this.coordinatorWorking = true
-    this.updateAgentTree()
+    if (this.agentWorking) return
+    this.agentWorking = true
+    this.updateWorkingIndicator()
     this.ui.requestRender()
   }
 
   private hideWorking(): void {
-    if (!this.coordinatorWorking) return
-    this.coordinatorWorking = false
-    this.updateAgentTree()
+    if (!this.agentWorking) return
+    this.agentWorking = false
+    this.updateWorkingIndicator()
     this.ui.requestRender()
   }
 
@@ -3319,13 +2882,13 @@ export class App {
       clearInterval(this.toolElapsedTimer)
       this.toolElapsedTimer = undefined
     }
-    if (this.agentTreeTimer) {
-      clearInterval(this.agentTreeTimer)
-      this.agentTreeTimer = null
+    if (this.workingTimer) {
+      clearInterval(this.workingTimer)
+      this.workingTimer = undefined
     }
-    if (this.agentTreeWorkingText) {
-      this.workingContainer.removeChild(this.agentTreeWorkingText)
-      this.agentTreeWorkingText = null
+    if (this.workingText) {
+      this.workingContainer.removeChild(this.workingText)
+      this.workingText = null
     }
     this.ui.stop()
   }

@@ -56,7 +56,7 @@ import type {
 } from './persistence.ts'
 
 function createAgentId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return globalThis.crypto?.randomUUID?.() ?? `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 function normalizeIdentity(options: CreateMicrocodeAgentOptions): Readonly<AgentIdentity> {
@@ -64,7 +64,6 @@ function normalizeIdentity(options: CreateMicrocodeAgentOptions): Readonly<Agent
     id: options.identity?.id ?? createAgentId(),
     name: options.identity?.name,
     role: options.identity?.role,
-    parentId: options.identity?.parentId,
   })
 }
 
@@ -84,7 +83,6 @@ export class MicrocodeAgent {
   private readonly modelManager: AgentModelManager
   private readonly toolManager: AgentToolManager
   private readonly skillManager: AgentSkillManager
-  private readonly systemPromptSuffix?: string
   private baseSystemPrompt: string
   private mcpServers?: McpServerState[]
   private persistence?: AgentSessionPersistence
@@ -92,21 +90,17 @@ export class MicrocodeAgent {
   private readonly eventController = new AbortController()
   private permissionRequestHandler?: AgentPermissionConfig['onPermissionRequest']
   private askUserQuestionHandler?: AgentPermissionConfig['onAskUserQuestion']
-  private delegatePermissionRequestHandler?: AgentPermissionConfig['onDelegatePermissionRequest']
   constructor(options: CreateMicrocodeAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd()
     this.persistence = options.persistence
-    this.systemPromptSuffix = options.systemPromptSuffix
     this.identity = normalizeIdentity(options)
     this.permissionRequestHandler = options.permission?.onPermissionRequest
     this.askUserQuestionHandler = options.permission?.onAskUserQuestion
-    this.delegatePermissionRequestHandler = options.permission?.onDelegatePermissionRequest
     this.permissionManager = new PermissionManager({
       mode: options.permission?.mode,
       allowedTools: options.permission?.allow,
       deniedTools: options.permission?.deny,
       askTools: options.permission?.ask,
-      nonInteractiveStrategy: options.permission?.nonInteractiveStrategy,
       onPermissionRequest: this.permissionRequestHandler
         ? (toolName, input, description) =>
             this.handlePermissionRequest('tool', toolName, input, description)
@@ -114,10 +108,6 @@ export class MicrocodeAgent {
       onAskUserQuestion: this.askUserQuestionHandler
         ? (toolName, input) => this.handleQuestionRequest(toolName, input)
         : undefined,
-      onDelegatePermissionRequest: this.delegatePermissionRequestHandler
-        ? (toolName, input, description) =>
-            this.handlePermissionRequest('delegated', toolName, input, description)
-          : undefined,
     })
 
     const modelConfig = options.modelId
@@ -150,9 +140,7 @@ export class MicrocodeAgent {
       deferredToolNames: deferredToolNames.length > 0 ? deferredToolNames : undefined,
     }).join('\n\n')
 
-    this.baseSystemPrompt = this.systemPromptSuffix
-      ? `${systemPrompt}\n\n${this.systemPromptSuffix}`
-      : systemPrompt
+    this.baseSystemPrompt = systemPrompt
     this.compactionManager = new CompactionManager({
       model: modelConfig.model,
       apiKey: modelConfig.apiKey,
@@ -458,14 +446,6 @@ export class MicrocodeAgent {
     return this.handlePermissionRequest('tool', toolName, input, description)
   }
 
-  requestDelegatedPermission(
-    toolName: string,
-    input: Record<string, unknown>,
-    description: string,
-  ): Promise<boolean> {
-    return this.handlePermissionRequest('delegated', toolName, input, description)
-  }
-
   addPermissionRule(rule: PermissionRule): void {
     this.permissionManager.addRule(rule)
     this.emitStateChangedDetached('permission_changed')
@@ -508,15 +488,6 @@ export class MicrocodeAgent {
     this.askUserQuestionHandler = handler
     this.permissionManager.setOnAskUserQuestion((toolName, input) =>
       this.handleQuestionRequest(toolName, input),
-    )
-  }
-
-  setDelegatePermissionRequestHandler(
-    handler: Parameters<PermissionManager['setOnDelegatePermissionRequest']>[0],
-  ): void {
-    this.delegatePermissionRequestHandler = handler
-    this.permissionManager.setOnDelegatePermissionRequest((toolName, input, description) =>
-      this.handlePermissionRequest('delegated', toolName, input, description),
     )
   }
 
@@ -674,9 +645,7 @@ export class MicrocodeAgent {
       skills: [...this.skillManager.getSkills()],
       deferredToolNames: deferredToolNames.length > 0 ? deferredToolNames : undefined,
     }).join('\n\n')
-    return this.systemPromptSuffix
-      ? `${prompt}\n\n${this.systemPromptSuffix}`
-      : prompt
+    return prompt
   }
 
   private appendLoadedSkills(basePrompt: string): string {
@@ -743,7 +712,7 @@ export class MicrocodeAgent {
   }
 
   private async handlePermissionRequest(
-    kind: 'tool' | 'delegated',
+    kind: 'tool',
     toolName: string,
     input: Record<string, unknown>,
     description: string,
@@ -754,10 +723,9 @@ export class MicrocodeAgent {
       agentId: this.identity.id,
       request,
     })
-    const handler = kind === 'delegated'
-      ? this.delegatePermissionRequestHandler
-      : this.permissionRequestHandler
-    const allowed = handler ? await handler(toolName, input, description) : false
+    const allowed = this.permissionRequestHandler
+      ? await this.permissionRequestHandler(toolName, input, description)
+      : false
     await this.emit({
       type: 'permission_resolved',
       agentId: this.identity.id,

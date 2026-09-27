@@ -193,7 +193,7 @@ describe('GUI runtime timeline restore', () => {
     })
   })
 
-  test('strips leaked worker metadata from assistant display text', () => {
+  test('strips leaked internal task metadata from assistant display text', () => {
     const text = [
       'task-d0b88513-3ab5-47d5-a3b5-0ae2857625c7 agent-2f2c4412-f59c-4bae-8f4d-615f1ef1a95b completed I searched with WebSearch and WebFetch.',
       '[WebSearch] query="LangChain4j" · 8 results',

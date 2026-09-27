@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ChevronDown, ChevronRight, FileText, FolderOpen, GitBranch, KeyRound, MessageSquare, PanelLeft, Plus, Server, Settings, Sparkles, Trash2, Workflow } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, FolderOpen, GitBranch, KeyRound, MessageSquare, PanelLeft, Plus, Server, Settings, Sparkles } from 'lucide-react'
 import { GlassSelect } from '../components/GlassSelect.ts'
 import { BrandLogo } from '../components/BrandLogo.ts'
 import { ApiConfigPanel } from '../features/settings/ApiConfigPanel.ts'
@@ -101,7 +101,6 @@ export function Sidebar({
   onPickWorkspace?: () => void
   onOpenWorkspace?: (path: string) => void
 }) {
-  const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({})
   const [expandedTaskLists, setExpandedTaskLists] = useState<Record<string, boolean>>({})
   const [mcpConfigText, setMcpConfigText] = useState('')
   const [modelConfigText, setModelConfigText] = useState('')
@@ -176,7 +175,6 @@ export function Sidebar({
       },
     }, React.createElement(MessageSquare, { size: 18 }), '新聊天'),
     React.createElement('button', { className: cx('nav-row', view === 'sessions' && 'active'), onClick: () => setView('sessions') }, React.createElement(PanelLeft, { size: 18 }), '会话历史'),
-    React.createElement('button', { className: cx('nav-row', view === 'agents' && 'active'), onClick: () => setView('agents') }, React.createElement(Workflow, { size: 18 }), '代理'),
     React.createElement('button', { className: cx('nav-row', view === 'tasks' && 'active'), onClick: () => setView('tasks') }, React.createElement(GitBranch, { size: 18 }), '任务'),
     React.createElement('button', { className: cx('nav-row', view === 'mcp' && 'active'), onClick: () => setView('mcp') }, React.createElement(Server, { size: 18 }), 'MCP'),
     React.createElement('button', { className: cx('nav-row', view === 'skills' && 'active'), onClick: () => setView('skills') }, React.createElement(Sparkles, { size: 18 }), '技能'),
@@ -204,69 +202,6 @@ export function Sidebar({
     content && React.createElement('div', { className: 'sidebar-panel' }, content),
     !content && recent,
   )
-
-  if (view === 'agents') {
-    return shell(React.createElement(React.Fragment, null,
-      React.createElement('div', { className: 'panel-title' }, `代理 ${snapshot.runningWorkers}/${snapshot.maxWorkers}`),
-      snapshot.agents.length === 0
-        ? React.createElement('div', { className: 'empty' }, 'No delegated agents yet.')
-        : React.createElement(React.Fragment, null,
-          React.createElement('div', { className: 'accordion-list' },
-            snapshot.agents.map((agent, index) => {
-              const expanded = expandedAgents[agent.task.agentId] ?? index === 0
-              const recentTools = agent.toolHistory.slice(-8)
-              return React.createElement('section', { className: cx('accordion-item', expanded && 'expanded'), key: agent.task.id },
-                React.createElement('button', {
-                  className: 'accordion-trigger',
-                  type: 'button',
-                  'aria-expanded': expanded,
-                  onClick: () => setExpandedAgents((current) => ({ ...current, [agent.task.agentId]: !expanded })),
-                },
-                  expanded ? React.createElement(ChevronDown, { size: 15 }) : React.createElement(ChevronRight, { size: 15 }),
-                  React.createElement('span', { className: cx('status-dot', agent.task.status) }),
-                  React.createElement('span', { className: 'accordion-title' }, agent.task.description || agent.identity.name || agent.identity.id),
-                  React.createElement('small', null, agent.activity || agent.task.status),
-                ),
-                expanded && React.createElement('div', { className: 'accordion-body detail-card' },
-                  React.createElement('div', { className: 'detail-card-head' },
-                    React.createElement('strong', null, agent.identity.name || agent.task.agentId),
-                    React.createElement('button', {
-                      className: 'icon-danger-button',
-                      title: '删除代理',
-                      onClick: () => void window.microcode.deleteAgent(agent.task.agentId),
-                    }, React.createElement(Trash2, { size: 14 })),
-                  ),
-                  React.createElement('div', { className: 'detail-kv' },
-                    React.createElement('span', null, 'Status'),
-                    React.createElement('strong', null, agent.task.status),
-                  ),
-                  React.createElement('div', { className: 'detail-kv' },
-                    React.createElement('span', null, 'Role'),
-                    React.createElement('strong', null, agent.task.role || 'worker'),
-                  ),
-                  React.createElement('div', { className: 'detail-kv' },
-                    React.createElement('span', null, 'Usage'),
-                    React.createElement('strong', null, `${agent.task.usage.toolCalls} tools · ${agent.task.usage.tokens} tokens`),
-                  ),
-                  agent.activity && React.createElement('p', { className: 'detail-note' }, agent.activity),
-                  React.createElement('div', { className: 'sidebar-label' }, 'Prompt'),
-                  React.createElement('pre', { className: 'detail-pre' }, agent.task.prompt),
-                  recentTools.length > 0 && React.createElement(React.Fragment, null,
-                    React.createElement('div', { className: 'sidebar-label' }, 'Recent tools'),
-                    recentTools.map((tool, toolIndex) =>
-                      React.createElement('div', { className: cx('tool-mini-row', tool.done && 'done', tool.error && 'error'), key: `${tool.name}-${tool.startedAt ?? toolIndex}` },
-                        React.createElement('span', null, tool.name),
-                        React.createElement('small', null, tool.status || tool.detail || (tool.done ? 'done' : 'running')),
-                      ),
-                    ),
-                  ),
-                ),
-              )
-            }),
-          ),
-        ),
-    ))
-  }
 
   if (view === 'mcp') {
     const submitMcpConfig = () => {

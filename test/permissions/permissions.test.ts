@@ -45,7 +45,7 @@ describe('permissions modules', () => {
     expect(() => ((snapshot.allowRules as any).push({}))).toThrow()
   })
 
-  test('permission manager supports rule mutation, inheritance, ask answers, and delegation', async () => {
+  test('permission manager supports rule mutation and ask answers', async () => {
     const askTool: any = { setAnswers: (answers: any) => { askTool.answers = answers } }
     const manager = new PermissionManager({
       mode: 'interactive',
@@ -67,25 +67,8 @@ describe('permissions modules', () => {
     expect(askResult).toBeUndefined()
     expect(askTool.answers).toEqual({ Q: 'A' })
 
-    const snapshot = manager.getSnapshot()
-    const child = new PermissionManager({ mode: 'auto-approve' })
-    child.inheritFrom(snapshot, [{ toolName: 'bash', ruleContent: 'rm:*' }], false)
-    expect(child.getMode()).toBe('auto-approve')
-    expect(child.checkPermission('bash', { command: 'rm -rf /tmp' }).allowed).toBe(false)
-
-    const delegated = new PermissionManager({
-      nonInteractiveStrategy: 'delegate-to-parent',
-      onDelegatePermissionRequest: async () => false,
-    })
-    const blocked = await delegated.checkPermissionWithPrompt({
-      toolCall: { name: 'write', arguments: { file_path: 'a' } },
-      args: { file_path: 'a' },
-    } as any)
-    expect(blocked?.reason).toContain('parent agent')
-
     const prompted = new PermissionManager()
     prompted.setOnPermissionRequest(async (_tool, _input, description) => description.includes('write'))
-    prompted.setOnDelegatePermissionRequest(async () => true)
     prompted.setGetTool(() => undefined)
     prompted.setMode('interactive')
     expect(await prompted.checkPermissionWithPrompt({

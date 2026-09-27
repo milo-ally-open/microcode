@@ -36,7 +36,6 @@ export function CommandResult({ item, snapshot }: { item: GuiCommandItem; snapsh
           React.createElement(MetricTile, { label: 'Context', value: `${snapshot.agent.tokens.context.percentUsed}%` }),
           React.createElement(MetricTile, { label: 'Messages', value: snapshot.agent.messageCount }),
           React.createElement(MetricTile, { label: 'Session tokens', value: formatTokens(session.totalTokens) }),
-          React.createElement(MetricTile, { label: 'Workers', value: `${snapshot.runningWorkers}/${snapshot.maxWorkers}` }),
         ),
         React.createElement('div', { className: 'command-token-panel' },
           React.createElement('div', { className: 'command-token-head' },
@@ -140,23 +139,6 @@ export function CommandResult({ item, snapshot }: { item: GuiCommandItem; snapsh
               ),
             ),
           )
-    }
-
-    if (item.command === '/agents') {
-      return React.createElement('div', { className: 'command-agent-list' },
-        snapshot.agents.length === 0
-          ? React.createElement('div', { className: 'command-empty-state' }, 'No delegated agents yet.')
-          : snapshot.agents.map((agent) =>
-              React.createElement('div', { className: cx('command-agent-row', agent.task.status), key: agent.task.id },
-                React.createElement('span', { className: cx('status-dot', agent.task.status) }),
-                React.createElement('div', null,
-                  React.createElement('strong', null, agent.task.description || agent.identity.name || agent.identity.id),
-                  React.createElement('span', null, agent.activity || agent.task.status),
-                ),
-                React.createElement('small', null, `${agent.task.usage.toolCalls} tools`),
-              ),
-            ),
-      )
     }
 
     if (item.command === '/tasks') {

@@ -9,21 +9,8 @@ import { McpClientManager } from '../../mcp/client.ts'
 import { loadMcpConfig, isMcpConfigEmpty } from '../../mcp/config.ts'
 import { mergeProjectMcpServers, mergeProjectModels } from '../../config/projectConfigWrite.ts'
 import { SessionManager, type SessionListItem } from '../../session/SessionManager.ts'
-import { AgentSupervisor } from '../../swarm/index.ts'
 import { GitWorkTreeSystem } from '../../git/index.ts'
-import {
-  createDeleteAgentTool,
-  createGetAgentStatusTool,
-  createGitWorkTreeTool,
-  createSendAgentMessageTool,
-  createSpawnAgentTool,
-  createStopAgentTool,
-  DELETE_AGENT_TOOL_NAME,
-  GET_AGENT_STATUS_TOOL_NAME,
-  GIT_WORKTREE_TOOL_NAME,
-  SEND_AGENT_MESSAGE_TOOL_NAME,
-  STOP_AGENT_TOOL_NAME,
-} from '../../tools/index.ts'
+import { createGitWorkTreeTool } from '../../tools/index.ts'
 import { TOOL_NAME as WRITE_TOOL_NAME } from '../../tools/FileWriteTool/FileWriteTool.ts'
 import { TOOL_NAME as EDIT_TOOL_NAME } from '../../tools/FileEditTool/FileEditTool.ts'
 import { TOOL_NAME as TASK_TOOL_NAME } from '../../tools/TaskTool/TaskTool.ts'
@@ -81,11 +68,6 @@ interface PendingPermission {
 interface PendingQuestion {
   request: GuiQuestionRequest
   resolve: (result: { answers?: Record<string, string>; block?: boolean }) => void
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
 function makeId(prefix: string): string {
@@ -489,7 +471,6 @@ export class MicrocodeRuntime {
   readonly agent: MicrocodeAgent
   readonly sessionManager: SessionManager
   readonly mcpClient: McpClientManager
-  readonly supervisor: AgentSupervisor
   private readonly cwd: string
   private readonly timeline: GuiChatItem[] = []
   private readonly listeners = new Set<RuntimeListener>()
@@ -515,13 +496,11 @@ export class MicrocodeRuntime {
     agent: MicrocodeAgent
     sessionManager: SessionManager
     mcpClient: McpClientManager
-    supervisor: AgentSupervisor
   }) {
     this.cwd = options.cwd
     this.agent = options.agent
     this.sessionManager = options.sessionManager
     this.mcpClient = options.mcpClient
-    this.supervisor = options.supervisor
   }
 
   static async create(options: CreateMicrocodeRuntimeOptions = {}): Promise<MicrocodeRuntime> {
@@ -562,7 +541,6 @@ export class MicrocodeRuntime {
       sessionManager.beginDraft(cwd)
     }
 
-    const worktreeSystem = await GitWorkTreeSystem.open(cwd)
     const mcpClient = new McpClientManager()
     const agent = createMicrocodeAgentRuntime({
       cwd,
@@ -571,45 +549,18 @@ export class MicrocodeRuntime {
       permission: { mode: options.permissionMode },
       persistence: sessionManager,
       identity: {
-        id: `coordinator-${sessionManager.getSessionId() ?? 'session'}`,
-        name: 'Coordinator',
-        role: 'coordinator',
+        id: `assistant-${sessionManager.getSessionId() ?? 'session'}`,
+        name: 'Microcode',
+        role: 'assistant',
       },
     })
     if (restoredMessages?.length) {
       agent.replaceMessages(restoredMessages, 'rebuild')
     }
 
-    const supervisor = new AgentSupervisor({
-      coordinator: agent,
-      persistence: sessionManager,
-      worktreeSystem,
-      maxWorkers: positiveInt(process.env.MICROCODE_MAX_WORKERS, 4),
-      timeoutMs: positiveInt(process.env.MICROCODE_AGENT_TIMEOUT_MS, 30 * 60 * 1000),
-      configureWorker: (worker) => {
-        if (mcpClient.getConnectedServers().length > 0) {
-          worker.configureMcpTools(mcpClient)
-          worker.updateMcpServers(mcpClient.getServerStates())
-        }
-      },
-    })
-    const coordinatorId = agent.getId()
-    agent.addTools([
-      createSpawnAgentTool(supervisor, coordinatorId),
-      createSendAgentMessageTool(supervisor, coordinatorId),
-      createStopAgentTool(supervisor, coordinatorId),
-      createGetAgentStatusTool(supervisor, coordinatorId),
-      createDeleteAgentTool(supervisor, coordinatorId),
-      createGitWorkTreeTool(supervisor),
-    ])
-    agent.addSessionPermission(SEND_AGENT_MESSAGE_TOOL_NAME)
-    agent.addSessionPermission(STOP_AGENT_TOOL_NAME)
-    agent.addSessionPermission(GET_AGENT_STATUS_TOOL_NAME)
-    agent.addSessionPermission(DELETE_AGENT_TOOL_NAME)
-    agent.addSessionPermission(GIT_WORKTREE_TOOL_NAME)
-    await supervisor.restore()
+    agent.addTools([createGitWorkTreeTool(() => GitWorkTreeSystem.open(cwd))])
 
-    const runtime = new MicrocodeRuntime({ cwd, agent, sessionManager, mcpClient, supervisor })
+    const runtime = new MicrocodeRuntime({ cwd, agent, sessionManager, mcpClient })
     runtime.installHandlers()
     runtime.restoreTimelineFromMessages(agent.getMessages())
     await runtime.refreshDerivedState()
@@ -623,10 +574,6 @@ export class MicrocodeRuntime {
     if (!isMcpConfigEmpty(mcpConfigs)) {
       void this.mcpClient.connectAll(mcpConfigs).then(() => {
         this.mcpServers = this.mcpClient.getServerStates()
-        for (const runtime of this.supervisor.registry.list()) {
-          runtime.configureMcpTools(this.mcpClient)
-          runtime.updateMcpServers(this.mcpServers)
-        }
         this.agent.updateMcpServers(this.mcpServers)
         this.emitSnapshot()
       }).catch((error) => {
@@ -648,10 +595,7 @@ export class MicrocodeRuntime {
       sessionId,
       sessionTitle: sessionId ? this.sessionManager.getTitle(sessionId) : undefined,
       mcpServers: this.mcpServers,
-      agents: [...this.supervisor.listAgents()],
       tasks: this.tasks,
-      runningWorkers: this.supervisor.getRunningCount(),
-      maxWorkers: this.supervisor.getMaxWorkers(),
       busy: this.agent.isBusy(),
       activePermission: [...this.pendingPermissions.values()].at(0)?.request,
       activeQuestion: [...this.pendingQuestions.values()].at(0)?.request,
@@ -688,9 +632,7 @@ export class MicrocodeRuntime {
       return
     }
     await this.agent.persistMessages()
-    await this.supervisor.prepareSessionSwitch()
     const messages = await this.sessionManager.switchToSession(selected)
-    await this.supervisor.restore()
     this.agent.replaceMessages(messages, 'rebuild')
     this.timeline.length = 0
     this.pendingTools.clear()
@@ -711,9 +653,7 @@ export class MicrocodeRuntime {
       return
     }
     await this.agent.persistMessages()
-    await this.supervisor.prepareSessionSwitch()
     this.sessionManager.beginDraft(this.cwd)
-    await this.supervisor.restore()
     this.agent.clearMessages()
     this.timeline.length = 0
     this.pendingTools.clear()
@@ -842,9 +782,6 @@ export class MicrocodeRuntime {
       case '/mcp':
         this.addCommandResult('/mcp', 'MCP servers')
         break
-      case '/agents':
-        this.addCommandResult('/agents', 'Delegated agents')
-        break
       case '/tasks':
         this.addCommandResult('/tasks', 'Tasks')
         break
@@ -879,7 +816,6 @@ export class MicrocodeRuntime {
 
   async abort(): Promise<void> {
     this.agent.abort()
-    await this.supervisor.stopAll()
     this.emitSnapshot()
   }
 
@@ -939,7 +875,6 @@ export class MicrocodeRuntime {
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     this.agent.setPermissionMode(mode)
-    this.supervisor.syncPermissionsToWorkers(true)
     this.emitSnapshot()
   }
 
@@ -951,7 +886,6 @@ export class MicrocodeRuntime {
     const allowed = decision === 'allow' || decision === 'allow-session'
     if (decision === 'allow-session') {
       this.agent.addSessionPermission(pending.request.toolName, pending.ruleContent)
-      this.supervisor.syncPermissionsToWorkers()
     }
     this.updatePermissionItem(requestId, allowed ? 'allowed' : 'denied')
     pending.resolve(allowed)
@@ -974,12 +908,6 @@ export class MicrocodeRuntime {
     } else {
       this.agent.loadSkill(skillName)
     }
-    this.emitSnapshot()
-  }
-
-  async deleteAgent(agentId: string): Promise<void> {
-    await this.supervisor.delete(agentId)
-    await this.refreshDerivedState()
     this.emitSnapshot()
   }
 
@@ -1026,7 +954,6 @@ export class MicrocodeRuntime {
     if (this.disposed) return
     this.disposed = true
     this.clearToolTimers()
-    await this.supervisor.shutdown()
     try {
       await this.agent.persistMessages()
     } catch {}
@@ -1133,10 +1060,6 @@ export class MicrocodeRuntime {
       await this.mcpClient.connectAll(mcpConfigs)
     }
     this.mcpServers = this.mcpClient.getServerStates()
-    for (const runtime of this.supervisor.registry.list()) {
-      runtime.configureMcpTools(this.mcpClient)
-      runtime.updateMcpServers(this.mcpServers)
-    }
     this.agent.configureMcpTools(this.mcpClient)
     this.agent.updateMcpServers(this.mcpServers)
   }
@@ -1171,22 +1094,9 @@ export class MicrocodeRuntime {
 
   private getTokenUsageByModel(): GuiModelTokenUsage[] {
     const merged = new Map<string, GuiModelTokenUsage>()
-    for (const agent of this.supervisor.registry.list()) {
-      const stats = agent.getTokenStats()
-      for (const [key, usage] of Object.entries(stats.byModel)) {
-        const previous = merged.get(key)
-        if (previous) {
-          previous.requests += usage.requests
-          previous.inputTokens += usage.inputTokens
-          previous.outputTokens += usage.outputTokens
-          previous.cacheReadTokens += usage.cacheReadTokens
-          previous.cacheWriteTokens += usage.cacheWriteTokens
-          previous.totalTokens += usage.totalTokens
-          previous.totalCost += usage.totalCost
-        } else {
-          merged.set(key, { ...usage })
-        }
-      }
+    const stats = this.agent.getTokenStats()
+    for (const [key, usage] of Object.entries(stats.byModel)) {
+      merged.set(key, { ...usage })
     }
     return [...merged.values()].sort((a, b) => b.totalTokens - a.totalTokens)
   }
@@ -1285,14 +1195,10 @@ export class MicrocodeRuntime {
     this.agent.setPermissionRequestHandler((toolName, input, description) =>
       this.requestPermission('tool', toolName, input, description),
     )
-    this.agent.setDelegatePermissionRequestHandler((toolName, input, description) =>
-      this.requestPermission('delegated', toolName, input, description),
-    )
     this.agent.setAskUserQuestionHandler((toolName, input) =>
       this.requestQuestion(toolName, input),
     )
     this.agent.subscribe((event) => this.handleAgentEvent(event))
-    this.supervisor.subscribe(() => this.emitSnapshot())
   }
 
   private handleAgentEvent(event: MicrocodeAgentEvent): void {
@@ -1611,7 +1517,7 @@ export class MicrocodeRuntime {
   }
 
   private requestPermission(
-    kind: 'tool' | 'delegated',
+    kind: 'tool',
     toolName: string,
     input: Record<string, unknown>,
     description: string,
@@ -1722,7 +1628,6 @@ export class MicrocodeRuntime {
       `Permission: ${snapshot.permission.mode}`,
       `Messages: ${snapshot.messageCount}`,
       `Context: ${snapshot.tokens.context.usedTokens}/${snapshot.tokens.context.contextWindow}`,
-      `Workers: ${this.supervisor.getRunningCount()}/${this.supervisor.getMaxWorkers()}`,
     ].join(' · ')
   }
 

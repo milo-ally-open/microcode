@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createBashTool } from '../../src/tools/BashTool/BashTool.ts'
-import { createGitWorkTreeTool } from '../../src/tools/GitWorkTreeTool/GitWorkTreeTool.ts'
 import { createVisionTool } from '../../src/tools/VisionTool/VisionTool.ts'
 import { createWebFetchTool } from '../../src/tools/WebFetchTool/WebFetchTool.ts'
 import { createWebSearchTool } from '../../src/tools/WebSearchTool/WebSearchTool.ts'
@@ -125,32 +124,4 @@ describe('runtime tools', () => {
     await expect(tool.execute('search', { query: 'x', allowed_domains: ['a.test'], blocked_domains: ['b.test'] })).rejects.toThrow('Cannot specify both')
   })
 
-  test('GitWorkTree tool delegates all supported actions and validates required ids', async () => {
-    const calls: string[] = []
-    const supervisor = {
-      listWorktrees: async () => [{ agentId: 'agent-1', phase: 'ready', branch: 'b', changes: ['M a'], ahead: 1, mergeable: true }],
-      waitForBatch: async (batchId: string, options: any) => {
-        options.onProgress({ batchId, completed: 1, total: 1 })
-        return [{ agentId: 'agent-1', description: 'Work', status: 'completed', result: 'done', usage: { tokens: 1, toolCalls: 2 } }]
-      },
-      getWorktreeDiff: async (agentId: string) => {
-        calls.push(`diff:${agentId}`)
-        return 'diff text'
-      },
-      getWorktreeStatus: async (agentId: string) => ({ agentId, branch: 'b', phase: 'ready', path: '/tmp/w', ahead: 0, changes: [] }),
-      mergeWorktree: async (agentId: string) => ({ agentId, merged: true, message: 'merged' }),
-      removeWorktree: async (agentId: string, force: boolean) => calls.push(`remove:${agentId}:${force}`),
-    } as any
-    const tool = createGitWorkTreeTool(supervisor)
-
-    expect((await tool.execute('wt', { action: 'list' })).content[0]?.text).toContain('agent-1')
-    expect((await tool.execute('wt', { action: 'wait', batch_id: 'batch-1' })).content[0]?.text).toContain('Agent batch batch-1 complete')
-    expect((await tool.execute('wt', { action: 'status', agent_id: 'agent-1' })).content[0]?.text).toContain('Phase')
-    expect((await tool.execute('wt', { action: 'diff', agent_id: 'agent-1' })).content[0]?.text).toContain('diff text')
-    expect((await tool.execute('wt', { action: 'merge', agent_id: 'agent-1' })).content[0]?.text).toContain('merged')
-    expect((await tool.execute('wt', { action: 'remove', agent_id: 'agent-1', force: true })).details).toMatchObject({ removed: true })
-    await expect(tool.execute('wt', { action: 'wait' })).rejects.toThrow('batch_id is required')
-    await expect(tool.execute('wt', { action: 'status' })).rejects.toThrow('agent_id is required')
-    expect(calls).toContain('remove:agent-1:true')
-  })
 })

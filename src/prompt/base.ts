@@ -1,7 +1,7 @@
 import { prependBullets } from './format.ts'
 
 // Shared, product-level behavioral prompt sections that are not owned by a
-// specific tool, MCP subsystem, session feature, or swarm role.
+// specific tool, MCP subsystem, or session feature.
 declare const MACRO: {
   VERSION: string
   ISSUES_EXPLAINER: string

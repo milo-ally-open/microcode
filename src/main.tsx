@@ -6,33 +6,13 @@ import { McpClientManager } from './mcp/client.ts'
 import { loadMcpConfig, isMcpConfigEmpty } from './mcp/config.ts'
 import { listMcpServers, type ConfigScope } from './mcp/configWrite.ts'
 import { SessionManager } from './session/SessionManager.ts'
-import {
-  AgentSupervisor,
-} from './swarm/index.ts'
-import {
-  createSpawnAgentTool,
-  createSendAgentMessageTool,
-  SEND_AGENT_MESSAGE_TOOL_NAME,
-  createStopAgentTool,
-  STOP_AGENT_TOOL_NAME,
-  createGetAgentStatusTool,
-  GET_AGENT_STATUS_TOOL_NAME,
-  createDeleteAgentTool,
-  DELETE_AGENT_TOOL_NAME,
-  createGitWorkTreeTool,
-  GIT_WORKTREE_TOOL_NAME,
-} from './tools/index.ts'
+import { createGitWorkTreeTool } from './tools/index.ts'
 import { type PermissionMode, PERMISSION_MODES } from './permissions/index.ts'
 import { cleanupImageCache } from './utils/imageUtils.ts'
 import { GitWorkTreeSystem } from './git/index.ts'
 
 declare const MACRO: {
   VERSION: string
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
 function parseFlag(args: string[], flag: string): string | undefined {
@@ -219,13 +199,6 @@ Session Management:
   }
 
   const cwd = process.cwd()
-  let worktreeSystem: GitWorkTreeSystem
-  try {
-    worktreeSystem = await GitWorkTreeSystem.open(cwd)
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error))
-    process.exit(1)
-  }
   const resumeFlagIdx = args.indexOf('--resume')
   const resumeFlag = resumeFlagIdx !== -1
   // Session ID is the arg after --resume, if it exists and isn't another flag
@@ -323,9 +296,9 @@ Session Management:
     permission: { mode: permissionMode },
     persistence: sessionManager,
     identity: {
-      id: `coordinator-${sessionManager.getSessionId() ?? 'session'}`,
-      name: 'Coordinator',
-      role: 'coordinator',
+      id: `assistant-${sessionManager.getSessionId() ?? 'session'}`,
+      name: 'Microcode',
+      role: 'assistant',
     },
   })
   // Restore messages if resuming
@@ -333,51 +306,15 @@ Session Management:
     agent.replaceMessages(restoredMessages, 'rebuild')
   }
 
-  const supervisor = new AgentSupervisor({
-    coordinator: agent,
-    persistence: sessionManager,
-    worktreeSystem,
-    maxWorkers: positiveInt(process.env.MICROCODE_MAX_WORKERS, 4),
-    timeoutMs: positiveInt(
-      process.env.MICROCODE_AGENT_TIMEOUT_MS,
-      30 * 60 * 1000,
-    ),
-    configureWorker: (worker) => {
-      if (mcpClient.getConnectedServers().length > 0) {
-        worker.configureMcpTools(mcpClient)
-        worker.updateMcpServers(mcpClient.getServerStates())
-      }
-    },
-  })
-  const coordinatorId = agent.getId()
-  const swarmTools = [
-    createSpawnAgentTool(supervisor, coordinatorId),
-    createSendAgentMessageTool(supervisor, coordinatorId),
-    createStopAgentTool(supervisor, coordinatorId),
-    createGetAgentStatusTool(supervisor, coordinatorId),
-    createDeleteAgentTool(supervisor, coordinatorId),
-    createGitWorkTreeTool(supervisor),
-  ]
-  agent.addTools(swarmTools)
-  agent.addSessionPermission(SEND_AGENT_MESSAGE_TOOL_NAME)
-  agent.addSessionPermission(STOP_AGENT_TOOL_NAME)
-  agent.addSessionPermission(GET_AGENT_STATUS_TOOL_NAME)
-  agent.addSessionPermission(DELETE_AGENT_TOOL_NAME)
-  agent.addSessionPermission(GIT_WORKTREE_TOOL_NAME)
-  await supervisor.restore()
+  agent.addTools([createGitWorkTreeTool(() => GitWorkTreeSystem.open(cwd))])
 
   // Create TUI app (REPL starts immediately)
-  const app = new App(agent, mcpClient, sessionManager, supervisor)
+  const app = new App(agent, mcpClient, sessionManager)
 
   // Wire permission prompt to TUI (own tool calls)
   agent.setPermissionRequestHandler(
     (toolName, input, description) => app.promptPermission(toolName, input, description),
   )
-  // Wire delegated permission prompt to TUI (worker tool calls)
-  agent.setDelegatePermissionRequestHandler(
-    (toolName, input, description) => app.promptPermission(toolName, input, description),
-  )
-
   // Wire ask_user_question interactive handler to TUI
   agent.setAskUserQuestionHandler(
     (toolName, input) => app.promptAskUserQuestion(toolName, input),
@@ -385,7 +322,6 @@ Session Management:
 
   // Handle exit from TUI (Ctrl+C, Ctrl+D, Escape)
   app.onExit = async () => {
-    await supervisor.shutdown()
     try {
       await agent.persistMessages()
     } catch {
@@ -405,11 +341,6 @@ Session Management:
   const mcpConfigs = await loadMcpConfig(cwd)
   if (!isMcpConfigEmpty(mcpConfigs)) {
     void mcpClient.connectAll(mcpConfigs).then(() => {
-      for (const runtime of supervisor.registry.list()) {
-        runtime.configureMcpTools(mcpClient)
-        runtime.updateMcpServers(mcpClient.getServerStates())
-      }
-
       // Rebuild system prompt with MCP info and deferred tool names
       app.updateMcpState(mcpClient)
 
@@ -420,7 +351,6 @@ Session Management:
 
   // Handle graceful shutdown
   const shutdown = async () => {
-    await supervisor.shutdown()
     // Save session before exit
     try {
       await agent.persistMessages()

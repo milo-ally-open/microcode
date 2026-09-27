@@ -7,7 +7,6 @@ import type {
 import type { Api, Model } from '@earendil-works/pi-ai'
 import type { McpServerState } from '../mcp/types.ts'
 import type {
-  NonInteractivePermissionStrategy,
   EffectivePolicy,
   PermissionDecision,
   PermissionMode,
@@ -28,7 +27,6 @@ export interface AgentIdentity {
   id: string
   name?: string
   role?: string
-  parentId?: string
 }
 
 export type CreateAgentIdentity = Partial<AgentIdentity> & Pick<AgentIdentity, 'id'>
@@ -38,7 +36,6 @@ export interface AgentPermissionConfig {
   allow?: string[]
   deny?: string[]
   ask?: string[]
-  nonInteractiveStrategy?: NonInteractivePermissionStrategy
   onPermissionRequest?: (
     toolName: string,
     input: Record<string, unknown>,
@@ -48,11 +45,6 @@ export interface AgentPermissionConfig {
     toolName: string,
     input: Record<string, unknown>,
   ) => Promise<{ answers?: Record<string, string>; block?: boolean }>
-  onDelegatePermissionRequest?: (
-    toolName: string,
-    input: Record<string, unknown>,
-    description: string,
-  ) => Promise<boolean>
 }
 
 export interface CreateMicrocodeAgentOptions {
@@ -70,7 +62,6 @@ export interface CreateMicrocodeAgentOptions {
   generateSummaryFn?: typeof generateSummary
   compactionSettings?: Partial<CompactionSettings>
   streamFn?: StreamFn
-  systemPromptSuffix?: string
 }
 
 export interface CompactAgentOptions {
@@ -113,7 +104,7 @@ type WithAgentId<T> = T extends unknown
 export type MicrocodeAgentCoreEvent = WithAgentId<AgentEvent>
 
 export interface AgentPermissionRequest {
-  readonly kind: 'tool' | 'question' | 'delegated'
+  readonly kind: 'tool' | 'question'
   readonly toolName: string
   readonly input: Readonly<Record<string, unknown>>
   readonly description?: string
@@ -184,23 +175,6 @@ export type MicrocodeAgentEventListener = (
   event: MicrocodeAgentEvent,
   signal: AbortSignal,
 ) => Promise<void> | void
-
-/** Minimal runtime contract intended for future registries and supervisors. */
-export interface MicrocodeAgentHandle {
-  getId(): string
-  getIdentity(): Readonly<AgentIdentity>
-  getSnapshot(): Readonly<MicrocodeAgentSnapshot>
-  subscribe(listener: MicrocodeAgentEventListener): () => void
-  followUp(message: AgentMessage): void
-  steer(message: AgentMessage): void
-  waitForIdle(): Promise<void>
-}
-
-/** Storage contract that a future AgentRegistry can implement. */
-export interface MicrocodeAgentRegistry {
-  get(agentId: string): MicrocodeAgentHandle | undefined
-  list(): readonly MicrocodeAgentHandle[]
-}
 
 export type MessageUsageResetMode = 'rebuild' | 'preserve'
 

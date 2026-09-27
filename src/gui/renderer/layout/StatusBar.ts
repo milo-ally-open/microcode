@@ -9,6 +9,5 @@ export function StatusBar({ snapshot }: { snapshot?: GuiRuntimeSnapshot }) {
     React.createElement('span', null, snapshot.agent.thinkingLevel),
     React.createElement('span', null, snapshot.agent.permission.mode),
     React.createElement('span', null, `${snapshot.agent.tokens.context.percentUsed}% context`),
-    React.createElement('span', null, `${snapshot.runningWorkers}/${snapshot.maxWorkers} agents`),
   )
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   GitBranch,
   MessageSquare,
@@ -7,13 +7,11 @@ import {
   Server,
   Settings,
   Sparkles,
-  Workflow,
 } from 'lucide-react'
 import { ActivityButton } from '../components/ActivityButton.ts'
 import { ErrorBoundary } from '../components/ErrorBoundary.ts'
 import { CommandPalette } from '../features/command-palette/CommandPalette.ts'
 import { Composer } from '../features/composer/Composer.ts'
-import { AgentActivityPanel } from '../features/timeline/AgentActivityPanel.ts'
 import { Transcript } from '../features/timeline/Transcript.ts'
 import { Sidebar } from '../layout/Sidebar.ts'
 import { StatusBar } from '../layout/StatusBar.ts'
@@ -49,14 +47,12 @@ export function App() {
   const [startupError, setStartupError] = useState<string | undefined>()
   const [workspaceBusy, setWorkspaceBusy] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [agentDrawerCollapsed, setAgentDrawerCollapsed] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarResizing, setSidebarResizing] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY))
     return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : DEFAULT_SIDEBAR_WIDTH
   })
-  const previousAgentCountsRef = useRef({ agents: 0, running: 0 })
 
   useEffect(() => {
     const refreshWorkspaces = () => {
@@ -134,18 +130,6 @@ export function App() {
   }, [sidebarWidth])
 
   useEffect(() => {
-    const next = {
-      agents: snapshot?.agents.length ?? 0,
-      running: snapshot?.runningWorkers ?? 0,
-    }
-    const previous = previousAgentCountsRef.current
-    if (next.agents > previous.agents || next.running > previous.running) {
-      setAgentDrawerCollapsed(false)
-    }
-    previousAgentCountsRef.current = next
-  }, [snapshot?.agents.length, snapshot?.runningWorkers])
-
-  useEffect(() => {
     if (!sidebarResizing) return
     const move = (event: PointerEvent) => setSidebarWidth(clampSidebarWidth(event.clientX))
     const stop = () => setSidebarResizing(false)
@@ -160,7 +144,6 @@ export function App() {
   }, [sidebarResizing])
 
   const shellStyle = { '--sidebar-width': `${sidebarWidth}px` } as CSSProperties
-  const hasAgents = Boolean(snapshot?.agents.length)
 
   return React.createElement('div', {
     className: cx('app-shell', sidebarCollapsed && 'sidebar-collapsed', sidebarResizing && 'sidebar-resizing'),
@@ -170,7 +153,6 @@ export function App() {
       React.createElement('div', { className: 'activity-top' },
         React.createElement(ActivityButton, { active: view === 'chat', label: 'Chat', icon: React.createElement(MessageSquare, { size: 21 }), onClick: () => setView('chat') }),
         React.createElement(ActivityButton, { active: view === 'sessions', label: 'Sessions', icon: React.createElement(PanelLeft, { size: 21 }), onClick: () => setView('sessions') }),
-        React.createElement(ActivityButton, { active: view === 'agents', label: 'Agents', icon: React.createElement(Workflow, { size: 21 }), onClick: () => setView('agents') }),
         React.createElement(ActivityButton, { active: view === 'tasks', label: 'Tasks', icon: React.createElement(GitBranch, { size: 21 }), onClick: () => setView('tasks') }),
         React.createElement(ActivityButton, { active: view === 'mcp', label: 'MCP', icon: React.createElement(Server, { size: 21 }), onClick: () => setView('mcp') }),
         React.createElement(ActivityButton, { active: view === 'skills', label: 'Skills', icon: React.createElement(Sparkles, { size: 21 }), onClick: () => setView('skills') }),
@@ -207,8 +189,6 @@ export function App() {
       className: cx(
         'workbench',
         timeline.length === 0 && 'empty-state',
-        hasAgents && !agentDrawerCollapsed && 'agents-open',
-        hasAgents && agentDrawerCollapsed && 'agents-collapsed',
       ),
     },
       sidebarCollapsed && React.createElement('button', {
@@ -246,11 +226,6 @@ export function App() {
               ),
             ),
       ),
-      snapshot && React.createElement(AgentActivityPanel, {
-        snapshot,
-        collapsed: agentDrawerCollapsed,
-        onToggleCollapsed: () => setAgentDrawerCollapsed((value) => !value),
-      }),
       snapshot && React.createElement(Composer, { busy: Boolean(snapshot.busy), snapshot }),
       React.createElement(StatusBar, { snapshot }),
     ),

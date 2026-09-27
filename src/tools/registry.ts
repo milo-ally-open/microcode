@@ -61,7 +61,7 @@ export interface ToolDefinition {
   extractMatchContent?: (input: Record<string, unknown>) => string | undefined // Tool description for keyword search matching. Used by ToolSearchTool. 
   description?: string  // Precomputed JSON parameter schema used by ToolSearchTool. 
   schema?: string
-  display?: ToolDisplayFormatters // TUI summaries used by swarm/agent status views. 
+  display?: ToolDisplayFormatters // TUI summaries used by tool activity views.
   shouldDefer?: boolean   // If true, tool is hidden from initial context and discovered via ToolSearchTool. 
 }
 

@@ -9,7 +9,6 @@ import type {
   PermissionSnapshot,
   PermissionRule,
   PermissionRuleValue,
-  NonInteractivePermissionStrategy,
   ToolPermissionContext,
 } from './types.ts'
 import { TOOL_DEFAULT_PERMISSIONS, ASK_USER_QUESTION_TOOL_NAME } from '../tools/index.ts'
@@ -28,12 +27,6 @@ export interface PermissionManagerOptions {
     toolName: string,
     input: Record<string, unknown>,
   ) => Promise<{ answers?: Record<string, string>; block?: boolean }>
-  nonInteractiveStrategy?: NonInteractivePermissionStrategy
-  onDelegatePermissionRequest?: (
-    toolName: string,
-    input: Record<string, unknown>,
-    description: string,
-  ) => Promise<boolean>
   getTool?: (name: string) => AgentTool<any, any> | undefined
 }
 
@@ -48,12 +41,6 @@ export class PermissionManager {
     toolName: string,
     input: Record<string, unknown>,
   ) => Promise<{ answers?: Record<string, string>; block?: boolean }>
-  private nonInteractiveStrategy: NonInteractivePermissionStrategy
-  private onDelegatePermissionRequest?: (
-    toolName: string,
-    input: Record<string, unknown>,
-    description: string,
-  ) => Promise<boolean>
   private getTool?: (name: string) => AgentTool<any, any> | undefined
 
   constructor(options: PermissionManagerOptions = {}) {
@@ -82,8 +69,6 @@ export class PermissionManager {
     }
     this.onPermissionRequest = options.onPermissionRequest
     this.onAskUserQuestion = options.onAskUserQuestion
-    this.nonInteractiveStrategy = options.nonInteractiveStrategy ?? 'deny'
-    this.onDelegatePermissionRequest = options.onDelegatePermissionRequest
     this.getTool = options.getTool
   }
 
@@ -104,16 +89,6 @@ export class PermissionManager {
     ) => Promise<{ answers?: Record<string, string>; block?: boolean }>,
   ): void {
     this.onAskUserQuestion = handler
-  }
-
-  setOnDelegatePermissionRequest(
-    handler: (
-      toolName: string,
-      input: Record<string, unknown>,
-      description: string,
-    ) => Promise<boolean>,
-  ): void {
-    this.onDelegatePermissionRequest = handler
   }
 
   setGetTool(
@@ -181,23 +156,10 @@ export class PermissionManager {
     return Object.freeze({
       mode: this.context.mode,
       approvalMode: this.context.mode === 'auto-approve' ? 'auto-approve' : 'interactive',
-      nonInteractiveStrategy: this.nonInteractiveStrategy,
       allowRules: freezeRules(this.context.allowRules),
       denyRules: freezeRules(this.context.denyRules),
       askRules: freezeRules(this.context.askRules),
     })
-  }
-
-  inheritFrom(snapshot: PermissionSnapshot, extraDeny: PermissionRuleValue[] = [], updateMode = true): void {
-    this.context.allowRules = snapshot.allowRules.map((r) => ({ ...r }))
-    this.context.denyRules = [
-      ...snapshot.denyRules.map((r) => ({ ...r })),
-      ...extraDeny.map((v) => ({ ...v, behavior: 'deny' as const, source: 'session' as const })),
-    ]
-    this.context.askRules = snapshot.askRules.map((r) => ({ ...r }))
-    if (updateMode) {
-      this.setMode(snapshot.mode)
-    }
   }
 
   checkPermission(
@@ -262,18 +224,6 @@ export class PermissionManager {
     }
 
     if (!this.onPermissionRequest) {
-      if (
-        this.nonInteractiveStrategy === 'delegate-to-parent' &&
-        this.onDelegatePermissionRequest
-      ) {
-        const description = this.formatToolDescription(toolName, input)
-        const approved = await this.onDelegatePermissionRequest(toolName, input, description)
-        if (approved) return undefined
-        return {
-          block: true,
-          reason: `Permission denied by parent agent for "${toolName}"`,
-        }
-      }
       return { block: true, reason: `Permission required for "${toolName}" (non-interactive mode)` }
     }
 
