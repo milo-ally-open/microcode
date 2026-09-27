@@ -9,8 +9,9 @@
  */
 import * as path from 'path'
 import * as os from 'os'
-import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync, unlinkSync, renameSync } from 'fs'
-import { randomUUID } from 'crypto'
+import { chmodSync, existsSync, statSync } from 'fs'
+import { spawnSync } from 'child_process'
+import { diagnoseWindowsPath, installBinaryAtomically } from './packaging/build-install.ts'
 
 // ============================================================================
 // ANSI helpers
@@ -185,6 +186,7 @@ async function main() {
   const timingInfo = timingParts.join(' · ')
 
   stepDone('compile', [moduleInfo, timingInfo].filter(Boolean).join('  '))
+  write(`  ${dim('artifact')}  ${COMPILED_BINARY}\n`)
 
   // Step 2: Verify output
   if (!existsSync(COMPILED_BINARY)) {
@@ -199,20 +201,15 @@ async function main() {
     const installDir = getInstallDir()
     const installPath = path.join(installDir, BINARY_NAME)
 
-    if (!existsSync(installDir)) {
-      mkdirSync(installDir, { recursive: true })
-    }
-    const temporaryInstallPath = `${installPath}.tmp-${process.pid}-${randomUUID()}`
-    try {
-      copyFileSync(COMPILED_BINARY, temporaryInstallPath)
-      if (!IS_WINDOWS) chmodSync(temporaryInstallPath, 0o755)
-      renameSync(temporaryInstallPath, installPath)
-    } catch (error) {
-      try { unlinkSync(temporaryInstallPath) } catch {}
-      throw error
-    }
-
-    stepDone('install', installPath)
+    await installBinaryAtomically(
+      COMPILED_BINARY,
+      installPath,
+      undefined,
+      IS_WINDOWS ? undefined : (temporaryPath) => chmodSync(temporaryPath, 0o755),
+    )
+    stepDone('install', `updated ${installPath}`)
+  } else {
+    stepDone('install', 'skipped (--no-install)')
   }
 
   // Footer
@@ -220,18 +217,50 @@ async function main() {
   write(`  ${dim('─'.repeat(44))}\n`)
   write(`  ${fg.green('▲')}  ${bold('done')}  ${dim(formatMs(totalMs))}  `)
   write(dim('·'))
-  write(`  ${dim('run')} ${fg.cyan('microcode --help')}\n\n`)
+  const helpCommand = IS_WINDOWS
+    ? `& "${path.join(getInstallDir(), BINARY_NAME)}" --help`
+    : 'microcode --help'
+  write(`  ${dim('run')} ${fg.cyan(helpCommand)}\n\n`)
 
-  // Windows PATH hint
+  // Windows PATH diagnostics
   if (!skipInstall && IS_WINDOWS) {
     const installDir = getInstallDir()
-    const pathDirs = (process.env.PATH ?? '').split(';')
-    const normalizedInstallDir = path.resolve(installDir).toLowerCase()
-    if (!pathDirs.some((entry) => path.resolve(entry).toLowerCase() === normalizedInstallDir)) {
-      write(`  ${fg.yellow('!')}  ${dim(`${installDir} is not in PATH`)}\n`)
-      write(`  ${dim('  restart your terminal, or run:')}\n`)
-      write(`  ${dim('  ')}${fg.cyan(`[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";${installDir}", "User")`)}\n\n`)
+    const installPath = path.join(installDir, BINARY_NAME)
+    const lookup = spawnSync('where.exe', ['microcode'], { encoding: 'utf8', windowsHide: true })
+    const candidates = lookup.stdout?.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean) ?? []
+    const diagnosis = diagnoseWindowsPath(installPath, candidates)
+
+    write(`  ${dim('PATH lookup (where.exe microcode):')}\n`)
+    if (candidates.length === 0) {
+      write(`  ${fg.yellow('!')}  ${dim('No executable named microcode was found through PATH.') }\n`)
+    } else {
+      candidates.forEach((candidate, index) => {
+        const marker = index === diagnosis.canonicalIndex
+          ? fg.green('canonical')
+          : dim(`hit ${index + 1}`)
+        write(`    ${marker}  ${candidate}\n`)
+      })
     }
+
+    if (diagnosis.shadowingCandidates.length > 0) {
+      write(`  ${fg.yellow('!')}  ${bold('PATH conflict')}: an earlier executable can shadow the canonical installation.\n`)
+      write(`  ${dim('  Inspect this PowerShell session:')}\n`)
+      write(`  ${fg.cyan('  Get-Command -All microcode | Format-List CommandType,Name,Source,Definition')}\n`)
+      write(`  ${dim('  Run the canonical executable directly:')}\n`)
+      write(`  ${fg.cyan(`  & "${installPath}" --help`)}\n`)
+      write(`  ${dim(`  Move ${installDir} before the stale directory in PATH, or remove the stale entry yourself.`)}\n`)
+    } else if (!diagnosis.canonicalIsOnPath) {
+      write(`  ${fg.yellow('!')}  ${dim(`${installDir} is not present in executable PATH results.`)}\n`)
+      write(`  ${dim('  Add this directory to PATH yourself, then open a new terminal:')}\n`)
+      write(`  ${fg.cyan(`  ${installDir}`)}\n`)
+      write(`  ${dim('  PowerShell can also resolve aliases/functions first; inspect with:')}\n`)
+      write(`  ${fg.cyan('  Get-Command -All microcode | Format-List CommandType,Name,Source,Definition')}\n`)
+    } else {
+      write(`  ${fg.green('✓')}  ${dim('The canonical executable is the first executable PATH hit.') }\n`)
+      write(`  ${dim('  PowerShell aliases/functions can still take precedence; verify with Get-Command -All microcode.')}\n`)
+    }
+    if (lookup.error) write(`  ${fg.yellow('!')}  ${dim(`Could not run where.exe: ${lookup.error.message}`)}\n`)
+    write('\n')
   }
 }
 

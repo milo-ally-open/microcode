@@ -13,6 +13,36 @@ system they run on:
 Build on each target platform to create downloads for Linux, Windows, and
 macOS.
 
+## Build and verify the installed command
+
+On Windows, `bun run build` compiles `dist/microcode.exe` and atomically replaces
+`%LOCALAPPDATA%\microcode\bin\microcode.exe`. The build verifies that the
+installed file matches the compiled artifact. If Windows has the old executable
+open, the build fails without claiming that installation succeeded; close every
+Microcode process and run `bun run build` again. The failed build removes its
+temporary file when Windows permits cleanup.
+
+The build also prints `where.exe microcode` results so you can see which
+executables are found through the current PATH and whether an earlier hit can
+shadow the canonical installation. `where.exe` cannot see aliases or functions
+defined in an already-open PowerShell session. Check the command PowerShell
+actually resolves with:
+
+```powershell
+Get-Command -All microcode | Format-List CommandType,Name,Source,Definition
+```
+
+To verify the installed binary directly, bypass command lookup:
+
+```powershell
+& "$env:LOCALAPPDATA\microcode\bin\microcode.exe" --help
+```
+
+If another executable appears first, move
+`%LOCALAPPDATA%\microcode\bin` before its directory in PATH, or remove the
+stale PATH entry yourself. The build does not remove other installations or
+change PATH automatically.
+
 ## CLI / TUI Package
 
 ```sh
