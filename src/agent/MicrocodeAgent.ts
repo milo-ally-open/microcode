@@ -675,11 +675,17 @@ export class MicrocodeAgent {
         await this.persistence.saveMessages(this.core.state.messages)
         const record: AgentCompactionRecord = {
           summary: result.summary,
+          messages: result.messages,
           tokensBefore: result.tokensBefore,
           tokensAfter: result.tokensAfter,
           keptMessageCount: result.keptMessageCount,
           compactedMessageCount: result.messages.length,
           automatic: result.automatic,
+          model: {
+            provider: String(this.core.state.model.provider),
+            modelId: this.core.state.model.id,
+            contextWindow: this.core.state.model.contextWindow,
+          },
         }
         await this.persistence.recordCompaction(record)
       }

@@ -7,11 +7,17 @@ import type {
 
 export interface AgentCompactionRecord {
   summary: string
+  messages: AgentMessage[]
   tokensBefore: number
   tokensAfter: number
   keptMessageCount: number
   compactedMessageCount: number
   automatic: boolean
+  model: {
+    provider: string
+    modelId: string
+    contextWindow: number
+  }
 }
 
 export interface AgentSessionPersistence {

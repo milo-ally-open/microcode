@@ -6,9 +6,12 @@ import {
   type AgentMessage,
 } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core'
-import { JsonlSessionRepo, type Session } from '@earendil-works/pi-agent-core/harness/session'
+import { JsonlSessionRepo, type JsonValue, type Session, type Entry } from '@earendil-works/pi-agent-core/harness/session'
 import { NodeFileSystem } from './NodeFileSystem.ts'
 import { replaceImageBlocksForPersistence } from './imageSerializer.ts'
+import { findModel } from '../models/index.ts'
+import { getCompactUserSummaryMessage } from './compactPrompt.ts'
+import { restoreLegacyCompactionContext } from './CompactionManager.ts'
 import type {
   AgentCompactionRecord,
   AgentSessionPersistence,
@@ -23,6 +26,36 @@ import {
 const SESSIONS_DIR = path.join(os.homedir(), '.microcode', 'sessions')
 const TITLES_FILE = path.join(SESSIONS_DIR, '.titles.json')
 const TASKS_DIR = path.join(SESSIONS_DIR, '.tasks')
+const COMPACTION_CHECKPOINT_TYPE = 'microcode.compaction-checkpoint'
+
+interface CompactionCheckpoint {
+  version: 1
+  summary: string
+  contextMessages: AgentMessage[]
+  tokensBefore: number
+  tokensAfter: number
+  keptMessageCount: number
+  compactedMessageCount: number
+  automatic: boolean
+  model: AgentCompactionRecord['model']
+}
+
+function isCompactionCheckpoint(data: unknown): data is CompactionCheckpoint {
+  if (!data || typeof data !== 'object') return false
+  const checkpoint = data as Partial<CompactionCheckpoint>
+  return checkpoint.version === 1 &&
+    typeof checkpoint.summary === 'string' &&
+    Array.isArray(checkpoint.contextMessages) &&
+    typeof checkpoint.tokensBefore === 'number' &&
+    typeof checkpoint.tokensAfter === 'number'
+}
+
+function getLegacyCompactionSummary(message: AgentMessage): { summary: string; tokensBefore: number } | undefined {
+  if (message.role !== 'user' || typeof message.content !== 'string') return undefined
+  const match = message.content.match(/^\[Earlier conversation summarized \((\d+) tokens before compaction\)\]:\n([\s\S]*)$/)
+  if (!match) return undefined
+  return { tokensBefore: Number(match[1]), summary: match[2] ?? '' }
+}
 
 export interface SessionListItem extends JsonlSessionMetadata {
   title?: string
@@ -148,14 +181,24 @@ export class SessionManager implements AgentSessionPersistence {
     if (messageEntries.length === 0) {
       throw new Error('No persisted messages available for compaction.')
     }
-    const keptCount = Math.min(record.keptMessageCount, messageEntries.length)
     const branch = await this.session.branch('main', BACKGROUND_CONTEXT)
     if (!branch) throw new Error('Session main branch is unavailable.')
-    await branch.appendMessage({
-      role: 'user',
-      content: `[Earlier conversation summarized (${record.tokensBefore} tokens before compaction)]:\n${record.summary}`,
-      timestamp: Date.now(),
-    }, BACKGROUND_CONTEXT)
+    const checkpoint: CompactionCheckpoint = {
+      version: 1,
+      summary: record.summary,
+      contextMessages: record.messages.map(replaceImageBlocksForPersistence),
+      tokensBefore: record.tokensBefore,
+      tokensAfter: record.tokensAfter,
+      keptMessageCount: record.keptMessageCount,
+      compactedMessageCount: record.compactedMessageCount,
+      automatic: record.automatic,
+      model: record.model,
+    }
+    await branch.appendCustomEntry(
+      COMPACTION_CHECKPOINT_TYPE,
+      checkpoint as unknown as JsonValue,
+      BACKGROUND_CONTEXT,
+    )
     this.savedMessageCount = record.compactedMessageCount
   }
 
@@ -165,6 +208,12 @@ export class SessionManager implements AgentSessionPersistence {
   async loadMessages(): Promise<AgentMessage[]> {
     if (!this.session) return []
     return this.readSessionMessages(this.session)
+  }
+
+  /** Load the append-only session log for analytics and archival inspection. */
+  async loadArchiveEntries(): Promise<Entry[]> {
+    if (!this.session) return []
+    return this.session.findEntries({ order: 'asc' }, BACKGROUND_CONTEXT)
   }
 
   /**
@@ -319,13 +368,44 @@ export class SessionManager implements AgentSessionPersistence {
 
   private async readSessionMessages(session: Session): Promise<AgentMessage[]> {
     const entries = await session.findEntries({ order: 'asc' }, BACKGROUND_CONTEXT)
-    return entries.flatMap((entry) => {
-      if (entry.type === 'message') return [entry.message]
-      if (entry.type === 'compaction' || entry.type === 'branch_summary') {
-        return [{ role: 'user' as const, content: `[Conversation summary]:\n${entry.summary}`, timestamp: entry.timestamp }]
+    let messages: AgentMessage[] = []
+    for (const entry of entries) {
+      if (entry.type === 'message') {
+        const legacy = getLegacyCompactionSummary(entry.message)
+        if (legacy) {
+          const priorAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
+          const model = priorAssistant?.role === 'assistant'
+            ? findModel(priorAssistant.model, priorAssistant.api, String(priorAssistant.provider))
+            : undefined
+          messages = model
+            ? restoreLegacyCompactionContext(
+                messages,
+                model.contextWindow,
+                legacy.tokensBefore,
+                legacy.summary,
+                entry.timestamp,
+              )
+            : [...messages, entry.message]
+        } else {
+          messages.push(entry.message)
+        }
+        continue
       }
-      return []
-    })
+
+      if (entry.type === 'compaction') {
+        messages = [
+          { role: 'user', content: getCompactUserSummaryMessage(entry.summary), timestamp: entry.timestamp },
+          ...entry.retainedTail,
+        ]
+      } else if (entry.type === 'branch_summary') {
+        messages.push({ role: 'user', content: `[Conversation summary]:\n${entry.summary}`, timestamp: entry.timestamp })
+      } else if (entry.type === 'custom' &&
+        entry.customType === COMPACTION_CHECKPOINT_TYPE &&
+        isCompactionCheckpoint(entry.data)) {
+        messages = [...entry.data.contextMessages]
+      }
+    }
+    return messages
   }
 
   private async ensureMainBranch(session: Session): Promise<void> {

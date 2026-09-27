@@ -61,7 +61,14 @@ export class BashToolUI extends Container implements ToolUIComponent {
   }
 
   updateDetails(details: Record<string, unknown>): void {
-    this.details = details as unknown as BashDetails
+    this.details = {
+      stdout: typeof details.stdout === 'string' ? details.stdout : '',
+      stderr: typeof details.stderr === 'string' ? details.stderr : '',
+      output: typeof details.output === 'string' ? details.output : undefined,
+      exitCode: typeof details.exitCode === 'number' || details.exitCode === null
+        ? details.exitCode
+        : null,
+    }
     this.rebuild()
   }
 
@@ -153,7 +160,7 @@ export class BashToolUI extends Container implements ToolUIComponent {
   private getOutput(): string {
     if (this.details) {
       const { stdout, stderr, output } = this.details
-      return (output ?? stdout + stderr).trimEnd()
+      return (typeof output === 'string' ? output : `${stdout}${stderr}`).trimEnd()
     }
     if (!this.result?.content) return ''
     return this.result.content

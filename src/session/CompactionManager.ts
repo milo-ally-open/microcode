@@ -172,6 +172,29 @@ function selectCompactionRanges(
   }
 }
 
+/** Rebuild the active context for sessions compacted before checkpoints existed. */
+export function restoreLegacyCompactionContext(
+  messages: readonly AgentMessage[],
+  contextWindow: number,
+  tokensBefore: number,
+  summary: string,
+  timestamp: number,
+): AgentMessage[] {
+  const { recentUnits } = selectCompactionRanges(
+    buildConversationUnits(messages),
+    contextWindow,
+    tokensBefore,
+  )
+  return [
+    {
+      role: 'user',
+      content: getCompactUserSummaryMessage(summary),
+      timestamp,
+    },
+    ...recentUnits.flatMap((unit) => unit.messages),
+  ]
+}
+
 export function validateToolMessagePairs(
   messages: readonly AgentMessage[],
 ): { valid: true } | { valid: false; error: string } {
