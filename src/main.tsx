@@ -1,6 +1,6 @@
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
 import { createMicrocodeAgentRuntime } from './agent/index.ts'
-import { getAllModels, getCustomModelDefs } from './models/index.ts'
+import { getAllModels, getCustomModelDefs, getModels } from './models/index.ts'
 import { App } from './tui/app.ts'
 import { McpClientManager } from './mcp/client.ts'
 import { loadMcpConfig, isMcpConfigEmpty } from './mcp/config.ts'
@@ -9,7 +9,6 @@ import { SessionManager } from './session/SessionManager.ts'
 import {
   AgentSupervisor,
 } from './swarm/index.ts'
-import { SUPERVISOR_WORKER_PROMPT } from './swarm/prompts.ts'
 import {
   createSpawnAgentTool,
   createSendAgentMessageTool,
@@ -88,20 +87,28 @@ function handleModelList(): void {
     return
   }
 
-  console.log('Available models:\n')
-  for (const m of all) {
+  console.log('Available models (provider/model):\n')
+  const providers = getModels().getProviders()
+  for (const provider of providers) {
+    const providerModels = all.filter((model) => model.provider === provider.id)
+    if (providerModels.length === 0) continue
+    console.log(`${provider.name} (${provider.id})${provider.auth.oauth?.isSubscription ? ' · subscription OAuth' : ''}`)
+    for (const m of providerModels) {
     const isCustom = customIds.has(m.id)
     const source = isCustom ? '[custom]' : '[built-in]'
     const keyInfo = (m as any).apiKeyEnv
       ? ` (key: $${(m as any).apiKeyEnv})`
-      : ` (key: ${m.api === 'openai-completions' ? '$OPENAI_API_KEY' : m.api === 'anthropic-messages' ? '$ANTHROPIC_API_KEY' : m.api === 'google-generative-ai' ? '$GEMINI_API_KEY' : '$API_KEY'})`
+      : provider.auth.oauth && !provider.auth.apiKey?.login
+        ? ' (OAuth: /login)'
+        : ` (key: ${m.api === 'openai-completions' ? '$OPENAI_API_KEY' : m.api === 'anthropic-messages' ? '$ANTHROPIC_API_KEY' : m.api === 'google-generative-ai' ? '$GEMINI_API_KEY' : '$API_KEY'})`
     const reasoning = m.reasoning ? ', reasoning' : ''
     const vision = m.input.includes('image') ? ', vision' : ''
 
-    console.log(`  ${m.id} ${source}`)
+    console.log(`  ${m.provider}/${m.id} ${source}`)
     console.log(`    ${m.name} | ${m.api} | ${m.baseUrl}`)
     console.log(`    context: ${m.contextWindow.toLocaleString()}, max tokens: ${m.maxTokens.toLocaleString()}${reasoning}${vision}${keyInfo}`)
     console.log()
+    }
   }
 }
 
@@ -139,8 +146,13 @@ Options:
   --resume [id]              Resume a session (last session if no id given)
   --permission <mode>        Set permission mode: interactive, auto-approve, plan
   --permission-mode <mode>   (alias for --permission)
-  --model <model-id>         Override the model (e.g., claude-sonnet-4-20250514)
+  --model <provider/model>  Override the model (e.g., anthropic/claude-sonnet-4-20250514)
   --thinking <level>         Set thinking depth: off, minimal, low, medium, high, xhigh
+
+Interactive authentication:
+  /login [provider]          Sign in (provider and method are selectable)
+  /logout [provider]         Sign out of a provider
+  /auth                      Show provider authentication status
 
 MCP Commands:
   mcp list                               List configured MCP servers
@@ -315,7 +327,6 @@ Session Management:
       name: 'Coordinator',
       role: 'coordinator',
     },
-    systemPromptSuffix: SUPERVISOR_WORKER_PROMPT,
   })
   // Restore messages if resuming
   if (restoredMessages && restoredMessages.length > 0) {
@@ -358,18 +369,6 @@ Session Management:
   // Create TUI app (REPL starts immediately)
   const app = new App(agent, mcpClient, sessionManager, supervisor)
 
-  // Warn if no API key is configured (non-blocking — app still starts)
-  if (!agent.getApiKey()) {
-    const model = agent.getCurrentModel()
-    const apiKeyEnv = (model as any).apiKeyEnv as string | undefined
-    const keyHint = apiKeyEnv
-      ? `$${apiKeyEnv}`
-      : `${(model.provider as string).toUpperCase().replace(/-/g, '_')}_API_KEY`
-    app.addStartupWarning(
-      `No API key configured. Set ${keyHint} or API_KEY to enable model responses.`,
-    )
-  }
-
   // Wire permission prompt to TUI (own tool calls)
   agent.setPermissionRequestHandler(
     (toolName, input, description) => app.promptPermission(toolName, input, description),
@@ -392,6 +391,7 @@ Session Management:
     } catch {
       // Ignore save errors on shutdown
     }
+    await sessionManager.close()
     await mcpClient.disconnectAll()
     const sessionId = sessionManager.getSessionId()
     if (sessionId) {
@@ -427,6 +427,7 @@ Session Management:
     } catch {
       // Ignore save errors on shutdown
     }
+    await sessionManager.close()
     await mcpClient.disconnectAll()
     app.stop()
     // Print resume command

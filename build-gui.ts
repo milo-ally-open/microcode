@@ -32,7 +32,7 @@ async function build() {
     outdir: electronOut,
     target: 'node',
     format: 'cjs',
-    external: ['electron'],
+    external: ['electron', '@napi-rs/keyring'],
     sourcemap: 'linked',
     minify: false,
   })
@@ -48,7 +48,7 @@ async function build() {
     outdir: electronOut,
     target: 'node',
     format: 'cjs',
-    external: ['electron'],
+    external: ['electron', '@napi-rs/keyring'],
     sourcemap: 'linked',
     minify: false,
   })

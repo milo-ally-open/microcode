@@ -33,6 +33,27 @@ export class NodeFileSystem implements FileSystem {
     this.cwd = cwd
   }
 
+  async openTextLineReader(p: string, _context: unknown): Promise<any> {
+    try {
+      const content = await fs.readFile(path.resolve(this.cwd, p), 'utf8')
+      const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? []
+      let index = 0
+      return ok({
+        async readLine() {
+          const line = lines[index++]
+          return { ok: true as const, value: line === undefined ? undefined : {
+            text: line.endsWith('\n') ? line.slice(0, -1).replace(/\r$/, '') : line.replace(/\r$/, ''),
+            terminated: line.endsWith('\n'),
+          } }
+        },
+        async close() {},
+      })
+    } catch (e: any) {
+      if (e.code === 'ENOENT') return err('not_found', `File not found: ${p}`, p)
+      return err('unknown', e.message, p)
+    }
+  }
+
   async absolutePath(p: string): Promise<Result<string, FileError>> {
     try {
       return ok(path.resolve(this.cwd, p))
@@ -110,6 +131,15 @@ export class NodeFileSystem implements FileSystem {
     } catch (e: any) {
       if (e.code === 'EACCES') return err('permission_denied', `Permission denied: ${p}`, p)
       return err('unknown', e.message, p)
+    }
+  }
+
+  async renameFile(sourcePath: string, destinationPath: string): Promise<Result<void, FileError>> {
+    try {
+      await fs.rename(path.resolve(this.cwd, sourcePath), path.resolve(this.cwd, destinationPath))
+      return ok(undefined)
+    } catch (e: any) {
+      return err(e.code === 'EACCES' ? 'permission_denied' : 'unknown', e.message, sourcePath)
     }
   }
 

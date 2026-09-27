@@ -1,386 +1,202 @@
-/**
- * Model registry — static model definitions matching pi-ai's models.generated.ts.
- *
- * 7 models exposed: deepseek-v4-pro/flash, mimo-v2.5/pro, gemini-2.5-pro/flash/flash-lite.
- * Providers switch automatically with model selection.
- * Environment variables override baseUrl and provide API keys.
- */
+/** Application model collection backed by pi-ai providers and auth. */
 
-import { type Api, type Model } from '@earendil-works/pi-ai'
+import {
+  createProvider,
+  type Api,
+  type ApiKeyAuth,
+  type Model,
+  type Models,
+  type MutableModels,
+  type Provider,
+  type ProviderStreams,
+} from '@earendil-works/pi-ai'
+import { builtinModels } from '@earendil-works/pi-ai/providers/all'
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
+import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy'
+import { googleGenerativeAIApi } from '@earendil-works/pi-ai/api/google-generative-ai.lazy'
+import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
 import { loadCustomModels, customModelToModel, type CustomModelDef } from './custom.ts'
+import { EncryptedCredentialStore } from './EncryptedCredentialStore.ts'
+import { createOpenAICodexOAuth } from './openaiCodexOAuth.ts'
 
-// ============================================================================
-// Model definitions (from models.generated.ts)
-// ============================================================================
-
-const BUILTIN_MODELS: Model<Api>[] = [
-
-  // --- deepseek provider (openai format) ---
-  {
-    id: 'deepseek-v4-pro',
-    name: 'DeepSeek V4 Pro',
-    api: 'openai-completions',
-    provider: 'deepseek',
-    baseUrl: 'https://api.deepseek.com',
-    compat: { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text'],
-    cost: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 384000,
-  } satisfies Model<"openai-completions">,
-  {
-    id: 'deepseek-v4-flash',
-    name: 'DeepSeek V4 Flash',
-    api: 'openai-completions',
-    provider: 'deepseek',
-    baseUrl: 'https://api.deepseek.com',
-    compat: { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text'],
-    cost: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 384000,
-  } satisfies Model<"openai-completions">,
-
-  // --- deepseek provider (anthropic format) ---
-  {
-    id: 'deepseek-v4-pro',
-    name: 'DeepSeek V4 Pro',
-    api: 'anthropic-messages',
-    provider: 'deepseek',
-    baseUrl: 'https://api.deepseek.com/anthropic',
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text'],
-    cost: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 384000,
-  } satisfies Model<"anthropic-messages">,
-  {
-    id: 'deepseek-v4-flash',
-    name: 'DeepSeek V4 Flash',
-    api: 'anthropic-messages',
-    provider: 'deepseek',
-    baseUrl: 'https://api.deepseek.com/anthropic',
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text'],
-    cost: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 384000,
-  } satisfies Model<"anthropic-messages">,
-
-  // --- xiaomimimo provider (openai format) ---
-  {
-    id: 'mimo-v2.5',
-    name: 'MiMo V2.5',
-    api: 'openai-completions',
-    provider: 'xiaomimimo',
-    baseUrl: 'https://api.xiaomimimo.com/v1',
-    compat: { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text', 'image'],
-    cost: { input: 0.4, output: 2, cacheRead: 0.08, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 128000,
-  },
-  {
-    id: 'mimo-v2.5-pro',
-    name: 'MiMo V2.5 Pro',
-    api: 'openai-completions',
-    provider: 'xiaomimimo',
-    baseUrl: 'https://api.xiaomimimo.com/v1',
-    compat: { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text'],
-    cost: { input: 1, output: 3, cacheRead: 0.2, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
-  },
-
-  // --- xiaomimimo provider (anthropic format) ---
-  {
-    id: 'mimo-v2.5',
-    name: 'MiMo V2.5',
-    api: 'anthropic-messages',
-    provider: 'xiaomimimo',
-    baseUrl: 'https://api.xiaomimimo.com/anthropic',
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text', 'image'],
-    cost: { input: 0.4, output: 2, cacheRead: 0.08, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 128000,
-  } satisfies Model<"anthropic-messages">,
-  {
-    id: 'mimo-v2.5-pro',
-    name: 'MiMo V2.5 Pro',
-    api: 'anthropic-messages',
-    provider: 'xiaomimimo',
-    baseUrl: 'https://api.xiaomimimo.com/anthropic',
-    reasoning: true,
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', xhigh: 'max' },
-    input: ['text'],
-    cost: { input: 1, output: 3, cacheRead: 0.2, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
-  } satisfies Model<"anthropic-messages">,
-
-  // --- google provider (google-generative-ai format) ---
-  {
-    id: 'gemini-2.5-pro',
-    name: 'Gemini 2.5 Pro',
-    api: 'google-generative-ai',
-    provider: 'google',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    reasoning: true,
-    input: ['text', 'image'],
-    cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 65536,
-  },
-  {
-    id: 'gemini-2.5-flash',
-    name: 'Gemini 2.5 Flash',
-    api: 'google-generative-ai',
-    provider: 'google',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    reasoning: true,
-    input: ['text', 'image'],
-    cost: { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 65536,
-  },
-  {
-    id: 'gemini-2.5-flash-lite',
-    name: 'Gemini 2.5 Flash Lite',
-    api: 'google-generative-ai',
-    provider: 'google',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    reasoning: true,
-    input: ['text', 'image'],
-    cost: { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 65536,
-  }
-] as Model<Api>[]
-
-// Default model when no env var is set
-const DEFAULT_MODEL_ID = BUILTIN_MODELS[0].id
-
-// Custom models cache — loaded once at startup
-let _customModels: Model<Api>[] | null = null
-
-function getCustomModels(): Model<Api>[] {
-  if (_customModels === null) {
-    _customModels = loadCustomModels().map(customModelToModel)
-  }
-  return _customModels
-}
-
-export function resetCustomModelCache(): void {
-  _customModels = null
-}
-
-// Env var names for model selection
-const MODEL_ENV_KEYS = ['OPENAI_MODEL', 'ANTHROPIC_MODEL', 'GEMINI_MODEL', 'MODEL'] as const
-
-function getEnv(key: string): string | undefined {
-  return process.env[key]
-}
-
-function findEnvValue(keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const val = getEnv(key)
-    if (val) return val
-  }
-  return undefined
-}
-
-/**
- * Apply environment variable overrides to a model's baseUrl.
- * - BASE_URL: global override, applies to all models
- * - OPENAI_BASE_URL: only for openai-completions models
- * - ANTHROPIC_BASE_URL: only for anthropic-messages models
- * - GEMINI_BASE_URL: only for google-generative-ai models
- */
-function applyEnvOverrides(model: Model<Api>): Model<Api> {
-  // Custom models: skip env overrides (user explicitly set baseUrl in config)
-  if (model.provider === 'custom') return model
-
-  // Global override — applies unconditionally
-  const globalBase = getEnv('BASE_URL')
-  if (globalBase) return { ...model, baseUrl: globalBase }
-
-  // Protocol-specific overrides
-  if (model.api === 'openai-completions') {
-    const openaiBase = getEnv('OPENAI_BASE_URL')
-    if (openaiBase) return { ...model, baseUrl: openaiBase }
-  }
-  if (model.api === 'anthropic-messages') {
-    const anthropicBase = getEnv('ANTHROPIC_BASE_URL')
-    if (anthropicBase) return { ...model, baseUrl: anthropicBase }
-  }
-  if (model.api === 'google-generative-ai') {
-    const geminiBase = getEnv('GEMINI_BASE_URL')
-    if (geminiBase) return { ...model, baseUrl: geminiBase }
-  }
-
-  return model
-}
-
-// ============================================================================
-// ModelConfig — unified model + capabilities + API key
-// ============================================================================
-
-/**
- * Unified model configuration. All runtime-necessary model information
- * lives here. This is the single source of truth for model capabilities.
- */
 export interface ModelConfig {
-  model: Model<Api> // including id, provider, name, api, baseUrl, compat, reasoning, thinkingLevelMap, input, cost, contextWindow, maxTokens
+  model: Model<Api>
+  /** Legacy compatibility field; provider auth is resolved by Models at request time. */
   apiKey: string
 }
 
-// Singleton state
-let _currentModel: Model<Api> | undefined
+const modelCollection: MutableModels = builtinModels({ credentials: new EncryptedCredentialStore() })
+const openAICodexProvider = modelCollection.getProvider('openai-codex')
+if (openAICodexProvider?.auth.oauth) {
+  modelCollection.setProvider({
+    ...openAICodexProvider,
+    auth: {
+      ...openAICodexProvider.auth,
+      oauth: createOpenAICodexOAuth(openAICodexProvider.auth.oauth),
+    },
+  })
+}
+let currentModel: Model<Api> | undefined
+let registeredCustomIds = new Set<string>()
+let customFingerprint = ''
 
-/**
- * Get all available models (with env overrides applied).
- * Custom models with the same ID override built-in ones.
- */
-export function getAllModels(): Model<Api>[] {
-  const customModels = getCustomModels()
-  const customIds = new Set(customModels.map(m => m.id))
-
-  // Built-in models, skipping those overridden by custom models
-  const builtins = BUILTIN_MODELS
-    .filter(m => !customIds.has(m.id))
-    .map(applyEnvOverrides)
-
-  // Custom models also get env overrides applied
-  const customs = customModels.map(applyEnvOverrides)
-
-  return [...builtins, ...customs]
+export function getModels(): Models {
+  return modelCollection
 }
 
-/**
- * Get only custom model definitions (raw, before env override).
- */
+function envKeyNames(def: CustomModelDef): string[] {
+  if (def.apiKeyEnv) return [def.apiKeyEnv, 'API_KEY']
+  const byApi: Partial<Record<Api, string[]>> = {
+    'openai-completions': ['OPENAI_API_KEY', 'API_KEY'],
+    'openai-responses': ['OPENAI_API_KEY', 'API_KEY'],
+    'anthropic-messages': ['ANTHROPIC_API_KEY', 'API_KEY'],
+    'google-generative-ai': ['GEMINI_API_KEY', 'API_KEY'],
+  }
+  return byApi[def.api] ?? ['API_KEY']
+}
+
+function customApi(def: CustomModelDef): ProviderStreams {
+  switch (def.api) {
+    case 'openai-completions': return openAICompletionsApi()
+    case 'openai-responses': return openAIResponsesApi()
+    case 'anthropic-messages': return anthropicMessagesApi()
+    case 'google-generative-ai': return googleGenerativeAIApi()
+    default: throw new Error(`Custom models using the "${def.api}" API are not supported.`)
+  }
+}
+
+function customAuth(def: CustomModelDef): ApiKeyAuth {
+  const envNames = envKeyNames(def)
+  return {
+    name: `${def.name} API key`,
+    login: async (interaction) => ({
+      type: 'api_key',
+      key: await interaction.prompt({ type: 'secret', message: `Enter API key for ${def.name}` }),
+    }),
+    resolve: async ({ ctx, credential, signal }) => {
+      signal.throwIfAborted()
+      if (credential?.key) {
+        return { auth: { apiKey: credential.key }, env: credential.env, source: 'stored credential' }
+      }
+      for (const name of envNames) {
+        const key = await ctx.env(name)
+        signal.throwIfAborted()
+        if (key) return { auth: { apiKey: key }, source: name }
+      }
+      return undefined
+    },
+  }
+}
+
+function ensureCustomProviders(): void {
+  const definitions = loadCustomModels()
+  const fingerprint = JSON.stringify(definitions)
+  if (fingerprint === customFingerprint) return
+
+  for (const providerId of registeredCustomIds) modelCollection.deleteProvider(providerId)
+  registeredCustomIds = new Set()
+  for (const def of definitions) {
+    const providerId = `custom:${def.id}`
+    const model = customModelToModel(def, providerId)
+    const provider = createProvider({
+      id: providerId,
+      name: def.name,
+      baseUrl: def.baseUrl,
+      auth: { apiKey: customAuth(def) },
+      models: [model],
+      api: customApi(def),
+    })
+    modelCollection.setProvider(provider)
+    registeredCustomIds.add(providerId)
+  }
+  customFingerprint = fingerprint
+}
+
+export function resetCustomModelCache(): void {
+  customFingerprint = ''
+  ensureCustomProviders()
+}
+
+function applyEnvOverrides(model: Model<Api>): Model<Api> {
+  if (String(model.provider).startsWith('custom:')) return model
+  const globalBase = process.env.BASE_URL
+  if (globalBase) return { ...model, baseUrl: globalBase }
+  const key = model.api === 'anthropic-messages'
+    ? 'ANTHROPIC_BASE_URL'
+    : model.api === 'google-generative-ai'
+      ? 'GEMINI_BASE_URL'
+      : model.api === 'openai-completions' || model.api === 'openai-responses'
+        ? 'OPENAI_BASE_URL'
+        : undefined
+  const baseUrl = key ? process.env[key] : undefined
+  return baseUrl ? { ...model, baseUrl } : model
+}
+
+export function getAllModels(): Model<Api>[] {
+  ensureCustomProviders()
+  const customIds = new Set(getCustomModelDefs().map((model) => model.id))
+  return modelCollection.getModels()
+    .filter((model) => !(!String(model.provider).startsWith('custom:') && customIds.has(model.id)))
+    .map(applyEnvOverrides)
+}
+
 export function getCustomModelDefs(): CustomModelDef[] {
   return loadCustomModels()
 }
 
-/**
- * Guess the preferred API protocol from environment variables.
- * Returns the protocol implied by env vars, or undefined if ambiguous.
- */
-function preferredApiFromEnv(): Api | undefined {
-  const protos: { api: Api; check: boolean }[] = [
-    { api: 'anthropic-messages', check: !!getEnv('ANTHROPIC_BASE_URL') || !!getEnv('ANTHROPIC_API_KEY') },
-    { api: 'google-generative-ai', check: !!getEnv('GEMINI_BASE_URL') || !!getEnv('GEMINI_API_KEY') },
-    { api: 'openai-completions', check: !!getEnv('OPENAI_BASE_URL') || !!getEnv('OPENAI_API_KEY') },
-  ]
-  const active = protos.filter(p => p.check)
-  return active.length === 1 ? active[0].api : undefined
+const MODEL_ENV_KEYS = ['MODEL', 'OPENAI_MODEL', 'ANTHROPIC_MODEL', 'GEMINI_MODEL'] as const
+
+function envModel(): string | undefined {
+  return MODEL_ENV_KEYS.map((key) => process.env[key]).find(Boolean)
 }
 
-/**
- * Get the current active model.
- * Resolution order: MODEL/OPENAI_MODEL/ANTHROPIC_MODEL env var → default deepseek-v4-pro.
- *
- * When multiple models share the same ID (different API protocols):
- * 1. If only one protocol's env vars are set, prefer that protocol
- * 2. Otherwise default to openai-completions
- */
-export function getCurrentModel(): Model<Api> {
-  if (_currentModel) return _currentModel
-
-  const envModelId = findEnvValue(MODEL_ENV_KEYS)
-
-  let candidates: Model<Api>[]
-
-  if (envModelId) {
-    candidates = getAllModels().filter((m) => m.id === envModelId)
-    if (candidates.length === 0) {
-      // Fallback: partial match
-      candidates = getAllModels().filter((m) => m.id.includes(envModelId) || envModelId.includes(m.id))
-    }
-  } else {
-    candidates = getAllModels().filter((m) => m.id === DEFAULT_MODEL_ID)
-  }
-
-  if (candidates.length === 0) {
-    throw new Error('No model found.')
-  }
-
-  // When multiple models share the same ID, pick by protocol
-  let base: Model<Api>
-  if (candidates.length === 1) {
-    base = candidates[0]
-  } else {
-    const preferred = preferredApiFromEnv()
-    base = preferred
-      ? candidates.find((m) => m.api === preferred) ?? candidates[0]
-      : candidates[0]
-  }
-
-  _currentModel = applyEnvOverrides(base)
-  return _currentModel
-}
-
-/**
- * Set the current model (e.g., from /model command).
- */
-export function setCurrentModel(model: Model<Api>): void {
-  _currentModel = model
-}
-
-/**
- * Find a model by id from the available models list.
- * When multiple models share the same ID (different API protocols),
- * pass `api` to disambiguate. Without `api`, returns the first match.
- */
-export function findModel(modelId: string, api?: Api): Model<Api> | undefined {
+function candidatesFor(modelId: string): Model<Api>[] {
   const all = getAllModels()
-  if (api) return all.find((m) => m.id === modelId && m.api === api)
-  return all.find((m) => m.id === modelId)
+  const exact = all.filter((model) => model.id === modelId || `${model.provider}/${model.id}` === modelId)
+  return exact.length > 0
+    ? exact
+    : all.filter((model) => model.id.includes(modelId) || modelId.includes(model.id))
 }
 
-/**
- * Resolve API key by the model's API protocol.
- * Each protocol has one env var, with API_KEY as universal fallback.
- * Custom models can specify apiKeyEnv to use a specific env var.
- */
+export function getCurrentModel(): Model<Api> {
+  if (currentModel) return currentModel
+  const wanted = envModel() ?? 'deepseek-v4-pro'
+  const candidates = candidatesFor(wanted)
+  if (candidates.length === 0) throw new Error(`Model "${wanted}" was not found.`)
+  const model = candidates[0]
+  currentModel = applyEnvOverrides(model)
+  return currentModel
+}
+
+export function setCurrentModel(model: Model<Api>): void {
+  currentModel = model
+}
+
+export function findModel(modelId: string, api?: Api, provider?: string): Model<Api> | undefined {
+  const all = getAllModels()
+  if (provider) return all.find((model) => model.id === modelId && model.provider === provider && (!api || model.api === api))
+  if (api) return all.find((model) => model.id === modelId && model.api === api)
+  return all.find((model) => `${model.provider}/${model.id}` === modelId) ?? all.find((model) => model.id === modelId)
+}
+
 export function resolveApiKey(model: Model<Api>): string | undefined {
-  // Custom model with explicit env var
-  const apiKeyEnv = (model as any).apiKeyEnv as string | undefined
-  if (apiKeyEnv) {
-    return getEnv(apiKeyEnv) ?? getEnv('API_KEY')
-  }
-
-  const keyByApi: Partial<Record<Api, string>> = {
-    'openai-completions': getEnv('OPENAI_API_KEY'),
-    'anthropic-messages': getEnv('ANTHROPIC_API_KEY'),
-    'google-generative-ai': getEnv('GEMINI_API_KEY'),
-  }
-  return keyByApi[model.api] ?? getEnv('API_KEY')
+  const legacyApiKeyEnv = (model as Model<Api> & { apiKeyEnv?: string }).apiKeyEnv
+  if (legacyApiKeyEnv && process.env[legacyApiKeyEnv]) return process.env[legacyApiKeyEnv]
+  const customDef = getCustomModelDefs().find((def) =>
+    def.id === model.id && (String(model.provider) === 'custom' || String(model.provider) === `custom:${def.id}`)
+  )
+  const names = customDef ? envKeyNames(customDef) : [
+    ...(model.provider === 'anthropic' ? ['ANTHROPIC_API_KEY', 'ANTHROPIC_OAUTH_TOKEN'] : []),
+    ...(model.provider === 'google' ? ['GEMINI_API_KEY'] : []),
+    ...(model.provider === 'openai' ? ['OPENAI_API_KEY'] : []),
+    ...(model.provider === 'deepseek' ? ['DEEPSEEK_API_KEY'] : []),
+    ...(model.provider === 'xiaomi' ? ['XIAOMI_API_KEY'] : []),
+    'API_KEY',
+  ]
+  return names.map((name) => process.env[name]).find(Boolean)
 }
 
-/**
- * Resolve a fully-configured ModelConfig for the current or specified model.
- * This is the primary entry point — all model capability info comes from here.
- *
- * @param modelId - If provided, resolve this specific model. Otherwise use current model.
- * @param api - If provided (with modelId), disambiguate between protocols for the same model ID.
- */
-export function getModelConfig(modelId?: string, api?: Api): ModelConfig {
-  const model = modelId ? findModel(modelId, api) ?? getCurrentModel() : getCurrentModel()
-  const apiKey = resolveApiKey(model) ?? ''
-  return { model, apiKey }
+export function getModelConfig(modelId?: string, api?: Api, provider?: string): ModelConfig {
+  const model = modelId ? findModel(modelId, api, provider) ?? getCurrentModel() : getCurrentModel()
+  return { model, apiKey: resolveApiKey(model) ?? '' }
 }

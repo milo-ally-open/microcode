@@ -7,6 +7,7 @@ export {
   findModel,
   resolveApiKey,
   getModelConfig,
+  getModels,
   getCustomModelDefs,
   resetCustomModelCache,
   type ModelConfig,
@@ -22,3 +23,5 @@ export {
 export function modelSupportsImages(model: Model<Api>): boolean {
   return model.input.includes('image')
 }
+
+export { EncryptedCredentialStore } from './EncryptedCredentialStore.ts'

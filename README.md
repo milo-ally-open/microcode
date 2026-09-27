@@ -103,7 +103,7 @@ Set the env var for your model's protocol. The model's API protocol determines w
 | google-generative-ai | `GEMINI_API_KEY`   | `GEMINI_BASE_URL`  | `GEMINI_MODEL`  |
 | any (fallback)       | `API_KEY`          | `BASE_URL`         | `MODEL`         |
 
-Built-in models: `deepseek-v4-pro`, `deepseek-v4-flash`, `mimo-v2.5`, `mimo-v2.5-pro`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`.
+Built-in models and their context-window limits come from the pinned pi-ai model catalog. Run `microcode model list` to see the models available in the installed version. See [docs/model-catalog.md](docs/model-catalog.md) for how to update the catalog when providers add or change models.
 
 Switch models at runtime with the `/model` slash command, or use the `--model` CLI flag:
 

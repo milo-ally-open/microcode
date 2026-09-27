@@ -9,9 +9,8 @@ import {
   type ImageContent,
   type Message,
   type Model,
-  streamSimple,
 } from '@earendil-works/pi-ai'
-import { getModelConfig, resolveApiKey } from '../models/index.ts'
+import { getModelConfig, getModels, resolveApiKey } from '../models/index.ts'
 import {
   getDeferredToolNames,
   TOOL_SEARCH_TOOL_NAME,
@@ -145,7 +144,7 @@ export class MicrocodeAgent {
     const deferredToolNames = getDeferredToolNames()
     const systemPrompt = getSystemPrompt({
       cwd: this.cwd,
-      modelId: modelConfig.model.id,
+      modelId: `${modelConfig.model.provider}/${modelConfig.model.id}`,
       mcpServers: this.mcpServers,
       skills: [...this.skillManager.getSkills()],
       deferredToolNames: deferredToolNames.length > 0 ? deferredToolNames : undefined,
@@ -166,6 +165,7 @@ export class MicrocodeAgent {
         })
       },
       generateSummaryFn: options.generateSummaryFn,
+      models: getModels(),
       settings: options.compactionSettings,
     })
     this.compactionManager.setSystemPrompt(this.baseSystemPrompt)
@@ -189,17 +189,8 @@ export class MicrocodeAgent {
         context.context.tools = tools
         return undefined
       },
-      streamFn: options.streamFn ?? (async (model, context, streamOptions) => {
-        const apiKey = resolveApiKey(model) || this.modelManager.getApiKey()
-        if (!apiKey) {
-          const provider = String(model.provider).toUpperCase().replace(/-/g, '_')
-          throw new Error(
-            `No API key configured for model "${model.id}".\n` +
-            `Set one of: ${provider}_API_KEY, API_KEY, OPENAI_API_KEY`,
-          )
-        }
-        return streamSimple(model, context, { ...streamOptions, apiKey })
-      }),
+      streamFn: options.streamFn ?? ((model, context, streamOptions) =>
+        getModels().streamSimple(model, context, streamOptions)),
       convertToLlm: createConvertToLlm(() => this.core.state.model),
       transformContext: (messages) => this.prepareModelContext(messages),
     })
@@ -371,8 +362,8 @@ export class MicrocodeAgent {
     return this.modelManager.getApiKey()
   }
 
-  switchModel(modelId: string, api?: Api): Readonly<AgentModelSnapshot> {
-    const nextConfig = this.modelManager.resolve(modelId, api)
+  switchModel(modelId: string, api?: Api, provider?: string): Readonly<AgentModelSnapshot> {
+    const nextConfig = this.modelManager.resolve(modelId, api, provider)
     const nextCoreTools = this.toolManager.previewCoreTools(nextConfig.model)
     const nextBasePrompt = this.buildBaseSystemPrompt(nextConfig.model)
     const nextPrompt = this.appendLoadedSkills(nextBasePrompt)
@@ -392,7 +383,7 @@ export class MicrocodeAgent {
       this.toolManager.replaceCoreTools(nextCoreTools)
       this.core.state.tools = this.toolManager.getTools()
       this.baseSystemPrompt = nextBasePrompt
-      this.core.state.systemPrompt = nextPrompt
+      this.updateSystemPrompt(nextPrompt)
       this.compactionManager.setModel(nextConfig.model)
       this.compactionManager.setApiKey(nextConfig.apiKey)
       this.compactionManager.setSystemPrompt(nextPrompt)
@@ -411,7 +402,7 @@ export class MicrocodeAgent {
       this.toolManager.replaceCoreTools(previousCoreTools)
       this.core.state.tools = this.toolManager.getTools()
       this.baseSystemPrompt = previousBasePrompt
-      this.core.state.systemPrompt = previousPrompt
+      this.updateSystemPrompt(previousPrompt)
       this.compactionManager.setModel(previousModel)
       this.compactionManager.setApiKey(previousConfig.apiKey)
       this.compactionManager.setSystemPrompt(previousPrompt)
@@ -423,14 +414,14 @@ export class MicrocodeAgent {
     this.mcpServers = servers ? [...servers] : undefined
     this.baseSystemPrompt = this.buildBaseSystemPrompt(this.core.state.model)
     const prompt = this.appendLoadedSkills(this.baseSystemPrompt)
-    this.core.state.systemPrompt = prompt
+    this.updateSystemPrompt(prompt)
     this.compactionManager.setSystemPrompt(prompt)
     this.emitTokenAndState('system_prompt_changed')
   }
 
   refreshSystemPrompt(): void {
     const prompt = this.appendLoadedSkills(this.baseSystemPrompt)
-    this.core.state.systemPrompt = prompt
+    this.updateSystemPrompt(prompt)
     this.compactionManager.setSystemPrompt(prompt)
     this.emitTokenAndState('system_prompt_changed')
   }
@@ -661,15 +652,24 @@ export class MicrocodeAgent {
 
   private rebuildSystemPrompt(): void {
     const prompt = this.appendLoadedSkills(this.baseSystemPrompt)
-    this.core.state.systemPrompt = prompt
+    this.updateSystemPrompt(prompt)
     this.compactionManager.setSystemPrompt(prompt)
+  }
+
+  private updateSystemPrompt(prompt: string): void {
+    const messages = [...this.core.state.messages]
+    const systemIndex = messages.findIndex((message) => message.role === 'system')
+    const systemMessage = { role: 'system' as const, content: prompt, timestamp: Date.now() }
+    if (systemIndex >= 0) messages[systemIndex] = systemMessage
+    else messages.unshift(systemMessage)
+    this.core.state.messages = messages
   }
 
   private buildBaseSystemPrompt(model: Model<Api>): string {
     const deferredToolNames = getDeferredToolNames()
     const prompt = getSystemPrompt({
       cwd: this.cwd,
-      modelId: model.id,
+      modelId: `${model.provider}/${model.id}`,
       mcpServers: this.mcpServers,
       skills: [...this.skillManager.getSkills()],
       deferredToolNames: deferredToolNames.length > 0 ? deferredToolNames : undefined,
@@ -866,6 +866,12 @@ export function createConvertToLlm(getModel: () => Model<Api>) {
 
     return messages.flatMap((message) => {
       switch (message.role) {
+        case 'system':
+          // pi-agent-core stores the active system prompt and tool loadout
+          // changes in system messages. Dropping them makes models appear
+          // tool-less even though the tools are registered in Agent.state.
+          return [message as Message]
+
         case 'user':
         case 'toolResult':
           return [message as Message]

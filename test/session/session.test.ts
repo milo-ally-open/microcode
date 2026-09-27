@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { estimateMessagesTokens, estimateTokens } from '../../src/session/TokenEstimator.ts'
 import { replaceImageBlocksForPersistence } from '../../src/session/imageSerializer.ts'
+import { SessionManager } from '../../src/session/SessionManager.ts'
 
 describe('session modules', () => {
   test('estimates text, thinking, tool call, image, and summary messages', () => {
@@ -54,5 +58,20 @@ describe('session modules', () => {
       { type: 'text', text: '[Image: image/png]' },
     ])
     expect(replaceImageBlocksForPersistence({ role: 'assistant', content: [], timestamp: 0 } as any).role).toBe('assistant')
+  })
+
+  test('creates the main branch before saving the first message', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'microcode-session-'))
+    const cwd = join(dir, 'workspace')
+    const manager = new SessionManager({ sessionsRoot: join(dir, 'sessions') })
+    try {
+      const sessionId = await manager.create(cwd)
+      await manager.saveMessages([{ role: 'user', content: 'hello', timestamp: 1 } as any])
+      expect(manager.getSessionId()).toBe(sessionId)
+      expect(await manager.loadMessages()).toHaveLength(1)
+    } finally {
+      await manager.close()
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

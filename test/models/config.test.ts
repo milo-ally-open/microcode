@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createModelForId, getAvailableModelIds, getApiKeyForProvider, resolveConfig } from '../../src/config.ts'
 import { customModelToModel, loadCustomModels, type CustomModelDef } from '../../src/models/custom.ts'
-import { findModel, getAllModels, resolveApiKey } from '../../src/models/registry.ts'
+import { findModel, getAllModels, getModels, resolveApiKey } from '../../src/models/registry.ts'
 
 describe('models and config modules', () => {
   test('exposes built-in model ids through the compatibility config facade', () => {
@@ -9,13 +9,13 @@ describe('models and config modules', () => {
     expect(getAvailableModelIds()).toContain('gemini-2.5-flash')
   })
 
-  test('disambiguates duplicate model ids by api protocol', () => {
-    const openai = findModel('deepseek-v4-pro', 'openai-completions')
-    const anthropic = findModel('deepseek-v4-pro', 'anthropic-messages')
+  test('resolves models by provider and model id, retaining API compatibility lookup', () => {
+    const deepseek = findModel('deepseek-v4-pro', undefined, 'deepseek')
+    const qualified = findModel('deepseek/deepseek-v4-pro')
 
-    expect(openai?.api).toBe('openai-completions')
-    expect(anthropic?.api).toBe('anthropic-messages')
-    expect(openai?.baseUrl).not.toBe(anthropic?.baseUrl)
+    expect(deepseek?.provider).toBe('deepseek')
+    expect(qualified?.provider).toBe('deepseek')
+    expect(deepseek?.api).toBe('openai-completions')
   })
 
   test('createModelForId updates the active resolved config', () => {
@@ -80,5 +80,19 @@ describe('models and config modules', () => {
   test('registry returns a non-empty model list and provider key fallback is stable', () => {
     expect(getAllModels().length).toBeGreaterThan(0)
     expect(getApiKeyForProvider('not-current-provider')).toBe(process.env.API_KEY)
+  })
+
+  test('registers Anthropic and Codex subscription OAuth alongside API-key providers', () => {
+    const models = getModels()
+    const anthropic = models.getProvider('anthropic')
+    const codex = models.getProvider('openai-codex')
+
+    expect(anthropic?.auth.oauth?.isSubscription).toBe(true)
+    expect(anthropic?.auth.oauth?.name).toContain('Claude Pro/Max')
+    expect(codex?.auth.oauth?.isSubscription).toBe(true)
+    expect(codex?.auth.oauth?.name).toContain('ChatGPT Plus/Pro')
+    expect(typeof anthropic?.auth.oauth?.login).toBe('function')
+    expect(typeof codex?.auth.oauth?.refresh).toBe('function')
+    expect(getAllModels().some((model) => model.provider === 'openai-codex')).toBe(true)
   })
 })

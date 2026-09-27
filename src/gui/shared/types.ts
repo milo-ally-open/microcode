@@ -201,6 +201,9 @@ export interface GuiModelListItem {
   current: boolean
   apiKeyEnv: string
   apiKeyConfigured: boolean
+  authStatus: string
+  apiKeyLogin: boolean
+  oauthLogin: boolean
 }
 
 export interface GuiSkillListItem {

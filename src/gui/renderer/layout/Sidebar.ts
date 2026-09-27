@@ -108,6 +108,7 @@ export function Sidebar({
   const [configBusy, setConfigBusy] = useState<'mcp' | 'model' | null>(null)
   const [configError, setConfigError] = useState<string | undefined>()
   const [configSuccess, setConfigSuccess] = useState<string | undefined>()
+  const [modelSearch, setModelSearch] = useState('')
   const recentWorkspaceList = recentWorkspaces ?? []
 
   const projectSwitcher = snapshot
@@ -427,12 +428,22 @@ export function Sidebar({
       },
         React.createElement('div', { className: 'setting-block' },
           React.createElement('label', null, 'Model'),
+          React.createElement('input', {
+            className: 'model-search-input',
+            type: 'search',
+            value: modelSearch,
+            placeholder: 'Search provider or model',
+            onChange: (event: React.ChangeEvent<HTMLInputElement>) => setModelSearch(event.currentTarget.value),
+          }),
           React.createElement(GlassSelect, {
-            value: `${snapshot.agent.model.id}|${snapshot.agent.model.api}`,
+            value: `${snapshot.agent.model.provider}/${snapshot.agent.model.id}`,
             ariaLabel: 'Model',
             onChange: (nextValue) => void window.microcode.setModel(nextValue),
-            options: snapshot.models.map((model) => ({
-              value: `${model.id}|${model.api}`,
+            options: snapshot.models
+              .filter((model) => !modelSearch.trim() || `${model.provider} ${model.name} ${model.id}`.toLowerCase().includes(modelSearch.trim().toLowerCase()))
+              .sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name))
+              .map((model) => ({
+              value: `${model.provider}/${model.id}`,
               label: model.name,
               meta: `${model.provider} · ${model.api}${model.apiKeyConfigured ? '' : ' · no key'}`,
               missing: !model.apiKeyConfigured,
@@ -521,9 +532,9 @@ export function Sidebar({
       },
         snapshot.models.map((model) =>
           React.createElement('button', {
-            key: `${model.id}|${model.api}`,
+            key: `${model.provider}/${model.id}`,
             className: cx('model-row', model.current && 'active'),
-            onClick: () => void window.microcode.setModel(`${model.id}|${model.api}`),
+            onClick: () => void window.microcode.setModel(`${model.provider}/${model.id}`),
           },
             React.createElement('span', { className: 'model-title' }, model.name),
             React.createElement('span', null, `${model.provider} · ${model.api}`),

@@ -1,11 +1,12 @@
 import {
+  BACKGROUND_CONTEXT,
   generateSummary,
   shouldCompact,
   DEFAULT_COMPACTION_SETTINGS,
   type CompactionSettings,
   type AgentMessage,
 } from '@earendil-works/pi-agent-core'
-import type { Model } from '@earendil-works/pi-ai'
+import type { Model, Models } from '@earendil-works/pi-ai'
 import { estimateMessagesTokens } from './TokenEstimator.ts'
 import { getCompactUserSummaryMessage } from './compactPrompt.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
@@ -192,6 +193,7 @@ export function validateToolMessagePairs(
  */
 export class CompactionManager {
   private model: Model<any>
+  private models: Models
   private apiKey: string
   private settings: CompactionSettings
   private onProgress?: (progress: CompactionProgress) => void
@@ -202,12 +204,14 @@ export class CompactionManager {
 
   constructor(options: {
     model: Model<any>
+    models: Models
     apiKey: string
     settings?: Partial<CompactionSettings>
     onProgress?: (progress: CompactionProgress) => void
     generateSummaryFn?: typeof generateSummary
   }) {
     this.model = options.model
+    this.models = options.models
     this.apiKey = options.apiKey
     this.settings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.settings }
     this.onProgress = options.onProgress
@@ -396,12 +400,15 @@ export class CompactionManager {
       try {
         result = await this.generateSummaryFn(
           messagesToSummarize,
+          this.models,
           this.model,
           this.settings.reserveTokens,
-          this.apiKey,
-          undefined,
-          undefined,
           customInstructions,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          BACKGROUND_CONTEXT,
         )
       } finally {
         clearInterval(progressTimer)

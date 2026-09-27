@@ -1,6 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core'
-import type { Api, AssistantMessage } from '@earendil-works/pi-ai'
-import { completeSimple } from '@earendil-works/pi-ai'
+import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai'
+import type { AuthPrompt, AuthType } from '@earendil-works/pi-ai'
 import {
   TUI,
   ProcessTerminal,
@@ -15,7 +15,7 @@ import {
 } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
-import { getAllModels, resolveApiKey } from '../models/index.ts'
+import { getAllModels, getModels, resolveApiKey } from '../models/index.ts'
 import { theme, getEditorTheme, getMarkdownTheme, getBashModeBorderColor } from './theme.ts'
 import { MicrocodeEditor } from './components/microcodeEditor.ts'
 import { FooterComponent } from './components/footer.ts'
@@ -135,8 +135,11 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'clear', description: 'Clear the conversation history' },
   { name: 'compact', description: 'Compress conversation context (usage: /compact [instructions])', argumentHint: '[instructions]' },
   { name: 'status', description: 'Show context usage, token statistics, and model details' },
-  { name: 'model', description: 'Show or switch model (usage: /model [model-id])', argumentHint: '[model-id]' },
-  { name: 'thinking', description: 'Show or set thinking depth (usage: /thinking [level])', argumentHint: '[off|minimal|low|medium|high|xhigh]' },
+  { name: 'model', description: 'Browse providers and select a model (usage: /model [provider/model])', argumentHint: '[provider/model]' },
+  { name: 'login', description: 'Sign in to a model provider (usage: /login <provider> [api_key|oauth])', argumentHint: '<provider> [api_key|oauth]' },
+  { name: 'logout', description: 'Sign out of a model provider (usage: /logout <provider>)', argumentHint: '<provider>' },
+  { name: 'auth', description: 'Show provider authentication status' },
+  { name: 'thinking', description: 'Show or set thinking depth (usage: /thinking [level])', argumentHint: '[off|minimal|low|medium|high|xhigh|max]' },
   { name: 'mcp', description: 'Show MCP servers', argumentHint: '' },
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
   { name: 'tasks', description: 'Browse tasks and prioritize unfinished work in the current session', argumentHint: '' },
@@ -702,6 +705,18 @@ export class App {
         this.handleModelCommand(args || undefined)
         return true
 
+      case '/login':
+        void this.handleAuthCommand('login', args)
+        return true
+
+      case '/logout':
+        void this.handleAuthCommand('logout', args)
+        return true
+
+      case '/auth':
+        void this.handleAuthCommand('status', args)
+        return true
+
       case '/mcp':
         this.handleMcpCommand(args)
         return true
@@ -754,6 +769,274 @@ export class App {
         this.showError(`Unknown command: ${command}. Type /help for available commands.`)
         return true
       }
+    }
+  }
+
+  private async handleAuthCommand(action: 'login' | 'logout' | 'status', args: string): Promise<void> {
+    const abortController = new AbortController()
+    try {
+      const models = getModels()
+      if (action === 'status') {
+        const providers = models.getProviders()
+        const statuses: SelectItem[] = []
+        for (const provider of providers) {
+          let status = 'not configured'
+          try {
+            const auth = await models.checkAuth(provider.id)
+            if (auth) status = `${auth.type}${auth.source ? ` · ${auth.source}` : ''}`
+          } catch (error) {
+            status = `error · ${error instanceof Error ? error.message : String(error)}`
+          }
+          statuses.push({ value: provider.id, label: provider.name, description: `${provider.id} · ${status}` })
+        }
+        await this.selectAuthOption('Provider authentication status', statuses)
+        return
+      }
+
+      const [providerArg, requestedType] = args.trim().split(/\s+/, 2)
+      const providerId = providerArg || await this.selectAuthOption(
+        action === 'login' ? 'Choose a provider to sign in' : 'Choose a provider to sign out',
+        models.getProviders().map((provider) => ({ value: provider.id, label: provider.name, description: provider.id })),
+      )
+      if (!providerId) return
+      const provider = models.getProvider(providerId)
+      if (!provider) throw new Error(`Unknown provider "${providerId}". Run /auth to list providers.`)
+
+      if (action === 'logout') {
+        await models.logout(providerId)
+        this.showStatus(`Signed out of ${provider.name}.`)
+        return
+      }
+
+      const authChoices = [
+        ...(provider.auth.oauth ? [{ value: 'oauth', label: 'OAuth subscription', description: 'Sign in in your browser' }] : []),
+        ...(provider.auth.apiKey?.login ? [{ value: 'api_key', label: 'API key', description: provider.auth.apiKey.name }] : []),
+      ]
+      const type: AuthType | undefined = requestedType === 'oauth' || requestedType === 'api_key'
+        ? requestedType
+        : authChoices.length > 1
+          ? await this.selectAuthOption(`Choose a sign-in method for ${provider.name}`, authChoices) as AuthType | undefined
+          : authChoices[0]?.value as AuthType | undefined
+      if (!type) return
+      if (type === 'oauth' && !provider.auth.oauth) throw new Error(`Provider ${providerId} does not support OAuth login.`)
+      await models.login(providerId, type, {
+        signal: abortController.signal,
+        prompt: async (prompt) => {
+          if (prompt.type !== 'select') return this.promptAuthValue(prompt, abortController)
+          const selected = await this.selectAuthOption(prompt.message, prompt.options)
+          if (!selected) {
+            abortController.abort()
+            throw new Error('Authentication cancelled.')
+          }
+          return selected
+        },
+        notify: (event) => {
+          if (event.type === 'auth_url') {
+            this.showStatus(`${event.instructions ?? 'Complete authorization in your browser.'} ${event.url}`)
+            void this.openAuthUrl(event.url)
+          } else if (event.type === 'device_code') {
+            this.showStatus(`Code: ${event.userCode} · ${event.verificationUri}`)
+            void this.openAuthUrl(event.verificationUri)
+          } else {
+            this.showStatus(event.message)
+          }
+        },
+      })
+      this.showStatus(providerId === 'openai-codex'
+        ? 'Signed in to OpenAI Codex. Use /model to select a Codex model, then start chatting.'
+        : `Signed in to ${provider.name}.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!abortController.signal.aborted && !/cancel(?:led|ed)/i.test(message)) this.showError(message)
+    }
+  }
+
+  private async promptAuthValue(prompt: AuthPrompt, authController?: AbortController): Promise<string> {
+    if (prompt.type === 'manual_code') return this.promptAuthCode(prompt, authController)
+    this.ui.stop()
+    console.log(`\n${prompt.message}`)
+    const placeholder = 'placeholder' in prompt ? prompt.placeholder : undefined
+    process.stdout.write(prompt.type === 'secret' ? '> ' : `${placeholder ? `[${placeholder}] ` : ''}> `)
+    const input = process.stdin
+    try {
+      return await new Promise<string>((resolve, reject) => {
+      let value = ''
+      const wasRaw = input.isRaw
+      input.setRawMode?.(true)
+      input.resume()
+      let settled = false
+      const cleanup = () => {
+        if (settled) return
+        settled = true
+        input.off('data', onData)
+        prompt.signal?.removeEventListener('abort', onAbort)
+        if (typeof wasRaw === 'boolean') input.setRawMode?.(wasRaw)
+        process.stdout.write('\n')
+      }
+      const onAbort = () => {
+        cleanup()
+        reject(new Error('Authentication cancelled.'))
+      }
+      const onData = (chunk: Buffer) => {
+        for (const char of chunk.toString('utf8')) {
+          if (char === '\u0003' || char === '\u001b') {
+            cleanup()
+            authController?.abort()
+            reject(new Error('Authentication cancelled.'))
+            return
+          }
+          if (char === '\r' || char === '\n') {
+            cleanup()
+            let answer = value.trim()
+            if (answer || !prompt.message) resolve(answer)
+            else reject(new Error('Authentication cancelled.'))
+            return
+          }
+          if (char === '\u007f' || char === '\b') {
+            if (value.length) {
+              value = value.slice(0, -1)
+              process.stdout.write('\b \b')
+            }
+            continue
+          }
+          if (char >= ' ') {
+            value += char
+            process.stdout.write(prompt.type === 'secret' ? '*' : char)
+          }
+        }
+      }
+      if (prompt.signal?.aborted) return onAbort()
+      prompt.signal?.addEventListener('abort', onAbort, { once: true })
+      input.on('data', onData)
+      })
+    } finally {
+      this.ui.start()
+      this.ui.setFocus(this.editor)
+      this.ui.requestRender()
+    }
+  }
+
+  private promptAuthCode(prompt: Extract<AuthPrompt, { type: 'manual_code' }>, authController?: AbortController): Promise<string> {
+    const previousSubmit = this.editor.onSubmit
+    const previousEscape = this.editor.onEscape
+    const notice = new Text(theme.fg('accent', `${prompt.message} Press Esc to cancel.`), 1, 0)
+    this.chatContainer.addChild(notice)
+    this.editor.setText('')
+    this.ui.setFocus(this.editor)
+    this.ui.requestRender()
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const cleanup = () => {
+        if (settled) return
+        settled = true
+        prompt.signal?.removeEventListener('abort', onAbort)
+        this.editor.onSubmit = previousSubmit
+        this.editor.onEscape = previousEscape
+        this.chatContainer.removeChild(notice)
+        this.editor.setText('')
+        this.ui.setFocus(this.editor)
+        this.ui.requestRender()
+      }
+      const onAbort = () => {
+        cleanup()
+        reject(new Error('Authentication cancelled.'))
+      }
+      this.editor.onSubmit = (value: string) => {
+        const code = value.trim()
+        if (!code) return
+        cleanup()
+        resolve(code)
+      }
+      this.editor.onEscape = () => {
+        authController?.abort()
+        cleanup()
+        reject(new Error('Authentication cancelled.'))
+      }
+      if (prompt.signal?.aborted) return onAbort()
+      prompt.signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  private async selectAuthOption(
+    title: string,
+    options: readonly { value?: string; id?: string; label: string; description?: string }[],
+  ): Promise<string | undefined> {
+    if (options.length === 0) return undefined
+    const items: SelectItem[] = options.map((option) => ({
+      value: option.value ?? option.id ?? option.label,
+      label: option.label,
+      description: option.description,
+    }))
+    const list = new SelectList(items, Math.min(items.length, 12), {
+      selectedPrefix: (text) => chalk.cyan(text),
+      selectedText: (text) => chalk.cyan(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+      noMatch: (text) => theme.dim(text),
+    })
+    const removeFilter = this.addSelectListFilter(list)
+    this.editorContainer.removeChild(this.editor)
+    const titleText = new Text(theme.fg('accent', title), 1, 0)
+    this.chatContainer.addChild(titleText)
+    this.chatContainer.addChild(list)
+    this.ui.setFocus(list)
+    this.ui.requestRender()
+    return new Promise((resolve) => {
+      let finished = false
+      const finish = (value?: string) => {
+        if (finished) return
+        finished = true
+        removeFilter()
+        this.chatContainer.removeChild(list)
+        this.chatContainer.removeChild(titleText)
+        this.editorContainer.addChild(this.editor)
+        this.ui.setFocus(this.editor)
+        this.ui.requestRender()
+        resolve(value)
+      }
+      list.onSelect = (item) => finish(item.value)
+      list.onCancel = () => finish()
+    })
+  }
+
+  private addSelectListFilter(list: SelectList): () => void {
+    let filter = ''
+    return this.ui.addInputListener((data) => {
+      if (data === '\u007f' || data === '\b') {
+        if (filter) {
+          filter = filter.slice(0, -1)
+          list.setFilter(filter)
+          this.ui.requestRender()
+        }
+        return { consume: true }
+      }
+      if (Array.from(data).length === 1 && data >= ' ' && !data.startsWith('\u001b')) {
+        filter += data
+        list.setFilter(filter)
+        this.ui.requestRender()
+        return { consume: true }
+      }
+      return undefined
+    })
+  }
+
+  private async openAuthUrl(url: string): Promise<void> {
+    const parsed = URL.canParse(url) ? new URL(url) : undefined
+    if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+      this.showError(`Refusing to open an invalid authentication URL: ${url}`)
+      return
+    }
+    const command = process.platform === 'win32'
+      ? ['rundll32.exe', 'url.dll,FileProtocolHandler', url]
+      : process.platform === 'darwin' ? ['open', url] : ['xdg-open', url]
+    try {
+      const child = Bun.spawn(command, { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+      void child.exited.then((code) => {
+        if (code !== 0) this.showError(`Could not open the browser automatically. Open this URL: ${url}`)
+      })
+    } catch {
+      this.showError(`Could not open the browser automatically. Open this URL: ${url}`)
     }
   }
 
@@ -1442,11 +1725,10 @@ export class App {
     let title = fallbackTitle
     try {
       const model = this.agent.getCurrentModel()
-      const apiKey = resolveApiKey(model)
-      const result = await completeSimple(model, {
+      const result = await getModels().completeSimple(model, {
         systemPrompt: 'Generate a short, concise title (5 words max) for a conversation. Reply with ONLY the title, no quotes, no explanation.',
         messages: [{ role: 'user', content: [{ type: 'text', text: `Generate a title for a conversation that starts with: "${text.slice(0, 200)}"` }] }],
-      } as any, { apiKey, maxTokens: 30, temperature: 0.3 })
+      } as any, { maxTokens: 30, temperature: 0.3 })
 
       const titleContent = result.content.find((c: any) => c.type === 'text') as any
       if (titleContent?.text) {
@@ -1506,44 +1788,88 @@ export class App {
 
   private handleModelCommand(searchTerm?: string): void {
     if (searchTerm?.trim()) {
-      // Direct switch by model ID (e.g. /model deepseek-v4-pro)
-      this.switchModel(searchTerm.trim())
+      const term = searchTerm.trim()
+      const exact = getAllModels().filter((model) => `${model.provider}/${model.id}` === term || model.id === term)
+      if (exact.length === 1) {
+        this.switchModel(`${exact[0]!.provider}/${exact[0]!.id}`)
+        return
+      }
+      this.showModelChoices(getAllModels().filter((model) =>
+        `${model.provider} ${model.id} ${model.name}`.toLowerCase().includes(term.toLowerCase()),
+      ), `Models matching “${term}”`)
       return
     }
 
-    // Show selectable model list
-    const models = getAllModels()
-    const currentModel = this.agent.getCurrentModel()
-    const currentId = currentModel.id
-    const currentApi = currentModel.api
-
-    // Detect duplicate IDs to show protocol info
-    const idCounts = new Map<string, number>()
-    for (const m of models) {
-      idCounts.set(m.id, (idCounts.get(m.id) ?? 0) + 1)
-    }
-
-    const items: SelectItem[] = models.map((m) => {
-      const hasDuplicate = (idCounts.get(m.id) ?? 0) > 1
-      const protocolLabel = hasDuplicate ? ` [${m.api}]` : ''
-      const isCurrent = m.id === currentId && m.api === currentApi
-      return {
-        value: `${m.id}|${m.api}`,
-        label: `${m.name ?? m.id}${protocolLabel}`,
-        description: `${m.provider}${isCurrent ? ' (current)' : ''}`,
-      }
-    })
-
-    const selectList = new SelectList(items, items.length, {
+    const allModels = getAllModels()
+    const providers = getModels().getProviders()
+      .map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: `${allModels.filter((model) => model.provider === provider.id).length} models · ${provider.id}`,
+      }))
+      .filter((provider) => !provider.description.startsWith('0 models'))
+    const currentProvider = String(this.agent.getCurrentModel().provider)
+    const items: SelectItem[] = providers.map((provider) => ({ ...provider, label: `${provider.label}${provider.value === currentProvider ? ' (current)' : ''}` }))
+    const selectList = new SelectList(items, Math.min(items.length, 12), {
       selectedPrefix: (text) => chalk.cyan(text),
       selectedText: (text) => chalk.cyan(text),
       description: (text) => theme.dim(text),
       scrollInfo: (text) => theme.dim(text),
       noMatch: (text) => theme.dim(text),
     }, { maxPrimaryColumnWidth: 52 })
+    const removeFilter = this.addSelectListFilter(selectList)
+    const providerTitle = new Text(theme.fg('accent', 'Choose provider — type to filter'), 1, 0)
+    this.chatContainer.addChild(providerTitle)
+    this.chatContainer.addChild(selectList)
+    this.ui.setFocus(selectList)
+    this.ui.requestRender()
+    selectList.onSelect = (item) => {
+      removeFilter()
+      this.chatContainer.removeChild(selectList)
+      this.chatContainer.removeChild(providerTitle)
+      this.showModelChoices(allModels.filter((model) => model.provider === item.value), `${item.label} models`)
+    }
+    selectList.onCancel = () => {
+      removeFilter()
+      this.chatContainer.removeChild(selectList)
+      this.chatContainer.removeChild(providerTitle)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+      this.ui.requestRender()
+    }
+  }
 
-    const label = theme.fg('accent', 'Select model:')
-    this.chatContainer.addChild(new Text(label, 1, 0))
+  private showModelChoices(models: Model<Api>[], title: string): void {
+    if (models.length === 0) {
+      this.showError('No matching models.')
+      return
+    }
+    const currentModel = this.agent.getCurrentModel()
+    const currentId = currentModel.id
+    const currentApi = currentModel.api
+    const currentProvider = currentModel.provider
+
+    const items: SelectItem[] = models.sort((a, b) => a.id.localeCompare(b.id)).map((m) => {
+      const isCurrent = m.id === currentId && m.api === currentApi && m.provider === currentProvider
+      return {
+        value: `${m.provider}/${m.id}`,
+        label: `${m.name ?? m.id}${isCurrent ? ' (current)' : ''}`,
+        description: `${m.id} · ${m.api}`,
+      }
+    })
+
+    const selectList = new SelectList(items, Math.min(items.length, 12), {
+      selectedPrefix: (text) => chalk.cyan(text),
+      selectedText: (text) => chalk.cyan(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+      noMatch: (text) => theme.dim(text),
+    }, { maxPrimaryColumnWidth: 52 })
+    const removeFilter = this.addSelectListFilter(selectList)
+
+    const label = theme.fg('accent', `${title} — type to filter`)
+    const titleText = new Text(label, 1, 0)
+    this.chatContainer.addChild(titleText)
     this.chatContainer.addChild(selectList)
     this.ui.setFocus(selectList)
     this.ui.requestRender()
@@ -1566,12 +1892,13 @@ export class App {
     const finish = (selectedValue?: string) => {
       if (finished) return
       finished = true
+      removeFilter()
       removeListener()
       this.chatContainer.removeChild(selectList)
+      this.chatContainer.removeChild(titleText)
 
       if (selectedValue) {
-        const [modelId, api] = selectedValue.split('|')
-        this.switchModel(modelId, api as Api | undefined)
+        this.switchModel(selectedValue)
       }
 
       this.chatContainer.addChild(new Spacer(1))
@@ -1591,7 +1918,10 @@ export class App {
   /** Switch to a model by ID and update all dependent state. */
   private switchModel(modelId: string, api?: Api): void {
     try {
-      const snapshot = this.agent.switchModel(modelId, api)
+      const slash = modelId.indexOf('/')
+      const provider = slash > 0 ? modelId.slice(0, slash) : undefined
+      const id = provider ? modelId.slice(slash + 1) : modelId
+      const snapshot = this.agent.switchModel(id, api, provider)
       const model = snapshot.model
 
       // Clear image state on model switch
@@ -1601,7 +1931,7 @@ export class App {
       // Rebuild footer with new model info
       this.footer.invalidate()
 
-      this.showStatus(`Model switched to: ${model.id} (${snapshot.provider}, ${model.api})`)
+      this.showStatus(`Model switched to: ${snapshot.provider}/${model.id} (${model.api})`)
     } catch (error) {
       this.showError(error instanceof Error ? error.message : String(error))
     }
@@ -1774,7 +2104,7 @@ export class App {
     this.showStatus(`Permission mode set to: ${mode}`)
   }
 
-  private static THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  private static THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
   private static THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
     off: 'No reasoning',
     minimal: 'Very brief reasoning (~1k tokens)',
@@ -1782,6 +2112,7 @@ export class App {
     medium: 'Moderate reasoning (~8k tokens)',
     high: 'Deep reasoning (~16k tokens)',
     xhigh: 'Maximum reasoning (~32k tokens)',
+    max: 'Maximum supported reasoning budget',
   }
 
   private handleThinkingCommand(args: string): void {
@@ -2306,6 +2637,9 @@ export class App {
       `  ${theme.bold('/compact')} [instr.]    Compress conversation context`,
       `  ${theme.bold('/status')}             Show context usage, token statistics, and model details`,
       `  ${theme.bold('/model')} [model-id]   Show current model or switch to a different model`,
+      `  ${theme.bold('/login')} [provider]   Sign in with provider and method pickers`,
+      `  ${theme.bold('/logout')} [provider]  Sign out with a provider picker`,
+      `  ${theme.bold('/auth')}             Show provider authentication status`,
       `  ${theme.bold('/thinking')} [level]   Show or set thinking depth`,
       `  ${theme.bold('/mcp')}                Show MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,

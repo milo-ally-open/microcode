@@ -9,9 +9,9 @@ export interface AgentModelSnapshot {
   readonly thinkingLevel: ThinkingLevel
 }
 
-export function resolveAgentModelConfig(modelId: string, api?: Api): ModelConfig {
+export function resolveAgentModelConfig(modelId: string, api?: Api, provider?: string): ModelConfig {
   const allModels = getAllModels()
-  let candidates = allModels.filter((model) => model.id === modelId)
+  let candidates = allModels.filter((model) => model.id === modelId || `${model.provider}/${model.id}` === modelId)
   if (candidates.length === 0) {
     candidates = allModels.filter(
       (model) => model.id.includes(modelId) || modelId.includes(model.id),
@@ -20,6 +20,7 @@ export function resolveAgentModelConfig(modelId: string, api?: Api): ModelConfig
   if (api) {
     candidates = candidates.filter((model) => model.api === api)
   }
+  if (provider) candidates = candidates.filter((model) => model.provider === provider)
   if (candidates.length === 0) {
     throw new Error(
       `Model "${modelId}"${api ? ` with API "${api}"` : ''} was not found.`,
@@ -48,8 +49,8 @@ export class AgentModelManager {
     this.thinkingLevel = options.thinkingLevel ?? 'off'
   }
 
-  resolve(modelId: string, api?: Api): ModelConfig {
-    return resolveAgentModelConfig(modelId, api)
+  resolve(modelId: string, api?: Api, provider?: string): ModelConfig {
+    return resolveAgentModelConfig(modelId, api, provider)
   }
 
   commit(config: ModelConfig): void {

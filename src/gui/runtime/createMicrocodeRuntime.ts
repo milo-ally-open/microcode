@@ -1,16 +1,15 @@
 import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core'
-import { completeSimple, type Api, type ImageContent, type Model } from '@earendil-works/pi-ai'
+import { type Api, type AuthPrompt, type ImageContent, type Model } from '@earendil-works/pi-ai'
 import { homedir } from 'os'
 import { isAbsolute, join, resolve } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { createMicrocodeAgentRuntime, type MicrocodeAgent, type MicrocodeAgentEvent } from '../../agent/index.ts'
-import { getAllModels, getCustomModelDefs, resetCustomModelCache, resolveApiKey } from '../../models/index.ts'
+import { getAllModels, getCustomModelDefs, getModels, resetCustomModelCache, resolveApiKey } from '../../models/index.ts'
 import { McpClientManager } from '../../mcp/client.ts'
 import { loadMcpConfig, isMcpConfigEmpty } from '../../mcp/config.ts'
 import { mergeProjectMcpServers, mergeProjectModels } from '../../config/projectConfigWrite.ts'
 import { SessionManager, type SessionListItem } from '../../session/SessionManager.ts'
 import { AgentSupervisor } from '../../swarm/index.ts'
-import { SUPERVISOR_WORKER_PROMPT } from '../../swarm/prompts.ts'
 import { GitWorkTreeSystem } from '../../git/index.ts'
 import {
   createDeleteAgentTool,
@@ -104,21 +103,24 @@ const GUI_API_ENV_KEYS = [
   'ANTHROPIC_BASE_URL',
   'GEMINI_BASE_URL',
 ] as const
+const GUI_SECRET_ENV_KEYS = ['API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'] as const
+const GUI_BASE_URL_ENV_KEYS = ['BASE_URL', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GEMINI_BASE_URL'] as const
 
-function loadGuiApiEnv(): void {
+function loadGuiApiEnv(): Record<string, string> {
   try {
-    if (!existsSync(GUI_API_CONFIG_PATH)) return
+    if (!existsSync(GUI_API_CONFIG_PATH)) return {}
     const parsed = JSON.parse(readFileSync(GUI_API_CONFIG_PATH, 'utf8')) as { env?: Record<string, string> }
     for (const key of GUI_API_ENV_KEYS) {
       const value = parsed.env?.[key]
       if (typeof value === 'string' && value) process.env[key] = value
     }
-  } catch {}
+    return parsed.env ?? {}
+  } catch { return {} }
 }
 
 function saveGuiApiEnv(): void {
   const env: Record<string, string> = {}
-  for (const key of GUI_API_ENV_KEYS) {
+  for (const key of GUI_BASE_URL_ENV_KEYS) {
     if (process.env[key]) env[key] = process.env[key]!
   }
   mkdirSync(join(homedir(), '.microcode'), { recursive: true })
@@ -503,6 +505,7 @@ export class MicrocodeRuntime {
   private mcpServers = [] as ReturnType<McpClientManager['getServerStates']>
   private sessions: GuiSessionListItem[] = []
   private tasks: Awaited<ReturnType<SessionManager['listTaskLists']>> = []
+  private authStatus = new Map<string, string>()
   private titleGenerated = false
   private started = false
   private disposed = false
@@ -522,7 +525,21 @@ export class MicrocodeRuntime {
   }
 
   static async create(options: CreateMicrocodeRuntimeOptions = {}): Promise<MicrocodeRuntime> {
-    loadGuiApiEnv()
+    const originalEnv = Object.fromEntries(GUI_API_ENV_KEYS.map((key) => [key, process.env[key]]))
+    const persistedEnv = loadGuiApiEnv()
+    const persistedSecrets = GUI_SECRET_ENV_KEYS.filter((key) => persistedEnv[key])
+    for (const key of persistedSecrets) {
+      const providerId = key === 'API_KEY'
+        ? getAllModels().find((model) => model.id === (process.env.MODEL ?? 'deepseek-v4-pro'))?.provider ?? 'openai'
+        : ({ OPENAI_API_KEY: 'openai', ANTHROPIC_API_KEY: 'anthropic', GEMINI_API_KEY: 'google' } as Record<string, string>)[key]
+      await getModels().login(providerId, 'api_key', {
+        prompt: async () => persistedEnv[key]!,
+        notify: () => undefined,
+      })
+      if (originalEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = originalEnv[key]
+    }
+    if (persistedSecrets.length > 0) saveGuiApiEnv()
     const cwd = options.cwd ?? process.cwd()
     const sessionManager = new SessionManager()
     let restoredMessages: AgentMessage[] | null = null
@@ -558,7 +575,6 @@ export class MicrocodeRuntime {
         name: 'Coordinator',
         role: 'coordinator',
       },
-      systemPromptSuffix: SUPERVISOR_WORKER_PROMPT,
     })
     if (restoredMessages?.length) {
       agent.replaceMessages(restoredMessages, 'rebuild')
@@ -603,14 +619,6 @@ export class MicrocodeRuntime {
   async start(): Promise<void> {
     if (this.started) return
     this.started = true
-    if (!this.agent.getApiKey()) {
-      const model = this.agent.getCurrentModel()
-      const apiKeyEnv = (model as any).apiKeyEnv as string | undefined
-      const keyHint = apiKeyEnv
-        ? `$${apiKeyEnv}`
-        : `${String(model.provider).toUpperCase().replace(/-/g, '_')}_API_KEY`
-      this.addNotice('warning', `No API key configured. Set ${keyHint} or API_KEY to enable model responses.`)
-    }
     const mcpConfigs = await loadMcpConfig(this.cwd)
     if (!isMcpConfigEmpty(mcpConfigs)) {
       void this.mcpClient.connectAll(mcpConfigs).then(() => {
@@ -801,6 +809,24 @@ export class MicrocodeRuntime {
       case '/status':
         this.addCommandResult('/status', 'Runtime status')
         break
+      case '/login':
+        if (args) {
+          try { await this.loginProvider(args) }
+          catch (error) { this.addNotice('error', error instanceof Error ? error.message : String(error)) }
+        }
+        else this.addNotice('info', 'Usage: /login <provider> [api_key|oauth]')
+        break
+      case '/logout':
+        if (args) {
+          try { await this.logoutProvider(args) }
+          catch (error) { this.addNotice('error', error instanceof Error ? error.message : String(error)) }
+        }
+        else this.addNotice('info', 'Usage: /logout <provider>')
+        break
+      case '/auth':
+        try { await this.showAuthStatus() }
+        catch (error) { this.addNotice('error', error instanceof Error ? error.message : String(error)) }
+        break
       case '/model':
         if (args) await this.setModel(args)
         else this.addCommandResult('/model', 'Models')
@@ -858,27 +884,39 @@ export class MicrocodeRuntime {
   }
 
   async setModel(modelId: string): Promise<void> {
-    const [id, api] = modelId.includes('|')
-      ? modelId.split('|') as [string, Api]
-      : [modelId, undefined as Api | undefined]
-    const snapshot = this.agent.switchModel(id, api)
+    const slash = modelId.indexOf('/')
+    const provider = slash > 0 ? modelId.slice(0, slash) : undefined
+    const qualifiedModelId = provider ? modelId.slice(slash + 1) : modelId
+    const [id, api] = qualifiedModelId.includes('|')
+      ? qualifiedModelId.split('|') as [string, Api]
+      : [qualifiedModelId, undefined as Api | undefined]
+    const snapshot = this.agent.switchModel(id, api, provider)
     void snapshot
     this.emitSnapshot()
   }
 
   async setApiConfig(input: GuiApiConfigInput): Promise<void> {
-    const [id, api] = input.modelKey.includes('|')
-      ? input.modelKey.split('|') as [string, Api]
-      : [input.modelKey, undefined as Api | undefined]
+    const slash = input.modelKey.indexOf('/')
+    const providerId = slash > 0 ? input.modelKey.slice(0, slash) : undefined
+    const rest = providerId ? input.modelKey.slice(slash + 1) : input.modelKey
+    const [id, api] = rest.includes('|')
+      ? rest.split('|') as [string, Api]
+      : [rest, undefined as Api | undefined]
     const model = getAllModels().find((candidate) =>
-      candidate.id === id && (!api || candidate.api === api)
+      candidate.id === id && (!providerId || candidate.provider === providerId) && (!api || candidate.api === api)
     )
     if (!model) throw new Error(`Model not found: ${input.modelKey}`)
+    if (input.apiKey?.trim() && !getModels().getProvider(String(model.provider))?.auth.apiKey?.login) {
+      throw new Error(`Provider ${model.provider} uses OAuth. Sign in with /login ${model.provider}.`)
+    }
 
     const apiKeyEnv = this.getPrimaryApiKeyEnv(model)
-    if (input.apiKey !== undefined) {
-      if (input.apiKey.trim()) process.env[apiKeyEnv] = input.apiKey.trim()
-      else delete process.env[apiKeyEnv]
+    if (input.apiKey?.trim()) {
+      await getModels().login(String(model.provider), 'api_key', {
+        prompt: async () => input.apiKey!.trim(),
+        notify: () => undefined,
+      })
+      delete process.env[apiKeyEnv]
     }
 
     const baseUrlEnv = this.getBaseUrlEnv(model)
@@ -887,7 +925,7 @@ export class MicrocodeRuntime {
       else delete process.env[baseUrlEnv]
     }
 
-    const snapshot = this.agent.switchModel(id, api)
+    const snapshot = this.agent.switchModel(id, api, providerId)
     void snapshot
     saveGuiApiEnv()
     await this.refreshDerivedState()
@@ -992,6 +1030,7 @@ export class MicrocodeRuntime {
     try {
       await this.agent.persistMessages()
     } catch {}
+    await this.sessionManager.close()
       await this.mcpClient.disconnectAll()
     cleanupImageCache(this.sessionManager.getSessionId() ?? '')
   }
@@ -1004,6 +1043,87 @@ export class MicrocodeRuntime {
     } catch {
       this.tasks = []
     }
+    const providers = getModels().getProviders()
+    const statuses = await Promise.all(providers.map(async (provider) => {
+      try {
+        const auth = await getModels().checkAuth(provider.id)
+        return [provider.id, auth ? `${auth.type}${auth.source ? ` · ${auth.source}` : ''}` : 'not configured'] as const
+      } catch (error) {
+        return [provider.id, `error · ${error instanceof Error ? error.message : String(error)}`] as const
+      }
+    }))
+    this.authStatus = new Map(statuses)
+  }
+
+  private async loginProvider(input: string): Promise<void> {
+    const [providerId, requestedType] = input.trim().split(/\s+/, 2)
+    const provider = getModels().getProvider(providerId)
+    if (!provider) throw new Error(`Unknown provider "${providerId}". Use /auth to list providers.`)
+    const supportsOAuth = Boolean(provider.auth.oauth)
+    const type = requestedType === 'oauth' ? 'oauth' : requestedType === 'api_key' ? 'api_key' : supportsOAuth ? 'oauth' : 'api_key'
+    if (type === 'oauth' && !supportsOAuth) throw new Error(`Provider ${providerId} does not support OAuth login.`)
+    const electron = await import('electron')
+    const window = electron.BrowserWindow.getAllWindows()[0]
+    await getModels().login(providerId, type, {
+      prompt: async (prompt: AuthPrompt) => {
+        if (providerId === 'openai-codex' && prompt.type === 'manual_code') {
+          this.addNotice('info', 'Waiting for the OpenAI browser callback. Microcode will continue automatically. If the browser cannot return, cancel and choose device code login.')
+          return await new Promise<string>((_resolve, reject) => {
+            const onAbort = () => reject(new Error('Authentication prompt cancelled.'))
+            if (prompt.signal?.aborted) return onAbort()
+            prompt.signal?.addEventListener('abort', onAbort, { once: true })
+          })
+        }
+        const options = prompt.type === 'select'
+          ? `\n${prompt.options.map((option, index) => `${index + 1}. ${option.label}${option.description ? ` — ${option.description}` : ''} [${option.id}]`).join('\n')}\nEnter the option id or number.`
+          : ''
+        const placeholder = 'placeholder' in prompt ? prompt.placeholder ?? '' : ''
+        const value = await window?.webContents.executeJavaScript(
+          `window.prompt(${JSON.stringify(`${prompt.message}${options}`)}, ${JSON.stringify(placeholder)})`,
+        )
+        if (typeof value !== 'string' || !value.trim()) throw new Error('Authentication cancelled.')
+        if (prompt.type === 'select') {
+          const selected = prompt.options.find((option) => option.id === value.trim())
+            ?? prompt.options[Number(value.trim()) - 1]
+          if (!selected) throw new Error('Invalid selection.')
+          return selected.id
+        }
+        return value.trim()
+      },
+      notify: (event) => {
+        if (event.type === 'auth_url') {
+          if (window) void electron.shell.openExternal(event.url)
+          this.addNotice('info', event.instructions ? `${event.instructions} ${event.url}` : `Opening ${event.url}`)
+        } else if (event.type === 'device_code') {
+          const message = `Code: ${event.userCode}\nOpen: ${event.verificationUri}`
+          if (window) void window.webContents.executeJavaScript(`window.alert(${JSON.stringify(message)})`)
+          this.addNotice('info', message)
+        } else if (event.type === 'info' || event.type === 'progress') {
+          this.addNotice('info', event.message)
+        }
+      },
+    })
+    await this.refreshDerivedState()
+    this.emitSnapshot()
+    this.addNotice('success', providerId === 'openai-codex'
+      ? 'Signed in to OpenAI Codex. Select a Codex model to start chatting.'
+      : `Signed in to ${provider.name}.`)
+  }
+
+  private async logoutProvider(input: string): Promise<void> {
+    const providerId = input.trim()
+    const provider = getModels().getProvider(providerId)
+    if (!provider) throw new Error(`Unknown provider "${providerId}".`)
+    await getModels().logout(providerId)
+    await this.refreshDerivedState()
+    this.emitSnapshot()
+    this.addNotice('success', `Signed out of ${provider.name}.`)
+  }
+
+  private async showAuthStatus(): Promise<void> {
+    await this.refreshDerivedState()
+    const lines = getModels().getProviders().map((provider) => `${provider.id}: ${this.authStatus.get(provider.id) ?? 'not configured'}`)
+    this.addNotice('info', lines.join('\n'))
   }
 
   private async reloadMcpServers(): Promise<void> {
@@ -1037,9 +1157,14 @@ export class MicrocodeRuntime {
         reasoning: model.reasoning === true,
         vision: model.input.includes('image'),
         custom: customIds.has(model.id) || model.provider === 'custom',
-        current: model.id === current.id && model.api === current.api,
+        current: model.id === current.id && model.api === current.api && model.provider === current.provider,
         apiKeyEnv,
-        apiKeyConfigured: Boolean(resolveApiKey(model)),
+        apiKeyConfigured: this.authStatus.has(model.provider)
+          ? this.authStatus.get(model.provider) !== 'not configured' && !this.authStatus.get(model.provider)?.startsWith('error')
+          : Boolean(resolveApiKey(model)),
+        authStatus: this.authStatus.get(model.provider) ?? (resolveApiKey(model) ? 'api_key · environment' : 'not configured'),
+        apiKeyLogin: Boolean(getModels().getProvider(String(model.provider))?.auth.apiKey?.login),
+        oauthLogin: Boolean(getModels().getProvider(String(model.provider))?.auth.oauth),
       }
     })
   }
@@ -1067,6 +1192,8 @@ export class MicrocodeRuntime {
   }
 
   private getApiKeyEnv(model: Model<Api>): string {
+    const provider = getModels().getProvider(String(model.provider))
+    if (provider?.auth.oauth && !provider.auth.apiKey?.login) return `OAuth (/login ${provider.id})`
     const customEnv = (model as any).apiKeyEnv as string | undefined
     if (customEnv) return customEnv
     if (model.api === 'openai-completions') return 'OPENAI_API_KEY or API_KEY'
@@ -1136,11 +1263,10 @@ export class MicrocodeRuntime {
 
     try {
       const model = this.agent.getCurrentModel()
-      const apiKey = resolveApiKey(model)
-      const result = await completeSimple(model, {
+      const result = await getModels().completeSimple(model, {
         systemPrompt: 'Generate a short, concise title (5 words max) for a conversation. Reply with ONLY the title, no quotes, no explanation.',
         messages: [{ role: 'user', content: [{ type: 'text', text: `Generate a title for a conversation that starts with: "${cleanText.slice(0, 200)}"` }] }],
-      } as any, { apiKey, maxTokens: 30, temperature: 0.3 })
+      } as any, { maxTokens: 30, temperature: 0.3 })
 
       const titleContent = result.content.find((c: any) => c.type === 'text') as any
       if (titleContent?.text) {

@@ -114,12 +114,13 @@ function buildCompat(def: CustomModelDef): Model<Api>['compat'] {
   return undefined
 }
 
-export function customModelToModel(def: CustomModelDef): Model<Api> {
+export function customModelToModel(def: CustomModelDef, provider = 'custom'): Model<Api> {
   return {
     id: def.id,
     name: def.name,
     api: def.api,
-    provider: 'custom',
+    provider,
+    ...(def.apiKeyEnv ? { apiKeyEnv: def.apiKeyEnv } : {}),
     baseUrl: def.baseUrl,
     reasoning: def.reasoning ?? false,
     input: def.input ?? ['text'],
@@ -128,8 +129,5 @@ export function customModelToModel(def: CustomModelDef): Model<Api> {
     headers: def.headers,
     cost: def.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: buildCompat(def),
-    // If apiKeyEnv is set, store it so resolveApiKey can read it.
-    // We attach it as a non-standard property for the registry to use.
-    ...(def.apiKeyEnv ? { apiKeyEnv: def.apiKeyEnv } as any : {}),
   }
 }

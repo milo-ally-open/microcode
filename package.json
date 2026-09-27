@@ -5,13 +5,14 @@
   "description": "An AI-powered coding assistant CLI, inspired by Microcode.",
   "license": "MIT",
   "type": "module",
-  "packageManager": "bun@1.3.5",
+  "packageManager": "bun@1.3.14",
   "repository": {
     "type": "git",
     "url": ""
   },
   "engines": {
-    "bun": ">=1.3.5"
+    "node": ">=22.19.0",
+    "bun": ">=1.3.14"
   },
   "scripts": {
     "dev": "bun run ./src/entry.ts",
@@ -26,17 +27,19 @@
     "test": "bun test ./test"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.75.3",
-    "@earendil-works/pi-ai": "^0.75.3",
+    "@earendil-works/pi-agent-core": "0.87.1",
+    "@earendil-works/pi-ai": "0.87.1",
     "@earendil-works/pi-tui": "^0.75.3",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@napi-rs/keyring": "2.1.0",
     "chalk": "^5.5.0",
     "diff": "^9.0.0",
-    "electron": "^31.7.7",
+    "electron": "44.4.5",
     "katex": "^0.17.0",
     "lucide-react": "^0.468.0",
     "marked": "^15.0.12",
     "marked-katex-extension": "^5.1.10",
+    "proper-lockfile": "4.1.2",
     "rcedit": "^5.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -45,6 +48,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/diff": "^7.0.2",
+    "@types/proper-lockfile": "4.1.4",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "bun-types": "^1.3.14"

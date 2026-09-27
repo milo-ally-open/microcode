@@ -3,11 +3,11 @@ import * as os from 'os'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { mkdir, readFile, rename, writeFile } from 'fs/promises'
 import {
-  JsonlSessionRepo,
-  Session,
   type JsonlSessionMetadata,
   type AgentMessage,
 } from '@earendil-works/pi-agent-core'
+import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core'
+import { JsonlSessionRepo, type Session } from '@earendil-works/pi-agent-core/harness/session'
 import { NodeFileSystem } from './NodeFileSystem.ts'
 import { replaceImageBlocksForPersistence } from './imageSerializer.ts'
 import type {
@@ -47,11 +47,11 @@ export class SessionManager implements AgentSessionPersistence {
   private readonly agentsRoot: string
   private readonly manifestQueues = new Map<string, Promise<void>>()
 
-  constructor(options: { tasksRoot?: string; agentsRoot?: string } = {}) {
+  constructor(options: { sessionsRoot?: string; tasksRoot?: string; agentsRoot?: string } = {}) {
     const fs = new NodeFileSystem('/')
     this.repo = new JsonlSessionRepo({
-      fs,
-      sessionsRoot: SESSIONS_DIR,
+      fileSystem: fs,
+      sessionsRoot: options.sessionsRoot ?? SESSIONS_DIR,
     })
     this.taskSystem = new TaskSystem(options.tasksRoot ?? TASKS_DIR)
     this.agentsRoot = options.agentsRoot ?? AGENTS_DIR
@@ -61,8 +61,9 @@ export class SessionManager implements AgentSessionPersistence {
    * Create a new session for the given working directory.
    */
   async create(cwd: string): Promise<string> {
-    this.session = await this.repo.create({ cwd })
-    this.metadata = await this.session.getMetadata() as JsonlSessionMetadata
+    this.session = await this.repo.create({ cwd }, BACKGROUND_CONTEXT)
+    await this.ensureMainBranch(this.session)
+    this.metadata = this.session.metadata as JsonlSessionMetadata
     this.draftCwd = null
     this.savedMessageCount = 0
     return this.metadata.id
@@ -101,19 +102,20 @@ export class SessionManager implements AgentSessionPersistence {
    * Resume an existing session from metadata.
    */
   async open(meta: JsonlSessionMetadata): Promise<AgentMessage[]> {
-    this.session = await this.repo.open(meta)
+    this.session = await this.repo.open(meta, BACKGROUND_CONTEXT)
+    await this.ensureMainBranch(this.session)
     this.metadata = meta
     this.draftCwd = null
-    const context = await this.session.buildContext()
-    this.savedMessageCount = context.messages.length
-    return context.messages
+    const messages = await this.readSessionMessages(this.session)
+    this.savedMessageCount = messages.length
+    return messages
   }
 
   /**
    * List available sessions, optionally filtered by cwd.
    */
   async list(cwd?: string): Promise<JsonlSessionMetadata[]> {
-    return this.repo.list({ cwd })
+    return this.repo.list({ cwd }, BACKGROUND_CONTEXT)
   }
 
   /**
@@ -138,37 +140,28 @@ export class SessionManager implements AgentSessionPersistence {
     // Append only new messages, with image blocks replaced by text references
     for (let i = this.savedMessageCount; i < messages.length; i++) {
       const serialized = replaceImageBlocksForPersistence(messages[i])
-      await this.session.appendMessage(serialized)
+      const branch = await this.session.branch('main', BACKGROUND_CONTEXT)
+      if (!branch) throw new Error('Session main branch is unavailable.')
+      await branch.appendMessage(serialized, BACKGROUND_CONTEXT)
     }
     this.savedMessageCount = messages.length
   }
 
   async recordCompaction(record: AgentCompactionRecord): Promise<void> {
     if (!this.session) return
-    const entries = await this.session.getBranch()
+    const entries = await this.session.findEntries({ order: 'asc' }, BACKGROUND_CONTEXT)
     const messageEntries = entries.filter((entry) => entry.type === 'message')
     if (messageEntries.length === 0) {
       throw new Error('No persisted messages available for compaction.')
     }
     const keptCount = Math.min(record.keptMessageCount, messageEntries.length)
-    const firstKeptEntry = messageEntries[
-      Math.max(0, messageEntries.length - keptCount)
-    ]
-    // A fully malformed trailing tool interaction may be summarized without
-    // retaining any original messages. The session builder treats an unknown
-    // boundary ID as "summary only", which is the desired representation.
-    const firstKeptEntryId =
-      firstKeptEntry?.id ?? `compacted-summary-only-${Date.now()}`
-    await this.session.appendCompaction(
-      record.summary,
-      firstKeptEntryId,
-      record.tokensBefore,
-      {
-        tokensAfter: record.tokensAfter,
-        automatic: record.automatic,
-      },
-      record.automatic,
-    )
+    const branch = await this.session.branch('main', BACKGROUND_CONTEXT)
+    if (!branch) throw new Error('Session main branch is unavailable.')
+    await branch.appendMessage({
+      role: 'user',
+      content: `[Earlier conversation summarized (${record.tokensBefore} tokens before compaction)]:\n${record.summary}`,
+      timestamp: Date.now(),
+    }, BACKGROUND_CONTEXT)
     this.savedMessageCount = record.compactedMessageCount
   }
 
@@ -177,8 +170,7 @@ export class SessionManager implements AgentSessionPersistence {
    */
   async loadMessages(): Promise<AgentMessage[]> {
     if (!this.session) return []
-    const context = await this.session.buildContext()
-    return context.messages
+    return this.readSessionMessages(this.session)
   }
 
   /**
@@ -378,7 +370,7 @@ export class SessionManager implements AgentSessionPersistence {
    * Delete a session.
    */
   async delete(meta: JsonlSessionMetadata): Promise<void> {
-    await this.repo.delete(meta)
+    await this.repo.delete(meta, BACKGROUND_CONTEXT)
   }
 
   /**
@@ -434,7 +426,7 @@ export class SessionManager implements AgentSessionPersistence {
    * List sessions enriched with titles.
    */
   async listWithTitles(cwd?: string): Promise<SessionListItem[]> {
-    const sessions = await this.repo.list({ cwd })
+    const sessions = await this.repo.list({ cwd }, BACKGROUND_CONTEXT)
     this.loadTitles()
     return sessions.map((s) => ({
       ...s,
@@ -447,11 +439,32 @@ export class SessionManager implements AgentSessionPersistence {
    * The caller is responsible for persisting the current runtime first.
    */
   async switchToSession(meta: JsonlSessionMetadata): Promise<AgentMessage[]> {
-    this.session = await this.repo.open(meta)
+    this.session = await this.repo.open(meta, BACKGROUND_CONTEXT)
+    await this.ensureMainBranch(this.session)
     this.metadata = meta
     this.draftCwd = null
-    const context = await this.session.buildContext()
-    this.savedMessageCount = context.messages.length
-    return context.messages
+    const messages = await this.readSessionMessages(this.session)
+    this.savedMessageCount = messages.length
+    return messages
+  }
+
+  private async readSessionMessages(session: Session): Promise<AgentMessage[]> {
+    const entries = await session.findEntries({ order: 'asc' }, BACKGROUND_CONTEXT)
+    return entries.flatMap((entry) => {
+      if (entry.type === 'message') return [entry.message]
+      if (entry.type === 'compaction' || entry.type === 'branch_summary') {
+        return [{ role: 'user' as const, content: `[Conversation summary]:\n${entry.summary}`, timestamp: entry.timestamp }]
+      }
+      return []
+    })
+  }
+
+  private async ensureMainBranch(session: Session): Promise<void> {
+    if (await session.branch('main', BACKGROUND_CONTEXT)) return
+    await session.createBranch('main', null, BACKGROUND_CONTEXT)
+  }
+
+  async close(): Promise<void> {
+    await this.repo.close(BACKGROUND_CONTEXT)
   }
 }

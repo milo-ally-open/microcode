@@ -166,6 +166,7 @@ async function main(): Promise<void> {
   await copyDir(join(projectRoot, 'dist', 'gui', 'electron'), join(resolvedAppDir, 'electron'))
   await copyDir(join(projectRoot, 'dist', 'gui', 'preload'), join(resolvedAppDir, 'preload'))
   await copyDir(join(projectRoot, 'dist', 'gui', 'renderer'), join(resolvedAppDir, 'renderer'))
+  await copyDir(join(projectRoot, 'node_modules', '@napi-rs'), join(resolvedAppDir, 'node_modules', '@napi-rs'))
   await copyFile(
     join(projectRoot, 'assets', 'logo', 'generated', 'microcode.png'),
     join(packageDir, 'microcode.png'),

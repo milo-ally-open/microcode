@@ -41,9 +41,8 @@ export async function createMainWindow(electronDir: string): Promise<void> {
     event.preventDefault()
     void shell.openExternal(url)
   })
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`)
-  })
+  // Do not mirror renderer console output to stdout: packaged Windows launchers
+  // may close the inherited pipe, and console.log would raise an uncaught EPIPE.
   mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
     console.error(`[renderer:load-failed] ${code} ${description} ${url}`)
   })
