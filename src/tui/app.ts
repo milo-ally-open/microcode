@@ -17,6 +17,7 @@ import chalk from 'chalk'
 import { createTwoFilesPatch } from 'diff'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
 import { getAllModels, getModels, resolveApiKey } from '../models/index.ts'
+import { getProviderAuthChoices } from '../models/authChoices.ts'
 import { theme, getEditorTheme, getMarkdownTheme, getBashModeBorderColor } from './theme.ts'
 import { MicrocodeEditor } from './components/microcodeEditor.ts'
 import { FooterComponent } from './components/footer.ts'
@@ -1176,17 +1177,21 @@ export class App {
         return
       }
 
-      const authChoices = [
-        ...(provider.auth.oauth ? [{ value: 'oauth', label: 'OAuth subscription', description: 'Sign in in your browser' }] : []),
-        ...(provider.auth.apiKey?.login ? [{ value: 'api_key', label: 'API key', description: provider.auth.apiKey.name }] : []),
-      ]
-      const type: AuthType | undefined = requestedType === 'oauth' || requestedType === 'api_key'
+      const authChoices = getProviderAuthChoices(provider)
+      if (authChoices.length === 0) {
+        throw new Error(`Provider ${provider.name} has no interactive sign-in method. Configure its ambient credentials and try again.`)
+      }
+      const requestedAuthType: AuthType | undefined = requestedType === 'oauth' || requestedType === 'api_key'
         ? requestedType
-        : authChoices.length > 1
+        : undefined
+      if (requestedAuthType && !authChoices.some((choice) => choice.value === requestedAuthType)) {
+        throw new Error(`Provider ${provider.name} does not support ${requestedAuthType === 'oauth' ? 'OAuth' : 'interactive API key'} login.`)
+      }
+      const type: AuthType | undefined = requestedAuthType
+        ?? (authChoices.length > 1
           ? await this.selectAuthOption(`Choose a sign-in method for ${provider.name}`, authChoices) as AuthType | undefined
-          : authChoices[0]?.value as AuthType | undefined
+          : authChoices[0]?.value)
       if (!type) return
-      if (type === 'oauth' && !provider.auth.oauth) throw new Error(`Provider ${providerId} does not support OAuth login.`)
       await models.login(providerId, type, {
         signal: abortController.signal,
         prompt: async (prompt) => {
@@ -1210,9 +1215,7 @@ export class App {
           }
         },
       })
-      this.showStatus(providerId === 'openai-codex'
-        ? 'Signed in to OpenAI Codex. Use /model to select a Codex model, then start chatting.'
-        : `Signed in to ${provider.name}.`)
+      this.showStatus(`Signed in to ${provider.name}.`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (abortController.signal.aborted || /cancel(?:led|ed)/i.test(message)) {

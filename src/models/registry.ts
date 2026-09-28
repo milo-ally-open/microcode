@@ -17,7 +17,6 @@ import { googleGenerativeAIApi } from '@earendil-works/pi-ai/api/google-generati
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
 import { loadCustomModels, customModelToModel, type CustomModelDef } from './custom.ts'
 import { EncryptedCredentialStore } from './EncryptedCredentialStore.ts'
-import { createOpenAICodexOAuth } from './openaiCodexOAuth.ts'
 
 export interface ModelConfig {
   model: Model<Api>
@@ -26,16 +25,6 @@ export interface ModelConfig {
 }
 
 const modelCollection: MutableModels = builtinModels({ credentials: new EncryptedCredentialStore() })
-const openAICodexProvider = modelCollection.getProvider('openai-codex')
-if (openAICodexProvider?.auth.oauth) {
-  modelCollection.setProvider({
-    ...openAICodexProvider,
-    auth: {
-      ...openAICodexProvider.auth,
-      oauth: createOpenAICodexOAuth(openAICodexProvider.auth.oauth),
-    },
-  })
-}
 let currentModel: Model<Api> | undefined
 let registeredCustomIds = new Set<string>()
 let customFingerprint = ''
