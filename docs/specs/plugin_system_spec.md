@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-Add a plugin system that lets a user install a reusable bundle of workflow instructions and optional external tools, enable or disable it, inspect what it contributes, and use it across Microcode sessions. A plugin is a packaging and lifecycle boundary around capabilities the harness already understands; it is not a second agent, a replacement for the tool registry, or arbitrary code loaded into the Microcode process.
+Add a plugin system that lets a user install a reusable bundle of workflow instructions and optional external tools, enable or disable it, and use it across Microcode sessions. A plugin is a packaging and lifecycle boundary around capabilities the harness already understands; it is not a second agent, a replacement for the tool registry, or arbitrary code loaded into the Microcode process.
 
 The initial implementation must preserve Microcode's single-Agent core and CLI/TUI runtime. It should reuse `SKILL.md` and MCP rather than inventing new model-facing protocols. Plugin-provided content must not bypass tool permission checks.
 
@@ -42,7 +42,7 @@ Microcode uses these terms:
 - In-process JavaScript/TypeScript imports, dynamic native modules, WASM extensions, or arbitrary `require()` hooks.
 - Lifecycle shell hooks, startup scripts, post-install scripts, executable `bin/` contributions, or automatic formatters.
 - Marketplace browsing, remote Git cloning/updating, signatures, or background auto-update.
-- GUI/plugin webviews or changes to the terminal interaction model beyond a small `/plugins` management surface.
+- GUI/plugin webviews or changes to the terminal interaction model beyond a small `/plugins` menu.
 - Replacing existing user/project skill discovery or standalone MCP configuration.
 - Treating a plugin's instructions as permission to ignore system, developer, repository, or user instructions.
 
@@ -186,12 +186,7 @@ Do not expose all plugin MCP schemas in the initial prompt when the existing def
 
 ### 7.5 TUI/CLI surface
 
-Add `/plugins` with:
-
-- `list`: ID, version, scope/source, enabled status, component counts, and concise health state.
-- `inspect <id>`: metadata, package root/source, skills, MCP server names/transports, enabled state, and validation warnings. Never display secret values.
-- `enable <id>` / `disable <id>`: update only the selected scope and refresh the runtime where safe; if the active prompt/tool graph cannot be changed safely mid-turn, queue it until the turn ends or require restart with an explicit message.
-- `validate <path>`: run manifest/component validation without starting servers.
+`/plugins` MUST offer only `List plugins` and `Enable/disable plugins` actions (plus `Cancel`). Listing shows plugin identity, source scope, enabled state, component counts, health, and diagnostics. Enable/disable uses the shared multi-select interaction and applies the desired state for one scope. Runtime changes are hot-applied when safe; changes MUST be rejected or queued while the Agent is busy.
 
 In the input editor, `$skill-name`, `#plugin-name`, and `@file` mentions MUST use visibly distinct highlight colors. Keep their color assignments centralized so future UI changes do not make Plugin mentions indistinguishable from Skills or files.
 
@@ -229,7 +224,7 @@ The following source facts inform the design; implementation should re-check the
 
 ### Phase 1 — Local skill-only plugins
 
-- Add manifest and path validator, local user/project/explicit discovery, enable state, namespace, diagnostics, `/plugins list|inspect|validate`, and tests.
+- Add manifest and path validation, local user/project/explicit discovery, enable state, namespace, diagnostics, `/plugins` list and enable/disable actions, and tests.
 - No network, no server startup, no arbitrary scripts.
 
 ### Phase 2 — Plugin MCP
@@ -277,7 +272,7 @@ Place all tests under `tests/plugins/`.
 
 ### CLI/TUI tests
 
-- `/plugins list`, `inspect`, and `validate` accurately show state and component health.
+- `/plugins` lists state and component health and supports enable/disable.
 - Enable/disable during an active turn is deferred or rejected with a clear status, never mutating the live tool set unsafely.
 - Short terminal widths, missing packages, malformed manifests, and long diagnostic text remain readable.
 

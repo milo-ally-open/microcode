@@ -44,7 +44,7 @@ import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
 import { discoverMcpCapabilities, type McpCapabilitiesResult } from '../mcp/capabilities.ts'
 import type { PluginManager } from '../plugins/PluginManager.ts'
-import type { PluginRecord, PluginScope, PluginSnapshot, PluginValidationResult } from '../plugins/types.ts'
+import type { PluginScope, PluginSnapshot } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
 import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.ts'
 import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
@@ -161,7 +161,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
   { name: 'skills', description: 'List, enable, or disable skills' },
-  { name: 'plugins', description: 'Browse and manage plugins, including their MCP servers' },
+  { name: 'plugins', description: 'List and enable or disable plugins' },
   { name: 'exit', description: 'Exit Microcode' },
   { name: 'help', description: 'Show help and available commands' },
 ]
@@ -2163,7 +2163,7 @@ export class App {
       return
     }
     if (args.trim()) {
-      this.showError('The /mcp command only lists MCP servers. Manage plugins and their MCP servers with /plugins.')
+      this.showError('The /mcp command only lists MCP servers. Use /plugins to list or enable and disable plugins.')
       return
     }
 
@@ -2561,16 +2561,12 @@ export class App {
   private showPluginActionMenu(): void {
     const actions: SelectItem[] = [
       { value: 'list', label: 'List plugins', description: 'Show package source, status, components, and health' },
-      { value: 'bulk', label: 'Enable/disable multiple plugins', description: 'Choose the desired enabled set for one scope' },
-      { value: 'manage', label: 'Manage a plugin', description: 'Inspect components and enable or disable the plugin' },
-      { value: 'validate', label: 'Validate a plugin package', description: 'Choose a discovered package folder; validation never starts servers' },
+      { value: 'bulk', label: 'Enable/disable plugins', description: 'Choose the desired enabled set for one scope' },
       { value: 'cancel', label: 'Cancel', description: 'Close this menu' },
     ]
     this.showPluginPicker('Plugins', 'Choose an action', actions, (value) => {
       if (value === 'list') this.showPluginList()
       else if (value === 'bulk') this.showPluginEnableDisableScopePicker()
-      else if (value === 'manage') this.showPluginChooser((plugin) => this.showPluginManageMenu(plugin))
-      else if (value === 'validate') this.showPluginChooser((plugin) => void this.validatePlugin(plugin))
     })
   }
 
@@ -2687,23 +2683,6 @@ export class App {
     }
   }
 
-  private showPluginChooser(onChoose: (plugin: PluginRecord) => void): void {
-    const plugins = this.pluginManager?.getPlugins() ?? []
-    if (plugins.length === 0) {
-      this.showStatus('No plugin package folders were discovered in ~/.microcode/plugins or .microcode/plugins.')
-      return
-    }
-    const items: SelectItem[] = plugins.map((plugin) => ({
-      value: plugin.name,
-      label: `${plugin.name} · ${plugin.version} · ${plugin.scope} · ${plugin.health}`,
-      description: plugin.description,
-    }))
-    this.showPluginPicker('Choose a plugin', 'Select a discovered package', items, (name) => {
-      const plugin = this.pluginManager?.findPlugin(name)
-      if (plugin) onChoose(plugin)
-    })
-  }
-
   private showPluginList(): void {
     const snapshot = this.pluginManager?.getSnapshot()
     const plugins = snapshot?.plugins ?? []
@@ -2724,83 +2703,6 @@ export class App {
       this.chatContainer.addChild(new Text(theme.fg('yellow', 'Discovery warnings'), 1, 0))
       for (const diagnostic of snapshot.diagnostics) this.chatContainer.addChild(new Text(`  ${theme.dim(diagnostic)}`, 1, 0))
     }
-    this.chatContainer.addChild(new Spacer(1))
-    this.ui.setFocus(this.editor)
-    this.ui.requestRender()
-  }
-
-  private showPluginManageMenu(plugin: PluginRecord): void {
-    const items: SelectItem[] = [
-      { value: 'inspect', label: 'Inspect package', description: 'Metadata, root, components, permissions, and warnings' },
-      { value: 'toggle', label: plugin.enabled ? 'Disable plugin' : 'Enable plugin', description: `Update the ${plugin.scope} plugin setting` },
-      { value: 'back', label: 'Back', description: 'Return to plugin actions' },
-    ]
-    this.showPluginPicker(plugin.name, 'Choose an action', items, (value) => {
-      const latest = this.pluginManager?.findPlugin(plugin.name) ?? plugin
-      if (value === 'inspect') this.showPluginInspection(latest)
-      else if (value === 'toggle') void this.togglePlugin(latest)
-      else this.showPluginActionMenu()
-    })
-  }
-
-  private showPluginInspection(plugin: PluginRecord): void {
-    this.chatContainer.addChild(new Text(theme.fg('accent', `${plugin.name} v${plugin.version}`), 1, 0))
-    this.chatContainer.addChild(new Text(theme.dim(plugin.description), 1, 0))
-    if (plugin.author) this.chatContainer.addChild(new Text(`Author: ${plugin.author}`, 1, 0))
-    if (plugin.license) this.chatContainer.addChild(new Text(`License: ${plugin.license}`, 1, 0))
-    if (plugin.homepage) this.chatContainer.addChild(new Text(`Homepage: ${plugin.homepage}`, 1, 0))
-    if (plugin.repository) this.chatContainer.addChild(new Text(`Repository: ${plugin.repository}`, 1, 0))
-    this.chatContainer.addChild(new Text(`Source: ${plugin.scope} · ${plugin.rootDir}`, 1, 0))
-    this.chatContainer.addChild(new Text(`Status: ${plugin.enabled ? 'enabled' : 'disabled'} · ${plugin.health} · ${plugin.valid ? 'valid' : 'invalid'}`, 1, 0))
-    this.chatContainer.addChild(new Text(`Requested integrations: ${plugin.skills.length} skill(s), ${plugin.servers.length} MCP server(s)`, 1, 0))
-    this.chatContainer.addChild(new Text(theme.dim('MCP servers start automatically while this plugin is enabled; tool calls still follow Microcode permission rules.'), 1, 0))
-    if (plugin.skills.length) {
-      this.chatContainer.addChild(new Text(theme.bold('Skills'), 1, 0))
-      for (const skill of plugin.skills) this.chatContainer.addChild(new Text(`  ${skill.name} — ${theme.dim(skill.description)}`, 1, 0))
-    }
-    if (plugin.servers.length) {
-      this.chatContainer.addChild(new Text(theme.bold('MCP servers'), 1, 0))
-      for (const server of plugin.servers) this.chatContainer.addChild(new Text(`  ${server.name} · ${server.transport} · ${server.safeCommandSummary}`, 1, 0))
-    }
-    if (plugin.diagnostics.length) {
-      this.chatContainer.addChild(new Text(theme.fg('yellow', 'Validation warnings'), 1, 0))
-      for (const warning of plugin.diagnostics) this.chatContainer.addChild(new Text(`  ${theme.dim(warning)}`, 1, 0))
-    }
-    this.chatContainer.addChild(new Text(theme.dim('Secret environment variables and headers are intentionally not displayed.'), 1, 0))
-    this.chatContainer.addChild(new Spacer(1))
-    this.ui.setFocus(this.editor)
-    this.ui.requestRender()
-  }
-
-  private async togglePlugin(plugin: PluginRecord): Promise<void> {
-    if (this.agent.isBusy()) {
-      this.showStatus('Plugin settings were not changed: finish or interrupt the active turn, then choose the action again.')
-      return
-    }
-    try {
-      const snapshot = await this.pluginManager?.setEnabled(plugin.name, !plugin.enabled)
-      await this.onPluginsChanged?.(snapshot)
-      this.showStatus(`${plugin.enabled ? 'Disabled' : 'Enabled'} plugin '${plugin.name}'.`)
-    } catch (error) {
-      this.showError(`Could not change plugin: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
-  private async validatePlugin(plugin: PluginRecord): Promise<void> {
-    try {
-      const result = await this.pluginManager?.validatePath(plugin.rootDir)
-      if (result) this.showPluginValidation(result)
-    } catch (error) {
-      this.showError(`Validation failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
-  private showPluginValidation(result: PluginValidationResult): void {
-    this.chatContainer.addChild(new Text(theme.fg('accent', `Validation: ${result.name ?? 'unknown plugin'} ${result.valid ? 'valid' : 'invalid'}`), 1, 0))
-    this.chatContainer.addChild(new Text(theme.dim(result.rootDir), 1, 0))
-    this.chatContainer.addChild(new Text(`Components found: ${result.skills.length} skill(s), ${result.servers.length} MCP server(s)`, 1, 0))
-    for (const warning of result.diagnostics) this.chatContainer.addChild(new Text(`  ${theme.dim(warning)}`, 1, 0))
-    this.chatContainer.addChild(new Text(theme.dim('Validation does not start MCP servers; secret values are not shown.'), 1, 0))
     this.chatContainer.addChild(new Spacer(1))
     this.ui.setFocus(this.editor)
     this.ui.requestRender()
@@ -3173,7 +3075,7 @@ export class App {
       `  ${theme.bold('/mcp')}              List MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
       `  ${theme.bold('/skills')}             List, enable, or disable skills`,
-      `  ${theme.bold('/plugins')}            Manage plugins and their MCP servers`,
+      `  ${theme.bold('/plugins')}            List and enable or disable plugins`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
       `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
       `  ${theme.bold('/instructions reload')} Reload project instruction files`,

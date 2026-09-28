@@ -40,9 +40,7 @@ On confirmation, Microcode MUST compare the desired enabled state with the initi
 
 Confirmed Plugin changes MUST be hot-applied without restarting Microcode: Plugin Skills MUST update in the Agent prompt, and Plugin MCP servers MUST be connected or removed to match the newly enabled set. Plugin discovery and runtime synchronization MUST happen once per batch.
 
-The `/plugins` command MUST refresh Plugin discovery before showing its action menu, so packages added or changed while Microcode is running can be viewed and managed without restarting.
-
-Inspecting a Plugin package and validating a package remain single-item operations.
+The `/plugins` command MUST refresh Plugin discovery before showing its action menu, so packages added or changed while Microcode is running can be listed and enabled or disabled without restarting.
 
 ## 5. MCP discovery and runtime
 
@@ -55,7 +53,7 @@ MCP has no trust/revoke workflow. Valid standalone MCP configurations connect wh
 - MCP status remains a list-only command; Plugin enablement remains managed through `/plugins`.
 - Multi-file or multi-package operations may use the interaction when they have a clear all-or-nothing confirmation and per-item results.
 
-The following actions SHOULD remain single-selection because they choose one value or one object: model/provider selection, package inspection, package validation, and individual permission prompts. A permission request MUST NOT be silently generalized into a batch approval.
+Model/provider selection and individual permission prompts SHOULD remain single-selection because they choose one value or one object. A permission request MUST NOT be silently generalized into a batch approval.
 
 ## 7. Implementation notes
 

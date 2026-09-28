@@ -430,10 +430,6 @@ export class PluginManager {
     return this.records.find((plugin) => plugin.name === name)
   }
 
-  async validatePath(path: string): Promise<PluginValidationResult> {
-    return validatePluginDirectory(path, 'user', undefined, this.paths.microcodeVersion)
-  }
-
   async setEnabled(name: string, enabled: boolean): Promise<PluginSnapshot> {
     const plugin = this.findPlugin(name)
     if (!plugin) throw new Error(`Plugin "${name}" was not found.`)
