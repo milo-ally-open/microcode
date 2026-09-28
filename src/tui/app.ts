@@ -44,7 +44,7 @@ import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
 import { discoverMcpCapabilities, safeMcpConfigSummary, setMcpDirectoryTrust, type McpCapabilitiesResult } from '../mcp/capabilities.ts'
 import type { PluginManager } from '../plugins/PluginManager.ts'
-import type { PluginRecord, PluginValidationResult } from '../plugins/types.ts'
+import type { PluginRecord, PluginScope, PluginSnapshot, PluginValidationResult } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
 import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.ts'
 import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
@@ -191,7 +191,7 @@ export class App {
   private mcpClient?: McpClientManager
   private queuedMcpClient?: McpClientManager
   private pluginManager?: PluginManager
-  private onPluginsChanged?: () => Promise<void>
+  private onPluginsChanged?: (snapshot?: PluginSnapshot) => Promise<void>
   private sessionManager: SessionManager
   private compacting = false
   private compactionProgressText?: Text
@@ -242,7 +242,7 @@ export class App {
     return this.sessionManager
   }
 
-  setPluginManager(manager: PluginManager, onChanged: () => Promise<void>): void {
+  setPluginManager(manager: PluginManager, onChanged: (snapshot?: PluginSnapshot) => Promise<void>): void {
     this.pluginManager = manager
     this.onPluginsChanged = onChanged
   }
@@ -2531,15 +2531,96 @@ export class App {
   private showPluginActionMenu(): void {
     const actions: SelectItem[] = [
       { value: 'list', label: 'List plugins', description: 'Show package source, status, components, and health' },
+      { value: 'bulk', label: 'Enable/disable multiple plugins', description: 'Choose the desired enabled set for one scope' },
       { value: 'manage', label: 'Manage a plugin', description: 'Inspect, enable/disable, or trust its MCP servers' },
       { value: 'validate', label: 'Validate a plugin package', description: 'Choose a discovered package folder; validation never starts servers' },
       { value: 'cancel', label: 'Cancel', description: 'Close this menu' },
     ]
     this.showPluginPicker('Plugins', 'Choose an action', actions, (value) => {
       if (value === 'list') this.showPluginList()
+      else if (value === 'bulk') this.showPluginEnableDisableScopePicker()
       else if (value === 'manage') this.showPluginChooser((plugin) => this.showPluginManageMenu(plugin))
       else if (value === 'validate') this.showPluginChooser((plugin) => void this.validatePlugin(plugin))
     })
+  }
+
+  private showPluginEnableDisableScopePicker(): void {
+    const plugins = this.pluginManager?.getPlugins() ?? []
+    const scopes: PluginScope[] = ['user', 'project']
+    const available = scopes.filter((scope) => plugins.some((plugin) => plugin.scope === scope))
+    if (available.length === 0) {
+      this.showStatus('No plugin packages are available to enable or disable.')
+      return
+    }
+    this.showPluginPicker('Enable/Disable Plugins', 'Choose one preference scope', available.map((scope) => ({
+      value: scope,
+      label: `${scope} plugins`,
+      description: `${plugins.filter((plugin) => plugin.scope === scope).length} discovered`,
+    })), (value) => {
+      if (value === 'user' || value === 'project') this.showPluginEnableDisableMenu(value)
+    })
+  }
+
+  private showPluginEnableDisableMenu(scope: PluginScope): void {
+    const plugins = (this.pluginManager?.getPlugins() ?? []).filter((plugin) => plugin.scope === scope)
+    if (plugins.length === 0) {
+      this.showStatus(`No ${scope} plugins are available.`)
+      return
+    }
+    const items: MultiSelectItem[] = plugins.map((plugin) => ({
+      value: plugin.name,
+      label: `${plugin.name} · ${plugin.scope} · ${plugin.health}`,
+      description: plugin.description,
+      disabled: !plugin.valid || plugin.health === 'incompatible',
+    }))
+    const preSelected = plugins.flatMap((plugin, index) => plugin.enabled && plugin.valid && plugin.health !== 'incompatible' ? [index] : [])
+    const list = new MultiSelectList(items, Math.min(items.length, 12), {
+      selectedText: (text) => chalk.cyan(text),
+      disabledText: (text) => theme.dim(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+    }, preSelected)
+    this.chatContainer.addChild(new Text(theme.fg('accent', `${scope} Plugins`), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim('Checked plugins will be enabled. Space toggles; Enter applies changes.'), 1, 0))
+    this.chatContainer.addChild(list)
+    this.ui.setFocus(list)
+    this.ui.requestRender()
+    const close = () => {
+      this.chatContainer.removeChild(list)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+    }
+    list.onConfirm = (selected) => {
+      close()
+      const selectedNames = new Set(selected.map((item) => item.value))
+      const desiredStates = new Map(plugins.filter((plugin) => plugin.valid && plugin.health !== 'incompatible').map((plugin) => [plugin.name, selectedNames.has(plugin.name)]))
+      void this.applyPluginEnablement(scope, desiredStates)
+    }
+    list.onCancel = () => {
+      close()
+      this.ui.requestRender()
+    }
+  }
+
+  private async applyPluginEnablement(scope: PluginScope, desiredStates: ReadonlyMap<string, boolean>): Promise<void> {
+    if (this.agent.isBusy()) {
+      this.showStatus('Plugin settings were not changed: finish or interrupt the active turn, then choose the action again.')
+      return
+    }
+    const changed = [...desiredStates].filter(([name, enabled]) => this.pluginManager?.findPlugin(name)?.enabled !== enabled)
+    if (changed.length === 0) {
+      this.showStatus('Plugin settings are already up to date.')
+      return
+    }
+    try {
+      const snapshot = await this.pluginManager?.setEnabledMany(scope, desiredStates)
+      await this.onPluginsChanged?.(snapshot)
+      const enabled = changed.filter(([, state]) => state).length
+      const disabled = changed.length - enabled
+      this.showStatus(`Updated ${scope} plugins: ${enabled} enabled, ${disabled} disabled.`)
+    } catch (error) {
+      this.showError(`Could not update plugins: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private showPluginPicker(
@@ -2676,8 +2757,8 @@ export class App {
       return
     }
     try {
-      await this.pluginManager?.setEnabled(plugin.name, !plugin.enabled)
-      await this.onPluginsChanged?.()
+      const snapshot = await this.pluginManager?.setEnabled(plugin.name, !plugin.enabled)
+      await this.onPluginsChanged?.(snapshot)
       this.showStatus(`${plugin.enabled ? 'Disabled' : 'Enabled'} plugin '${plugin.name}'.`)
     } catch (error) {
       this.showError(`Could not change plugin: ${error instanceof Error ? error.message : String(error)}`)
@@ -2697,8 +2778,8 @@ export class App {
       }
       void (async () => {
         try {
-          await this.pluginManager?.setMcpServerTrusted(plugin.name, serverName, !trusted)
-          await this.onPluginsChanged?.()
+          const snapshot = await this.pluginManager?.setMcpServerTrusted(plugin.name, serverName, !trusted)
+          await this.onPluginsChanged?.(snapshot)
           this.showStatus(`${trusted ? 'Revoked trust for' : 'Trusted'} MCP server '${serverName}'.`)
         } catch (error) {
           this.showError(`Could not update MCP trust: ${error instanceof Error ? error.message : String(error)}`)
@@ -2778,44 +2859,63 @@ export class App {
   }
 
   private showSkillEnableDisableMenu(): void {
+    if (this.agent.isBusy()) {
+      this.showStatus('Skill settings were not changed: finish or interrupt the active turn, then choose the action again.')
+      return
+    }
     const skills = this.agent.getSkills()
     if (skills.length === 0) {
       this.showStatus('No skills available to enable or disable.')
       return
     }
-    const items: SelectItem[] = skills.map((skill) => ({
+    const items: MultiSelectItem[] = skills.map((skill) => ({
       value: skill.name,
-      label: `${skill.name} — ${this.agent.isSkillLoaded(skill.name) ? 'Disable' : 'Enable'}`,
+      label: `${skill.name} · ${skill.scope}`,
       description: skill.description,
     }))
-    const selectList = new SelectList(items, Math.min(items.length, 12), {
-      selectedPrefix: (text) => chalk.cyan(text),
+    const preSelected = skills.flatMap((skill, index) => this.agent.isSkillLoaded(skill.name) ? [index] : [])
+    const selectList = new MultiSelectList(items, Math.min(items.length, 12), {
       selectedText: (text) => chalk.cyan(text),
+      disabledText: (text) => theme.dim(text),
       description: (text) => theme.dim(text),
       scrollInfo: (text) => theme.dim(text),
-      noMatch: (text) => theme.dim(text),
-    })
+    }, preSelected)
     this.chatContainer.addChild(new Text(theme.fg('accent', 'Enable/Disable Skills'), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim('Checked skills will be enabled. Space toggles; Enter applies changes.'), 1, 0))
     this.chatContainer.addChild(selectList)
     this.ui.setFocus(selectList)
     this.ui.requestRender()
-    selectList.onSelect = (item) => {
+    selectList.onConfirm = (selected) => {
       this.chatContainer.removeChild(selectList)
-      const skill = skills.find((candidate) => candidate.name === item.value)
-      if (skill) {
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+      if (this.agent.isBusy()) {
+        this.showStatus('Skill settings were not changed: the Agent became busy before confirmation.')
+        return
+      }
+      const selectedNames = new Set(selected.map((item) => item.value))
+      let enabled = 0
+      let disabled = 0
+      const errors: string[] = []
+      for (const skill of skills) {
+        const wasLoaded = this.agent.isSkillLoaded(skill.name)
+        const shouldLoad = selectedNames.has(skill.name)
+        if (wasLoaded === shouldLoad) continue
         try {
-          if (this.agent.isSkillLoaded(skill.name)) {
+          if (!shouldLoad) {
             this.agent.unloadSkill(skill.name)
-            this.showStatus(`Disabled skill '${skill.name}'.`)
+            disabled++
           } else {
             this.agent.loadSkill(skill.name)
-            this.showStatus(`Enabled skill '${skill.name}'.`)
+            enabled++
           }
         } catch (error) {
-          this.showError(`Could not change skill '${skill.name}': ${error instanceof Error ? error.message : String(error)}`)
+          errors.push(`${skill.name}: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
-      this.ui.setFocus(this.editor)
+      if (errors.length > 0) this.showError(`Some skill changes failed: ${errors.join('; ')}`)
+      else if (enabled === 0 && disabled === 0) this.showStatus('Skill settings are already up to date.')
+      else this.showStatus(`Updated skills: ${enabled} enabled, ${disabled} disabled.`)
       this.ui.requestRender()
     }
     selectList.onCancel = () => {

@@ -319,8 +319,8 @@ Session Management:
   // Create TUI app (REPL starts immediately)
   const app = new App(agent, mcpClient, sessionManager)
   const activePluginServerNames = new Set<string>()
-  app.setPluginManager(pluginManager, async () => {
-    const snapshot = await pluginManager.refresh(MACRO.VERSION)
+  app.setPluginManager(pluginManager, async (updatedSnapshot) => {
+    const snapshot = updatedSnapshot ?? await pluginManager.refresh(MACRO.VERSION)
     const standaloneRegistry = await discoverMcpCapabilities(cwd)
     const standalone = standaloneRegistry.connectable
     const desired = { ...snapshot.trustedServers }

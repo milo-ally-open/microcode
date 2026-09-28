@@ -458,6 +458,50 @@ export class PluginManager {
     return this.refresh()
   }
 
+  async setEnabledMany(scope: PluginScope, desiredStates: ReadonlyMap<string, boolean>): Promise<PluginSnapshot> {
+    const changes = new Map<string, boolean>()
+    for (const [name, enabled] of desiredStates) {
+      const plugin = this.findPlugin(name)
+      if (!plugin) throw new Error(`Plugin "${name}" was not found.`)
+      if (plugin.scope !== scope) throw new Error(`Plugin "${name}" does not belong to the ${scope} scope.`)
+      if (enabled && !plugin.valid) throw new Error(`Plugin "${name}" is invalid and cannot be enabled.`)
+      if (enabled && plugin.health === 'incompatible') throw new Error(`Plugin "${name}" is incompatible with this Microcode version.`)
+      if (plugin.enabled !== enabled) changes.set(name, enabled)
+    }
+    if (changes.size === 0) return this.getSnapshot()
+
+    const path = scope === 'user' ? this.paths.userConfigPath : this.paths.projectConfigPath
+    let config: PluginConfigFile = {}
+    try {
+      const raw = await readFile(path, 'utf8')
+      const parsed: unknown = JSON.parse(raw)
+      if (!isRecord(parsed)) throw new Error('expected a JSON object')
+      config = parsed as PluginConfigFile
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Cannot update plugin settings in ${path}: existing config is invalid and was left unchanged (${error instanceof Error ? error.message : String(error)})`)
+      }
+    }
+
+    const plugins = isRecord(config.plugins) ? config.plugins : {}
+    const updatedPlugins = { ...plugins }
+    for (const [name, enabled] of changes) {
+      const current = preferenceFrom(updatedPlugins[name])
+      updatedPlugins[name] = { ...current, enabled }
+    }
+    config.plugins = updatedPlugins as Record<string, PluginPreference>
+    await mkdir(dirname(path), { recursive: true })
+    const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+      await rename(temporaryPath, path)
+    } catch (error) {
+      await import('fs/promises').then(({ rm }) => rm(temporaryPath, { force: true })).catch(() => {})
+      throw error
+    }
+    return this.refresh()
+  }
+
   async setMcpServerTrusted(name: string, serverName: string, trusted: boolean): Promise<PluginSnapshot> {
     const plugin = this.findPlugin(name)
     if (!plugin) throw new Error(`Plugin "${name}" was not found.`)
