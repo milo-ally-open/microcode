@@ -2224,6 +2224,11 @@ export class App {
 
     let registry: McpCapabilitiesResult
     try {
+      if (this.agent.isBusy()) {
+        this.showStatus('MCP runtime refresh will be applied after the active turn finishes.')
+      } else {
+        await this.onPluginsChanged?.()
+      }
       registry = await discoverMcpCapabilities(process.cwd())
     } catch (error) {
       this.showError(`Could not discover MCP servers: ${error instanceof Error ? error.message : String(error)}`)

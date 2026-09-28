@@ -318,36 +318,39 @@ Session Management:
 
   // Create TUI app (REPL starts immediately)
   const app = new App(agent, mcpClient, sessionManager)
-  const activePluginServerNames = new Set<string>()
+  const activeMcpServerNames = new Set<string>()
   app.setPluginManager(pluginManager, async (updatedSnapshot) => {
     const snapshot = updatedSnapshot ?? await pluginManager.refresh(MACRO.VERSION)
     const standaloneRegistry = await discoverMcpCapabilities(cwd)
     const standalone = standaloneRegistry.connectable
-    const desired = { ...snapshot.trustedServers }
+    const desired = { ...standalone }
     const collisions: string[] = []
-    for (const [name, config] of Object.entries(standalone)) {
+    for (const [name, config] of Object.entries(snapshot.trustedServers)) {
       if (Object.hasOwn(desired, name)) {
         collisions.push(`Plugin MCP server "${name}" conflicts with a configured MCP server; plugin server skipped.`)
         continue
       }
       desired[name] = config
     }
-    for (const name of activePluginServerNames) {
-      if (!Object.hasOwn(snapshot.trustedServers, name)) {
+    for (const name of activeMcpServerNames) {
+      if (!Object.hasOwn(desired, name)) {
         await mcpClient.removeServer(name)
-        activePluginServerNames.delete(name)
+        activeMcpServerNames.delete(name)
       }
     }
-    for (const [name, config] of Object.entries(snapshot.trustedServers)) {
+    const configsToConnect: Array<[string, typeof desired[string]]> = []
+    for (const [name, config] of Object.entries(desired)) {
       const current = mcpClient.getServer(name)
-      if (standalone[name]) continue
       if (current && JSON.stringify(current.config) === JSON.stringify(config) && current.status !== 'disconnected' && current.status !== 'disabled') {
-        activePluginServerNames.add(name)
+        activeMcpServerNames.add(name)
         continue
       }
-      await mcpClient.connectServer(name, config)
-      activePluginServerNames.add(name)
+      configsToConnect.push([name, config])
     }
+    await Promise.allSettled(configsToConnect.map(async ([name, config]) => {
+      await mcpClient.connectServer(name, config)
+      activeMcpServerNames.add(name)
+    }))
     agent.setPluginSkills([...snapshot.skills], [...snapshot.diagnostics, ...snapshot.plugins.flatMap((plugin) => plugin.diagnostics.map((diagnostic) => `${plugin.name}: ${diagnostic}`))])
     app.updateMcpState(mcpClient)
     for (const warning of collisions) app.addStartupWarning(warning)
@@ -396,8 +399,8 @@ Session Management:
       continue
     }
     combinedMcpConfigs[name] = config
-    activePluginServerNames.add(name)
   }
+  for (const name of Object.keys(combinedMcpConfigs)) activeMcpServerNames.add(name)
   if (!isMcpConfigEmpty(combinedMcpConfigs)) {
     void mcpClient.connectAll(combinedMcpConfigs).then(() => {
       // Rebuild system prompt with MCP info and deferred tool names

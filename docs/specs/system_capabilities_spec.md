@@ -162,6 +162,8 @@ Trust MUST 绑定配置 digest，而不是只记录布尔 `trusted = true`。概
 
 启动流程 MUST 保证未批准的 directory MCP 不会流入自动 connect 列表；trust 被撤销或 digest 变化时，应断开现存连接并从 Agent runtime 移除相应 tools/resources。
 
+运行时重新发现 capability 时 MUST reconcile 所有已管理 MCP 来源：新出现且已 trusted 的 server 应连接；配置变化时应替换现存连接；不再存在、失去 trust 或与 reserved/system ID 冲突的 server 应断开并从 Agent runtime 移除 tools/resources。`/mcp` 列表在展示前 MUST 触发该 reconcile。未获 trust 的目录 MCP 仍只能显示为 untrusted，绝不能因热加载而启动。
+
 ## 8. Creator 约定
 
 三个 system Creator Skills 都 MUST 遵守相同 scope 默认值：未指定 scope 时写入 user scope；明确要求为当前项目创建时写入 project scope；任何 Creator 都不得将普通内容写入 system root。
