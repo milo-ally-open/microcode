@@ -193,6 +193,9 @@ export class App {
   private queuedMcpClient?: McpClientManager
   private pluginManager?: PluginManager
   private onPluginsChanged?: (snapshot?: PluginSnapshot) => Promise<void>
+  private pluginDiscoveryRefresh?: Promise<PluginSnapshot>
+  private pluginDiscoveryRefreshedAt = 0
+  private pluginRuntimeRefreshPending = false
   private sessionManager: SessionManager
   private compacting = false
   private compactionProgressText?: Text
@@ -345,6 +348,7 @@ export class App {
       this.ui.requestRender()
 
       try {
+        await this.refreshPluginDiscovery(true)
         const withFileContext = await this.addMentionedFileContext(userInput)
         const withSkillContext = buildSkillMentionContext(
           withFileContext,
@@ -538,6 +542,7 @@ export class App {
         const hashIndex = textBeforeCursor.lastIndexOf('#')
         const hashPrefix = hashIndex >= 0 ? textBeforeCursor.slice(hashIndex) : ''
         if (isPluginAutocompleteContext(textBeforeCursor) && hashPrefix.startsWith('#')) {
+          await this.refreshPluginDiscovery(false, false)
           const query = hashPrefix.slice(1).toLowerCase()
           const matches = filterMentionablePlugins(this.pluginManager?.getPlugins() ?? [], query).slice(0, 100)
           if (matches.length === 0) return null
@@ -2548,12 +2553,45 @@ export class App {
       return
     }
     try {
-      await this.pluginManager.refresh()
+      await this.refreshPluginDiscovery(true)
     } catch (error) {
       this.showError(`Could not refresh plugins: ${error instanceof Error ? error.message : String(error)}`)
       return
     }
     this.showPluginActionMenu()
+  }
+
+  private async refreshPluginDiscovery(force = false, syncRuntime = true): Promise<PluginSnapshot | undefined> {
+    const manager = this.pluginManager
+    if (!manager) return undefined
+
+    let snapshot: PluginSnapshot
+    if (this.pluginDiscoveryRefresh) {
+      snapshot = await this.pluginDiscoveryRefresh
+    } else if (force || Date.now() - this.pluginDiscoveryRefreshedAt >= 1000) {
+      const refresh = manager.refresh()
+      this.pluginDiscoveryRefresh = refresh
+      try {
+        snapshot = await refresh
+        this.pluginDiscoveryRefreshedAt = Date.now()
+        this.pluginRuntimeRefreshPending = true
+      } finally {
+        if (this.pluginDiscoveryRefresh === refresh) this.pluginDiscoveryRefresh = undefined
+      }
+    } else {
+      snapshot = manager.getSnapshot()
+    }
+
+    if (syncRuntime && this.pluginRuntimeRefreshPending && !this.agent.isBusy()) {
+      this.pluginRuntimeRefreshPending = false
+      try {
+        await this.onPluginsChanged?.(snapshot)
+      } catch (error) {
+        this.pluginRuntimeRefreshPending = true
+        throw error
+      }
+    }
+    return snapshot
   }
 
   private showPluginActionMenu(): void {
