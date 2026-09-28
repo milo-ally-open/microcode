@@ -32,7 +32,7 @@ function getContextColor(percentUsed: number): string {
 
 export class FooterComponent implements Component {
   private sessionTitle: string | null = null
-  private readonly gitBranch: string | null
+  private gitBranch: string | null
 
   constructor(
     private readonly agent: MicrocodeAgent,
@@ -45,7 +45,9 @@ export class FooterComponent implements Component {
     this.sessionTitle = title === null ? null : normalizeSessionTitle(title)
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.gitBranch = getGitBranch(this.cwd)
+  }
 
   render(width: number): string[] {
     const lines: string[] = []
