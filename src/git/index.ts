@@ -5,3 +5,4 @@ export {
   type GitWorkTreeStatus,
   type GitWorkTreeSystemOptions,
 } from './GitWorkTreeSystem.ts'
+export { GitBranchReader } from './GitBranchReader.ts'

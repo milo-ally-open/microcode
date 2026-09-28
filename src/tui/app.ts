@@ -779,6 +779,7 @@ export class App {
             this.bashComponent = undefined
           }
           this.updateEditorBorderColor()
+          this.footer.invalidate()
           this.ui.requestRender()
           resolve()
         })
@@ -794,6 +795,7 @@ export class App {
             this.bashComponent = undefined
           }
           this.updateEditorBorderColor()
+          this.footer.invalidate()
           this.ui.requestRender()
           resolve()
         })

@@ -1,6 +1,6 @@
 import { type Component, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
-import { execSync } from 'child_process'
+import { GitBranchReader } from '../../git/index.ts'
 import type { MicrocodeAgent } from '../../agent/index.ts'
 import { normalizeSessionTitle } from '../sessionTitle.ts'
 
@@ -12,18 +12,6 @@ function formatTokens(count: number): string {
   return `${Math.round(count / 1000000)}M`
 }
 
-function getGitBranch(cwd: string): string | null {
-  try {
-    return execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim()
-  } catch {
-    return null
-  }
-}
-
 function getContextColor(percentUsed: number): string {
   if (percentUsed >= 85) return '#cc6666'
   if (percentUsed >= 70) return '#cc9966'
@@ -32,20 +20,22 @@ function getContextColor(percentUsed: number): string {
 
 export class FooterComponent implements Component {
   private sessionTitle: string | null = null
-  private readonly gitBranch: string | null
+  private readonly gitBranch: GitBranchReader
 
   constructor(
     private readonly agent: MicrocodeAgent,
     private readonly cwd: string,
   ) {
-    this.gitBranch = getGitBranch(cwd)
+    this.gitBranch = new GitBranchReader(cwd)
   }
 
   setSessionTitle(title: string | null): void {
     this.sessionTitle = title === null ? null : normalizeSessionTitle(title)
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.gitBranch.refresh()
+  }
 
   render(width: number): string[] {
     const lines: string[] = []
@@ -63,8 +53,9 @@ export class FooterComponent implements Component {
     if (home && pwd.startsWith(home)) {
       pwd = `~${pwd.slice(home.length)}`
     }
-    if (this.gitBranch) {
-      pwd = `${pwd} (${this.gitBranch})`
+    const gitBranch = this.gitBranch.getBranch()
+    if (gitBranch) {
+      pwd = `${pwd} (${gitBranch})`
     }
 
     const statsParts: string[] = []
