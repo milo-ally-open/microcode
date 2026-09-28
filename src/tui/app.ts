@@ -396,7 +396,7 @@ export class App {
 
     // Editor with border
     this.editor = new MicrocodeEditor(this.ui, getEditorTheme(), { paddingX: 1 })
-    this.editor.getPluginNames = () => (this.pluginManager?.getPlugins() ?? []).map((plugin) => plugin.name)
+    this.editor.getPluginNames = () => (this.pluginManager?.getPlugins() ?? []).filter((plugin) => plugin.enabled).map((plugin) => plugin.name)
 
     // Set up slash command autocomplete
     this.setupSlashCommands()
@@ -550,7 +550,7 @@ export class App {
             items: matches.map((plugin) => ({
               value: `#${plugin.name}`,
               label: highlightPluginMatch(`#${plugin.name}`, query, (match) => chalk.cyan.bold(match)),
-              description: `${plugin.enabled ? 'enabled' : 'disabled'} · ${plugin.description}`,
+              description: plugin.description,
             })),
             prefix: hashPrefix,
           }

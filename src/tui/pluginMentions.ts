@@ -4,7 +4,7 @@ import { readSkillBody } from '../skill/skill.ts'
 export function filterMentionablePlugins(plugins: readonly PluginRecord[], query: string): PluginRecord[] {
   const needle = query.toLowerCase()
   return plugins
-    .filter((plugin) => plugin.valid && plugin.health !== 'incompatible' && plugin.name.toLowerCase().includes(needle))
+    .filter((plugin) => plugin.enabled && plugin.valid && plugin.health !== 'incompatible' && plugin.name.toLowerCase().includes(needle))
     .sort((a, b) => {
       const score = (name: string) => name.toLowerCase() === needle ? 0 : name.toLowerCase().startsWith(needle) ? 1 : 2
       return score(a.name) - score(b.name) || a.name.localeCompare(b.name)
@@ -22,7 +22,7 @@ function mentionPattern(pluginNames: readonly string[]): RegExp | undefined {
 }
 
 export function parsePluginMentions(text: string, plugins: readonly PluginRecord[]): string[] {
-  const byLowerName = new Map(plugins.filter((plugin) => plugin.valid && plugin.health !== 'incompatible').map((plugin) => [plugin.name.toLowerCase(), plugin.name]))
+  const byLowerName = new Map(plugins.filter((plugin) => plugin.enabled && plugin.valid && plugin.health !== 'incompatible').map((plugin) => [plugin.name.toLowerCase(), plugin.name]))
   const pattern = mentionPattern([...byLowerName.keys()])
   if (!pattern) return []
   const names: string[] = []
@@ -79,7 +79,7 @@ function escapePluginText(value: string): string {
 }
 
 export function buildPluginMentionContext(input: string, plugins: readonly PluginRecord[], scanText = input): string {
-  const byName = new Map(plugins.map((plugin) => [plugin.name, plugin]))
+  const byName = new Map(plugins.filter((plugin) => plugin.enabled).map((plugin) => [plugin.name, plugin]))
   const sections = parsePluginMentions(scanText, plugins).flatMap((name) => {
     const plugin = byName.get(name)
     if (!plugin) return []
