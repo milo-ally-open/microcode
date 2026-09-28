@@ -362,7 +362,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 
   const lines = [
     '\n\nThe following skills provide specialized instructions for specific tasks.',
-    'Users can reference a skill as $skill-name (or a plugin skill as $plugin:skill-name) to include its instructions in that request. The skill tool can also load a skill when needed.',
+    'Users can reference a skill as $skill-name (or a plugin skill as $plugin:skill-name) to include its instructions in that request. Users can reference a plugin as #plugin-name to include its package description and invocable skill guidance in that request. A plugin mention does not enable its MCP servers or grant tool permissions. The skill tool can also load a skill when needed.',
     '',
     '<available_skills>',
   ]

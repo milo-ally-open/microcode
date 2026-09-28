@@ -176,6 +176,8 @@ Extend skill identity to distinguish a display name from a stable qualified ID. 
 
 Preserve current lazy-loading behavior: catalog metadata is available for selection, while complete skill bodies enter context only when loaded or invoked. Supporting references/assets remain package-relative. A plugin skill may guide the model through Microcode's existing tools, but it cannot grant itself tools or permission rules.
 
+Users MUST be able to explicitly reference a discovered Plugin as `#plugin-name` to inject that package's description and invocable Skill guidance into the current request. Autocomplete MUST offer valid, compatible discovered Plugins, including disabled packages. The injected package content MUST be framed as untrusted guidance. A `#plugin-name` mention MUST NOT enable the Plugin, connect MCP servers, expose tools, or grant permissions; those remain controlled by Plugin enablement, MCP trust, and existing permission rules. Existing `$plugin-name:skill-name` mentions remain supported for selecting one Plugin Skill.
+
 ### 7.4 MCP/tool integration
 
 Use `McpClientManager` and the existing tool wrappers rather than creating a parallel invocation path. After an MCP connection changes, call the agent's MCP tool-configuration/update path and refresh the dynamic tool registry. Ensure unload/disconnect removes the corresponding server's discovered tools, pending tools, resources, and permissions.
@@ -192,6 +194,8 @@ Add `/plugins` with:
 - `inspect <id>`: metadata, package root/source, skills, MCP server names/transports, requested integration permissions, and validation warnings. Never display secret values.
 - `enable <id>` / `disable <id>`: update only the selected scope and refresh the runtime where safe; if the active prompt/tool graph cannot be changed safely mid-turn, queue it until the turn ends or require restart with an explicit message.
 - `validate <path>`: run manifest/component validation without starting servers.
+
+In the input editor, `$skill-name`, `#plugin-name`, and `@file` mentions MUST use visibly distinct highlight colors. Keep their color assignments centralized so future UI changes do not make Plugin mentions indistinguishable from Skills or files.
 
 V1 does not need install/uninstall commands; local packages can be placed in the documented directory. Future phases may add `install`, `remove`, `marketplace add/list`, and `update`.
 

@@ -2,6 +2,13 @@ import { Editor, type EditorOptions, type EditorTheme, type TUI } from '@earendi
 import chalk from 'chalk'
 import { highlightSkillMentions } from '../skillMentions.ts'
 import { highlightWorkspaceFileMentions } from '../workspaceFiles.ts'
+import { highlightPluginMentions } from '../pluginMentions.ts'
+
+const MENTION_COLORS = {
+  skill: '#ff79c6',
+  plugin: '#ffd866',
+  file: '#00d7ff',
+} as const
 
 /**
  * Editor subclass that adds app-level key handlers for Microcode.
@@ -9,6 +16,7 @@ import { highlightWorkspaceFileMentions } from '../workspaceFiles.ts'
  * while letting the Editor handle everything else (cursor, history, undo, autocomplete).
  */
 export class MicrocodeEditor extends Editor {
+  getPluginNames?: () => readonly string[]
   public onEscape?: () => void
   public onCtrlC?: () => void
   public onCtrlD?: () => void
@@ -23,8 +31,12 @@ export class MicrocodeEditor extends Editor {
     const lines = super.render(width)
     if (this.isShowingAutocomplete()) return lines
     return lines.map((line) => highlightWorkspaceFileMentions(
-      highlightSkillMentions(line, (mention) => chalk.hex('#ff79c6').bold(mention)),
-      (mention) => chalk.hex('#00d7ff').bold(mention),
+      highlightPluginMentions(
+        highlightSkillMentions(line, (mention) => chalk.hex(MENTION_COLORS.skill).bold(mention)),
+        this.getPluginNames?.() ?? [],
+        (mention) => chalk.hex(MENTION_COLORS.plugin).bold(mention),
+      ),
+      (mention) => chalk.hex(MENTION_COLORS.file).bold(mention),
     ))
   }
 
@@ -38,11 +50,19 @@ export class MicrocodeEditor extends Editor {
     if (this.handleAppShortcuts(data)) return
 
     const shouldOpenSkills = data === '$' && this.isAtSkillMentionBoundary()
+    const shouldOpenPlugins = data === '#' && this.isAtPluginMentionBoundary()
     super.handleInput(data)
     if (shouldOpenSkills) this.triggerSkillAutocomplete()
+    if (shouldOpenPlugins) this.triggerSkillAutocomplete()
   }
 
   private isAtSkillMentionBoundary(): boolean {
+    const { line, col } = this.getCursor()
+    const previousCharacter = (this.getLines()[line] ?? '')[col - 1]
+    return col === 0 || previousCharacter === undefined || /[\s([{]/.test(previousCharacter)
+  }
+
+  private isAtPluginMentionBoundary(): boolean {
     const { line, col } = this.getCursor()
     const previousCharacter = (this.getLines()[line] ?? '')[col - 1]
     return col === 0 || previousCharacter === undefined || /[\s([{]/.test(previousCharacter)

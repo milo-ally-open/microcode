@@ -60,6 +60,7 @@ import type { TaskList } from '../tasks/TaskSystem.ts'
 import { MultiSelectList, type MultiSelectItem } from './components/multiSelectList.ts'
 import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspaceFiles, formatFileMention, getMentionedImagePaths, listWorkspaceFiles } from './workspaceFiles.ts'
 import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch, stripInjectedSkillContextForDisplay } from './skillMentions.ts'
+import { applyPluginCompletion, buildPluginMentionContext, filterMentionablePlugins, highlightPluginMatch, isPluginAutocompleteContext } from './pluginMentions.ts'
 import { createSessionTitle, normalizeSessionTitle } from './sessionTitle.ts'
 
 
@@ -345,11 +346,12 @@ export class App {
 
       try {
         const withFileContext = await this.addMentionedFileContext(userInput)
-        const promptInput = buildSkillMentionContext(
+        const withSkillContext = buildSkillMentionContext(
           withFileContext,
           this.agent.getSkills().filter((skill) => !this.agent.isSkillLoaded(skill.name)),
           userInput,
         )
+        const promptInput = buildPluginMentionContext(withSkillContext, this.pluginManager?.getPlugins() ?? [], userInput)
         if (images.length > 0) {
           await this.agent.prompt(promptInput, images)
         } else {
@@ -390,6 +392,7 @@ export class App {
 
     // Editor with border
     this.editor = new MicrocodeEditor(this.ui, getEditorTheme(), { paddingX: 1 })
+    this.editor.getPluginNames = () => (this.pluginManager?.getPlugins() ?? []).map((plugin) => plugin.name)
 
     // Set up slash command autocomplete
     this.setupSlashCommands()
@@ -532,6 +535,22 @@ export class App {
         const currentLine = lines[cursorLine] ?? ''
         const textBeforeCursor = currentLine.slice(0, cursorCol)
 
+        const hashIndex = textBeforeCursor.lastIndexOf('#')
+        const hashPrefix = hashIndex >= 0 ? textBeforeCursor.slice(hashIndex) : ''
+        if (isPluginAutocompleteContext(textBeforeCursor) && hashPrefix.startsWith('#')) {
+          const query = hashPrefix.slice(1).toLowerCase()
+          const matches = filterMentionablePlugins(this.pluginManager?.getPlugins() ?? [], query).slice(0, 100)
+          if (matches.length === 0) return null
+          return {
+            items: matches.map((plugin) => ({
+              value: `#${plugin.name}`,
+              label: highlightPluginMatch(`#${plugin.name}`, query, (match) => chalk.cyan.bold(match)),
+              description: `${plugin.enabled ? 'enabled' : 'disabled'} · ${plugin.description}`,
+            })),
+            prefix: hashPrefix,
+          }
+        }
+
         const dollarIndex = textBeforeCursor.lastIndexOf('$')
         const dollarPrefix = dollarIndex >= 0 ? textBeforeCursor.slice(dollarIndex) : ''
         const isSkillMention = dollarPrefix.startsWith('$') &&
@@ -600,6 +619,9 @@ export class App {
         const newLines = [...lines]
         if (_prefix.startsWith('$')) {
           return applySkillCompletion(lines, cursorLine, _cursorCol, _prefix, item.value.slice(1))
+        }
+        if (_prefix.startsWith('#')) {
+          return applyPluginCompletion(lines, cursorLine, _cursorCol, _prefix, item.value.slice(1))
         }
         if (_prefix.startsWith('@')) {
           return applyWorkspaceFileCompletion(lines, cursorLine, _cursorCol, _prefix, item.label)
@@ -899,7 +921,7 @@ export class App {
         return true
 
       case '/plugins':
-        this.handlePluginsCommand()
+        void this.handlePluginsCommand()
         return true
 
       case '/exit':
@@ -1930,7 +1952,7 @@ export class App {
           if (imageParts.length > 0) images = imageParts
         }
         const timeline = new TurnTimeline()
-        // Skill guidance is appended to persisted Agent prompts, not part of the user's visible message.
+        // Mention-injected capability guidance is appended to Agent prompts, not the user's visible message.
         timeline.addEntry(new UserMessage(stripInjectedSkillContextForDisplay(text), images), 'user')
         this.chatContainer.addChild(timeline)
         this.activeTurnTimeline = timeline
@@ -2520,9 +2542,15 @@ export class App {
     }
   }
 
-  private handlePluginsCommand(): void {
+  private async handlePluginsCommand(): Promise<void> {
     if (!this.pluginManager) {
       this.showError('Plugin management is unavailable in this session.')
+      return
+    }
+    try {
+      await this.pluginManager.refresh()
+    } catch (error) {
+      this.showError(`Could not refresh plugins: ${error instanceof Error ? error.message : String(error)}`)
       return
     }
     this.showPluginActionMenu()
@@ -3197,6 +3225,7 @@ export class App {
       `  ${theme.bold('Tab')}                 Accept autocomplete suggestion`,
       `  ${theme.bold('@')}                   Search and attach workspace files`,
       `  ${theme.bold('$skill-name')}         Include a skill in this request`,
+      `  ${theme.bold('#plugin-name')}       Include a plugin in this request`,
       `  ${theme.bold('Ctrl+V / Shift+Insert')} Paste clipboard image`,
       '',
       `${theme.fg('accent', 'Environment Variables:')}`,

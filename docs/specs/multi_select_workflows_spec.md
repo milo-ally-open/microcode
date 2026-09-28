@@ -30,6 +30,8 @@ This operation changes which Skill instructions are loaded into the Agent prompt
 
 Confirmed Skill changes MUST be hot-applied to the Agent prompt without restarting Microcode. A selected Skill's latest file content MUST be read when it is loaded.
 
+The `/skills` list MUST refresh the Skill catalog before displaying it, so newly added Skills and source/status changes are visible.
+
 ## 4. Plugin enablement
 
 Plugin enablement MUST support selecting multiple Plugins in one operation. Since user and project preferences are stored in separate configuration files, the UI MUST scope a batch to one source scope at a time (`user` or `project`). It MUST show Plugin name, scope, current enabled state, and health; current enabled Plugins are preselected. Invalid or incompatible Plugins MUST be disabled in the selection list and MUST NOT be enabled by the batch.
@@ -37,6 +39,8 @@ Plugin enablement MUST support selecting multiple Plugins in one operation. Sinc
 On confirmation, Microcode MUST compare the desired enabled state with the initial state, update only changed preferences in the selected scope, preserve unrelated configuration and Plugin preferences (including MCP trust), persist the changes with an atomic file replacement, and refresh Plugin discovery once. If there are no changes, it MUST perform no write and no refresh. The action MUST be rejected while the Agent is busy.
 
 Confirmed Plugin changes MUST be hot-applied without restarting Microcode: Plugin Skills MUST update in the Agent prompt, and Plugin MCP servers MUST be connected or removed to match the newly enabled and trusted set. Plugin discovery and runtime synchronization MUST happen once per batch.
+
+The `/plugins` command MUST refresh Plugin discovery before showing its action menu, so packages added or changed while Microcode is running can be viewed and managed without restarting.
 
 Inspecting a Plugin package and validating a package remain single-item operations.
 
@@ -52,7 +56,7 @@ Selecting multiple MCP servers can reduce repetitive trust management, but selec
 
 Revocation may use the shared multi-select interaction. Trusting MUST retain the extra review step. Existing one-server trust commands remain supported.
 
-The existing one-server directory MCP trust and revoke actions MUST connect or disconnect the affected server immediately after approval. Microcode does not currently watch capability directories for filesystem changes. Skill catalogs are rescanned as the Agent prepares a prompt, but Plugin packages and MCP configuration edits are not guaranteed to reconcile with the running runtime automatically; they require an explicit operation that refreshes/reapproves them or an application restart.
+The `/mcp` listing MUST rediscover MCP packages before displaying them. The existing one-server directory MCP trust and revoke actions MUST connect or disconnect the affected server immediately after approval. Microcode does not currently watch capability directories for filesystem changes. Skill catalogs are rescanned as the Agent prepares a prompt, `/plugins` refreshes Plugin discovery, and `/mcp` rediscovers MCP packages; direct edits that change active MCP configuration still require renewed trust where applicable or an application restart to reconcile the running connection.
 
 ## 6. Other multi-select candidates
 
