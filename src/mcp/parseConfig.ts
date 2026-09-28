@@ -1,20 +1,7 @@
-import { createHash } from 'crypto'
 import type { McpServerConfig } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
-  }
-  return JSON.stringify(value)
-}
-
-export function getMcpConfigDigest(config: McpServerConfig): string {
-  return `sha256:${createHash('sha256').update(canonical(config)).digest('hex')}`
 }
 
 export function validateMcpServerConfig(name: string, value: unknown): McpServerConfig {

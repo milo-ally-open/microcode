@@ -14,7 +14,7 @@ export async function loadMcpConfig(
   cwd: string,
 ): Promise<Record<string, McpServerConfig>> {
   const { discoverMcpCapabilities } = await import('./capabilities.ts')
-  return (await discoverMcpCapabilities(cwd)).connectable
+  return (await discoverMcpCapabilities(cwd)).configs
 }
 
 export function isMcpConfigEmpty(configs: Record<string, McpServerConfig>): boolean {

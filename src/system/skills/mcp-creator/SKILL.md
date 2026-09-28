@@ -15,4 +15,4 @@ Create standalone MCP integrations as directories containing `mcp.json`. First r
 - Do not put new standalone MCP configuration in `config.json`; that format remains only for legacy compatibility.
 - Do not overwrite an existing package without inspecting it and preserving unrelated server entries and assets.
 
-Validate the JSON and the server config before finishing. A discovered directory MCP is untrusted and MUST NOT be described as connected. Show the user the command and arguments or remote endpoint, then require explicit Microcode trust approval before it can connect. Trust does not approve tool calls; normal Microcode permissions still apply. Never include secret values in summaries.
+Validate the JSON and server config before finishing. Valid standalone MCP configurations connect automatically when discovered, so make sure the user explicitly requested the integration before creating it. Explain that connection does not approve tool calls; normal Microcode permissions still apply. Never include secret values in summaries.

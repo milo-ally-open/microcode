@@ -112,15 +112,14 @@ export interface ResolvedMcpServer {
   packageName?: string
   sourcePath?: string
   pluginId?: string
-  digest: string
 }
 ```
 
-`digest` 是规范化后 server 配置的 SHA-256，必须覆盖所有影响 server 行为或凭证读取方式的配置字段，包括 command、args、env、transport、URL、headers 等。日志和诊断不得泄露 env、headers 或其他 secret 值。
+日志和诊断不得泄露 env、headers 或其他 secret 值。
 
 ## 6. MCP 发现、冲突和 legacy 兼容
 
-MCP discovery 至少包含以下来源：system MCP packages、user MCP packages、user legacy config、project MCP packages、project legacy config，以及已启用 plugin 提供的 MCP。项目级 `.system/` 必须忽略。解析、验证、来源标记、冲突解析和 trust 判定应是可辨认的阶段。
+MCP discovery 至少包含以下来源：system MCP packages、user MCP packages、user legacy config、project MCP packages、project legacy config，以及已启用 plugin 提供的 MCP。项目级 `.system/` 必须忽略。解析、验证、来源标记和冲突解析应是可辨认的阶段。
 
 system MCP server ID 是保留 ID；同名 user、project、legacy 或 plugin server MUST 被忽略，且产生诊断。其余来源在同一 server ID 冲突时按以下优先级选择：
 
@@ -135,34 +134,13 @@ Plugin server 按既有 plugin namespace/冲突规则保持隔离，不得借由
 
 v0.1 MUST 保留 `~/.microcode/config.json` 与 `<cwd>/.microcode/config.json` 中的 `mcpServers` 兼容读取。legacy 来源标记为 `legacy`，在同一 scope 内高于该 scope 的目录 MCP；project 来源仍高于 user 来源。legacy `mcpServers` 在此迁移阶段继续保持现有连接行为；其弃用须另行定义。
 
-## 7. MCP trust 与连接门槛
+## 7. MCP connection 与工具权限
 
-发现 MCP 配置不等于允许执行它。新建的 user/project directory MCP MUST 在首次连接前经过明确的用户批准；仅发现、解析或验证配置 MUST NOT 启动其 command 或发出远程连接。建议 `/mcp trust <server>` 展示将要运行的 command/args 或远程 endpoint、来源和 package 路径，并在批准后才连接。
+Microcode 不提供 MCP trust/approval 状态或 trust 命令。发现并成功验证的 standalone system/user/project/legacy MCP MUST 自动连接；Plugin MCP MUST 在所属 Plugin 启用时自动连接，并在 Plugin 禁用时断开。配置无效、名称冲突或 Plugin 未启用的 server 不得连接，并应提供来源明确的诊断。
 
-Trust MUST 绑定配置 digest，而不是只记录布尔 `trusted = true`。概念性记录格式如下：
+MCP connection 不授予工具调用权限。所有 MCP tool calls、资源读取和其他操作仍 MUST 经过现有 Microcode permission policy；连接 server 不得绕过 `PermissionManager` 或用户配置的 allow/ask/deny 规则。MCP server command、endpoint、scope 和来源路径应在 `/mcp` 状态列表中可见，敏感值仍须脱敏。
 
-```json
-{
-  "mcpTrust": {
-    "project:chrome:chrome": {
-      "digest": "sha256:..."
-    }
-  }
-}
-```
-
-只有当前解析配置 digest 与批准记录完全相同时，directory MCP 才能连接；digest 变化、来源身份变化或配置无效均使旧批准失效，并要求再次确认。Trust 状态 MUST 与普通 MCP tool permission 分开：trust 允许启动/连接 server，不自动允许调用该 server 的工具或读取其资源。
-
-各来源策略：
-
-- **system MCP：**由 Microcode 随版本分发，标记 `trustedBy = system`，按产品定义加载，无需 user trust。
-- **legacy config MCP：**继续遵循既有显式 config 兼容行为，标记 `trustedBy = explicit-config`。
-- **user/project directory MCP：**默认 untrusted；只有存在匹配 digest 的显式批准后连接。
-- **plugin MCP：**沿用现有显式 plugin trust 要求；后续可迁移到统一 digest trust，但不得因 directory MCP 引入而降低现有门槛。
-
-启动流程 MUST 保证未批准的 directory MCP 不会流入自动 connect 列表；trust 被撤销或 digest 变化时，应断开现存连接并从 Agent runtime 移除相应 tools/resources。
-
-运行时重新发现 capability 时 MUST reconcile 所有已管理 MCP 来源：新出现且已 trusted 的 server 应连接；配置变化时应替换现存连接；不再存在、失去 trust 或与 reserved/system ID 冲突的 server 应断开并从 Agent runtime 移除 tools/resources。`/mcp` 列表在展示前 MUST 触发该 reconcile。未获 trust 的目录 MCP 仍只能显示为 untrusted，绝不能因热加载而启动。
+运行时重新发现 capability 时 MUST reconcile 所有 MCP 来源：新出现或配置变化的 server 应连接或替换；不再存在、Plugin 被禁用或与 reserved/system ID 冲突的 server 应断开并从 Agent runtime 移除 tools/resources。`/mcp` MUST 仅列出 MCP 状态，不接受子命令；展示前应触发该 reconcile。Plugin MCP 的启用和禁用操作 MUST 集中在 `/plugins`。
 
 ## 8. Creator 约定
 
@@ -171,7 +149,7 @@ Trust MUST 绑定配置 digest，而不是只记录布尔 `trusted = true`。概
 Creator MUST 先读取当前 `<env>` 中的 operating system、shell、Microcode home 与 working directory，再决定文件路径和命令。路径 MUST 使用当前平台的路径规则；MUST NOT 假定用户运行 Linux、POSIX shell 或 Unix 路径。Skill 文本 SHOULD 用 “Microcode home 下的相对目录” 等跨平台表述，不应把 Unix home 缩写当成可直接执行的路径。环境信息缺失时，Creator MUST 先确定操作系统再构造路径。
 
 - `skill-creator`：user 输出到 `~/.microcode/skills/<name>/`；project 输出到 `<cwd>/.microcode/skills/<name>/`。
-- `mcp-creator`：user 输出到 `~/.microcode/mcp/<package>/mcp.json`；project 输出到 `<cwd>/.microcode/mcp/<package>/mcp.json`。先验证配置，再请求 trust；创建文件本身不代表已批准或可连接。
+- `mcp-creator`：user 输出到 `~/.microcode/mcp/<package>/mcp.json`；project 输出到 `<cwd>/.microcode/mcp/<package>/mcp.json`。先验证配置；有效配置发现后会自动连接，创建文件本身不代表连接已成功。
 - `plugin-creator`：分别输出到 `~/.microcode/plugins/<plugin>/` 或 `<cwd>/.microcode/plugins/<plugin>/`，其中 package 内组件放在 `skills/` 与 plugin 根目录 `mcp.json`。它复用 skill-creator 与 mcp-creator 的内容和验证约定，但遵循 Plugin package 布局。
 
 ## 9. 统一 discovery pipeline
@@ -184,20 +162,20 @@ filesystem / embedded assets
   → validation
   → source metadata
   → collision resolution
-  → trust policy (MCP executable integrations)
+  → source-specific enablement (Plugin MCP)
   → normalized registry
   → Agent runtime
 ```
 
-实现可保留 `loadSkills()`、`loadMcpConfig()` 等现有入口作为兼容 façade；内部职责必须能明确区分。Capability registry 中的来源与路径元数据应足以支持 UI 显示 scope、package、来源路径、连接状态和 trust 状态。
+实现可保留 `loadSkills()`、`loadMcpConfig()` 等现有入口作为兼容 façade；内部职责必须能明确区分。Capability registry 中的来源与路径元数据应足以支持 UI 显示 scope、package、来源路径和连接状态。
 
 ## 10. 实施阶段
 
 此规范覆盖最终目标，实施按可独立 review 的阶段推进：
 
 1. **System Skills 与 Skill precedence：**内嵌初始 system Skills、fingerprint/manifest 安装、system reserved names、`Skill.scope`、project > user。若分 PR，可先只带一个最小 system asset 验证 materialization 协议，再加入 Creator 内容。
-2. **目录式 standalone MCP：**MCP packages、统一 parser、来源元数据、legacy 合并及 deterministic precedence；directory MCP 默认不连接。
-3. **MCP trust：**digest-bound trust 存储、批准/撤销 UI 与连接生命周期。
+2. **目录式 standalone MCP：**MCP packages、统一 parser、来源元数据、legacy 合并及 deterministic precedence；发现并验证有效配置后自动连接。
+3. **MCP runtime：**发现配置后自动连接，并在配置变化或来源禁用时同步连接生命周期。
 4. **Creator Skills：**发布 skill-creator、mcp-creator、plugin-creator，并让 Creator 按本规范写入目标 scope。
 
 每一阶段 MUST 保持单 Agent 核心与 CLI/TUI runtime，不引入 GUI 或多 Agent orchestration；已有 `config.json.mcpServers` 行为在迁移期继续受支持。
@@ -211,5 +189,5 @@ filesystem / embedded assets
 - Skill user 扫描跳过 `.system`；system Skill 显式加载；保留名不会被 user/project/path/plugin 覆盖；普通项目 Skill 覆盖 user Skill。
 - Skill 与 MCP registry 返回正确 scope 和路径；MCP package 支持一对多 server。
 - MCP 同 scope 内 config 优先目录 package，project 整体优先 user；system ID 保留。
-- legacy config 仍可用；未批准或 digest 不匹配的目录 MCP 从未连接；批准后可连接，配置变化后信任失效。
-- 日志、诊断和 UI 不泄露 MCP secrets；MCP trust 不绕过工具调用权限。
+- legacy config 仍可用；有效 standalone MCP 自动连接；enabled Plugin MCP 在 Plugin 启用期间连接，并在禁用时断开。
+- 日志、诊断和 UI 不泄露 MCP secrets；MCP 连接不绕过工具调用权限。

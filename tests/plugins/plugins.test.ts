@@ -50,7 +50,7 @@ describe('plugin packages', () => {
     }
   })
 
-  test('defaults packages to disabled and persists enable/trust only in package scope', async () => {
+  test('defaults packages to disabled and connects package MCP when enabled', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'microcode-plugin-settings-'))
     try {
       const cwd = join(dir, 'project')
@@ -71,17 +71,14 @@ describe('plugin packages', () => {
       })
       expect(manager.findPlugin('sample-plugin')?.enabled).toBe(false)
       expect(manager.getSnapshot().skills).toHaveLength(0)
-      expect(manager.getSnapshot().trustedServers).toEqual({})
+      expect(manager.getSnapshot().mcpServers).toEqual({})
 
       await manager.setEnabled('sample-plugin', true)
       expect(manager.getSnapshot().skills.map((skill) => skill.name)).toEqual(['sample-plugin:reviewer'])
-      expect(manager.getSnapshot().trustedServers).toEqual({})
-
-      await manager.setMcpServerTrusted('sample-plugin', 'helper', true)
-      expect(Object.keys(manager.getSnapshot().trustedServers)).toEqual(['sample-plugin--helper'])
+      expect(Object.keys(manager.getSnapshot().mcpServers)).toEqual(['sample-plugin--helper'])
       const persisted = JSON.parse(await readFile(projectConfig, 'utf8'))
       expect(persisted.mcpServers.existing.command).toBe('existing')
-      expect(persisted.plugins['sample-plugin']).toEqual({ enabled: true, trustedMcpServers: ['helper'] })
+      expect(persisted.plugins['sample-plugin']).toEqual({ enabled: true })
       expect(await Bun.file(userConfig).exists()).toBe(false)
     } finally {
       await rm(dir, { recursive: true, force: true })

@@ -41,8 +41,6 @@ export interface ResolvedMcpServer {
   packageName?: string
   sourcePath?: string
   pluginId?: string
-  digest: string
-  trustedBy?: 'system' | 'explicit-config' | 'user-approval' | 'plugin'
 }
 
 export interface McpConfig {

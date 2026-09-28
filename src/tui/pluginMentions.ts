@@ -91,7 +91,7 @@ export function buildPluginMentionContext(input: string, plugins: readonly Plugi
       `#### Skill: ${skill.name}\n<plugin_skill_content>\n${escapePluginText(body)}\n</plugin_skill_content>`,
     )
     const serverNames = plugin.servers.map((server) =>
-      `${server.name} (${server.transport}${plugin.enabled && plugin.trustedMcpServers.includes(server.name) ? ', trusted' : ', not active'})`,
+      `${server.name} (${server.transport}${plugin.enabled ? ', plugin enabled' : ', plugin disabled'})`,
     )
     const contents = [
       `Status: ${plugin.enabled ? 'enabled' : 'disabled'} · ${plugin.health}`,

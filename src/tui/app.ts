@@ -42,7 +42,7 @@ import { existsSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
-import { discoverMcpCapabilities, safeMcpConfigSummary, setMcpDirectoryTrust, type McpCapabilitiesResult } from '../mcp/capabilities.ts'
+import { discoverMcpCapabilities, type McpCapabilitiesResult } from '../mcp/capabilities.ts'
 import type { PluginManager } from '../plugins/PluginManager.ts'
 import type { PluginRecord, PluginScope, PluginSnapshot, PluginValidationResult } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
@@ -152,7 +152,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'logout', description: 'Sign out of a model provider (usage: /logout <provider>)', argumentHint: '<provider>' },
   { name: 'auth', description: 'Show provider authentication status' },
   { name: 'thinking', description: 'Show or set thinking depth (usage: /thinking [level])', argumentHint: '[off|minimal|low|medium|high|xhigh|max]' },
-  { name: 'mcp', description: 'List MCP servers or trust/revoke a directory MCP', argumentHint: '[trust|revoke <server>]' },
+  { name: 'mcp', description: 'List MCP servers' },
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
   { name: 'export', description: 'Export the current conversation JSONL into .microcode/' },
   { name: 'init', description: 'Analyze the project and create or update MICRO.md' },
@@ -161,7 +161,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', description: 'Start a new conversation session' },
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
   { name: 'skills', description: 'List, enable, or disable skills' },
-  { name: 'plugins', description: 'Browse, inspect, validate, enable, or trust plugins' },
+  { name: 'plugins', description: 'Browse and manage plugins, including their MCP servers' },
   { name: 'exit', description: 'Exit Microcode' },
   { name: 'help', description: 'Show help and available commands' },
 ]
@@ -2162,63 +2162,8 @@ export class App {
       this.showError('No MCP client available.')
       return
     }
-
-    const [action, serverName, ...extra] = args.trim().split(/\s+/).filter(Boolean)
-    if (action === 'trust' || action === 'revoke') {
-      if (!serverName || extra.length) {
-        this.showError('Usage: /mcp trust <server> or /mcp revoke <server>')
-        return
-      }
-      try {
-        const registry = await discoverMcpCapabilities(process.cwd())
-        const server = registry.servers.find((item) => item.name === serverName)
-        if (!server) throw new Error(`MCP server "${serverName}" was not discovered.`)
-        if (server.scope !== 'user' && server.scope !== 'project') throw new Error(`MCP server "${serverName}" does not use directory-based trust.`)
-        const configSummary = safeMcpConfigSummary(server.config)
-        if (action === 'trust') {
-          this.showPluginPicker(`Trust MCP server '${server.name}'?`, [
-            `Source: ${server.scope} · ${server.sourcePath}`,
-            `Configuration: ${configSummary}`,
-            'Trust permits connection only; tool calls still follow normal Microcode permissions.',
-          ].join('\n'), [
-            { value: 'confirm', label: 'Trust and connect', description: 'Save trust for this exact configuration digest' },
-            { value: 'cancel', label: 'Cancel', description: 'Keep this MCP server untrusted' },
-          ], (value) => {
-            if (value !== 'confirm') return
-            void (async () => {
-              try {
-                if (this.agent.isBusy()) {
-                  this.showStatus('Trust was not changed: finish or interrupt the active turn, then approve the MCP server again.')
-                  return
-                }
-                await setMcpDirectoryTrust(process.cwd(), server, true)
-                const next = await discoverMcpCapabilities(process.cwd())
-                const config = next.connectable[server.name]
-                if (config) await mcpClient.connectServer(server.name, config)
-                this.updateMcpState(mcpClient)
-                this.showStatus(`Trusted MCP server '${server.name}' for this configuration.`)
-              } catch (error) {
-                this.showError(`Could not trust MCP server: ${error instanceof Error ? error.message : String(error)}`)
-              }
-            })()
-          })
-        } else {
-          if (this.agent.isBusy()) {
-            this.showStatus('Trust was not changed: finish or interrupt the active turn, then revoke it again.')
-            return
-          }
-          await setMcpDirectoryTrust(process.cwd(), server, false)
-          await mcpClient.removeServer(server.name)
-          this.updateMcpState(mcpClient)
-          this.showStatus(`Revoked trust for MCP server '${server.name}'.`)
-        }
-      } catch (error) {
-        this.showError(error instanceof Error ? error.message : String(error))
-      }
-      return
-    }
-    if (action) {
-      this.showError('Usage: /mcp [trust <server>|revoke <server>]')
+    if (args.trim()) {
+      this.showError('The /mcp command only lists MCP servers. Manage plugins and their MCP servers with /plugins.')
       return
     }
 
@@ -2226,6 +2171,7 @@ export class App {
     try {
       if (this.agent.isBusy()) {
         this.showStatus('MCP runtime refresh will be applied after the active turn finishes.')
+        await this.pluginManager?.refresh()
       } else {
         await this.onPluginsChanged?.()
       }
@@ -2238,7 +2184,7 @@ export class App {
     let removedStaleDirectoryServer = false
     for (const state of mcpClient.getServerStates()) {
       const definition = registry.servers.find((item) => item.name === state.name && (item.scope === 'user' || item.scope === 'project'))
-      if (definition && (!definition.trustedBy || JSON.stringify(definition.config) !== JSON.stringify(state.config))) {
+      if (definition && JSON.stringify(definition.config) !== JSON.stringify(state.config)) {
         await mcpClient.removeServer(state.name)
         removedStaleDirectoryServer = true
       }
@@ -2246,7 +2192,10 @@ export class App {
     if (removedStaleDirectoryServer) this.updateMcpState(mcpClient)
 
     const states = mcpClient.getServerStates()
-    if (states.length === 0 && registry.servers.length === 0) {
+    const pluginMcpServers = (this.pluginManager?.getPlugins() ?? []).flatMap((plugin) =>
+      plugin.servers.map((server) => ({ plugin, server })),
+    )
+    if (states.length === 0 && registry.servers.length === 0 && pluginMcpServers.length === 0) {
       this.chatContainer.addChild(
         new Text(theme.dim('No MCP servers configured.'), 1, 0),
       )
@@ -2260,7 +2209,9 @@ export class App {
     )
     this.chatContainer.addChild(new Spacer(1))
 
+    const pluginServerNames = new Set(pluginMcpServers.map(({ server }) => server.qualifiedName))
     for (const state of states) {
+      if (pluginServerNames.has(state.name)) continue
       const statusIcon = state.status === 'connected' ? '✓'
         : state.status === 'failed' ? '✗'
         : state.status === 'disabled' ? '○'
@@ -2291,9 +2242,17 @@ export class App {
 
     for (const server of registry.servers) {
       const runtime = states.find((state) => state.name === server.name)
-      const trusted = server.trustedBy === 'user-approval' || server.trustedBy === 'system' || server.trustedBy === 'explicit-config'
-      this.chatContainer.addChild(new Text(`  ${theme.bold(server.name)} · ${server.scope}${server.packageName ? `/${server.packageName}` : ''} · ${trusted ? 'trusted' : 'untrusted'}`, 1, 0))
-      if (!runtime && !trusted) this.chatContainer.addChild(new Text(`    ${theme.dim(`Use /mcp trust ${server.name} to review and approve · ${server.sourcePath ?? ''}`)}`, 1, 0))
+      this.chatContainer.addChild(new Text(`  ${theme.bold(server.name)} · ${server.scope}${server.packageName ? `/${server.packageName}` : ''} · ${runtime?.status ?? 'starting'}`, 1, 0))
+      if (server.sourcePath) this.chatContainer.addChild(new Text(`    ${theme.dim(server.sourcePath)}`, 1, 0))
+    }
+    for (const { plugin, server } of pluginMcpServers) {
+      const runtime = states.find((state) => state.name === server.qualifiedName)
+      const runtimeStatus = !plugin.enabled ? 'plugin disabled' : runtime?.status ?? 'starting'
+      this.chatContainer.addChild(new Text(`  ${theme.bold(server.qualifiedName)} · plugin ${plugin.name} · ${runtimeStatus}`, 1, 0))
+      this.chatContainer.addChild(new Text(`    ${theme.dim(`${server.transport} · ${server.safeCommandSummary} · ${server.sourcePath}`)}`, 1, 0))
+      if (runtime?.status === 'connected' && runtime.tools.length > 0) {
+        this.chatContainer.addChild(new Text(`    ${theme.dim(`Tools: ${runtime.tools.map((tool) => tool.name).join(', ')}`)}`, 1, 0))
+      }
     }
     for (const diagnostic of registry.diagnostics) {
       this.chatContainer.addChild(new Text(`  ${theme.dim(diagnostic)}`, 1, 0))
@@ -2603,7 +2562,7 @@ export class App {
     const actions: SelectItem[] = [
       { value: 'list', label: 'List plugins', description: 'Show package source, status, components, and health' },
       { value: 'bulk', label: 'Enable/disable multiple plugins', description: 'Choose the desired enabled set for one scope' },
-      { value: 'manage', label: 'Manage a plugin', description: 'Inspect, enable/disable, or trust its MCP servers' },
+      { value: 'manage', label: 'Manage a plugin', description: 'Inspect components and enable or disable the plugin' },
       { value: 'validate', label: 'Validate a plugin package', description: 'Choose a discovered package folder; validation never starts servers' },
       { value: 'cancel', label: 'Cancel', description: 'Close this menu' },
     ]
@@ -2754,11 +2713,10 @@ export class App {
       this.chatContainer.addChild(new Text(theme.fg('accent', `Plugins (${plugins.length})`), 1, 0))
       this.chatContainer.addChild(new Spacer(1))
       for (const plugin of plugins) {
-        const trusted = plugin.trustedMcpServers.length
         const servers = plugin.servers.length
         const healthColor = plugin.health === 'ready' ? chalk.green : plugin.health === 'warning' ? chalk.yellow : chalk.red
         this.chatContainer.addChild(new Text(`${theme.bold(plugin.name)} ${theme.dim(`v${plugin.version}`)} · ${plugin.scope} · ${plugin.enabled ? chalk.green('enabled') : theme.dim('disabled')} · ${healthColor(plugin.health)}`, 1, 0))
-        this.chatContainer.addChild(new Text(`  ${theme.dim(`skills ${plugin.skills.length} · MCP servers ${servers} (${trusted} trusted)`)}`, 1, 0))
+        this.chatContainer.addChild(new Text(`  ${theme.dim(`skills ${plugin.skills.length} · MCP servers ${servers}`)}`, 1, 0))
       }
     }
     if (snapshot?.diagnostics.length) {
@@ -2775,21 +2733,13 @@ export class App {
     const items: SelectItem[] = [
       { value: 'inspect', label: 'Inspect package', description: 'Metadata, root, components, permissions, and warnings' },
       { value: 'toggle', label: plugin.enabled ? 'Disable plugin' : 'Enable plugin', description: `Update the ${plugin.scope} plugin setting` },
-      ...plugin.servers.map((server) => ({
-        value: `server:${server.name}`,
-        label: `${plugin.trustedMcpServers.includes(server.name) ? 'Revoke trust' : 'Review and trust'} MCP: ${server.name}`,
-        description: `${server.transport} · ${server.safeCommandSummary}`,
-      })),
       { value: 'back', label: 'Back', description: 'Return to plugin actions' },
     ]
     this.showPluginPicker(plugin.name, 'Choose an action', items, (value) => {
       const latest = this.pluginManager?.findPlugin(plugin.name) ?? plugin
       if (value === 'inspect') this.showPluginInspection(latest)
       else if (value === 'toggle') void this.togglePlugin(latest)
-      else if (value.startsWith('server:')) {
-        const server = latest.servers.find((candidate) => candidate.name === value.slice(7))
-        if (server) this.confirmPluginServerTrust(latest, server.name, server.safeCommandSummary, latest.trustedMcpServers.includes(server.name))
-      } else this.showPluginActionMenu()
+      else this.showPluginActionMenu()
     })
   }
 
@@ -2803,14 +2753,14 @@ export class App {
     this.chatContainer.addChild(new Text(`Source: ${plugin.scope} · ${plugin.rootDir}`, 1, 0))
     this.chatContainer.addChild(new Text(`Status: ${plugin.enabled ? 'enabled' : 'disabled'} · ${plugin.health} · ${plugin.valid ? 'valid' : 'invalid'}`, 1, 0))
     this.chatContainer.addChild(new Text(`Requested integrations: ${plugin.skills.length} skill(s), ${plugin.servers.length} MCP server(s)`, 1, 0))
-    this.chatContainer.addChild(new Text(theme.dim('MCP trust allows server startup; each tool call still follows Microcode permission rules.'), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim('MCP servers start automatically while this plugin is enabled; tool calls still follow Microcode permission rules.'), 1, 0))
     if (plugin.skills.length) {
       this.chatContainer.addChild(new Text(theme.bold('Skills'), 1, 0))
       for (const skill of plugin.skills) this.chatContainer.addChild(new Text(`  ${skill.name} — ${theme.dim(skill.description)}`, 1, 0))
     }
     if (plugin.servers.length) {
       this.chatContainer.addChild(new Text(theme.bold('MCP servers'), 1, 0))
-      for (const server of plugin.servers) this.chatContainer.addChild(new Text(`  ${server.name} · ${server.transport} · ${plugin.trustedMcpServers.includes(server.name) ? 'trusted' : 'not trusted'} · ${server.safeCommandSummary}`, 1, 0))
+      for (const server of plugin.servers) this.chatContainer.addChild(new Text(`  ${server.name} · ${server.transport} · ${server.safeCommandSummary}`, 1, 0))
     }
     if (plugin.diagnostics.length) {
       this.chatContainer.addChild(new Text(theme.fg('yellow', 'Validation warnings'), 1, 0))
@@ -2834,29 +2784,6 @@ export class App {
     } catch (error) {
       this.showError(`Could not change plugin: ${error instanceof Error ? error.message : String(error)}`)
     }
-  }
-
-  private confirmPluginServerTrust(plugin: PluginRecord, serverName: string, summary: string, trusted: boolean): void {
-    const action = trusted ? 'Revoke trust' : plugin.enabled ? 'Trust and connect' : 'Trust for when enabled'
-    this.showPluginPicker(`${action}: ${serverName}`, `${plugin.name} · ${summary}. Trust permits this integration to start and expose tools.`, [
-      { value: 'confirm', label: action, description: `Save trust at ${plugin.scope} scope` },
-      { value: 'cancel', label: 'Cancel', description: 'No settings will change' },
-    ], (value) => {
-      if (value !== 'confirm') return
-      if (this.agent.isBusy()) {
-        this.showStatus('Trust was not changed: finish or interrupt the active turn, then choose the action again.')
-        return
-      }
-      void (async () => {
-        try {
-          const snapshot = await this.pluginManager?.setMcpServerTrusted(plugin.name, serverName, !trusted)
-          await this.onPluginsChanged?.(snapshot)
-          this.showStatus(`${trusted ? 'Revoked trust for' : 'Trusted'} MCP server '${serverName}'.`)
-        } catch (error) {
-          this.showError(`Could not update MCP trust: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      })()
-    })
   }
 
   private async validatePlugin(plugin: PluginRecord): Promise<void> {
@@ -3243,10 +3170,10 @@ export class App {
       `  ${theme.bold('/logout')} [provider]  Sign out with a provider picker`,
       `  ${theme.bold('/auth')}             Show provider authentication status`,
       `  ${theme.bold('/thinking')} [level]   Show or set thinking depth`,
-      `  ${theme.bold('/mcp')} [trust|revoke]  List MCP servers or manage directory MCP trust`,
+      `  ${theme.bold('/mcp')}              List MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
       `  ${theme.bold('/skills')}             List, enable, or disable skills`,
-      `  ${theme.bold('/plugins')}            Browse, inspect, validate, and manage plugins`,
+      `  ${theme.bold('/plugins')}            Manage plugins and their MCP servers`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
       `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
       `  ${theme.bold('/instructions reload')} Reload project instruction files`,

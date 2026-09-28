@@ -22,7 +22,6 @@ Microcode uses these terms:
 - **Plugin source:** Where the package came from (initially a local directory; later a marketplace entry and pinned repository revision).
 - **Installed plugin:** A validated package stored in Microcode's plugin area.
 - **Enabled plugin:** An installed package whose supported components Microcode loads in the current scope.
-- **Trusted plugin:** An enabled package whose executable integrations the user has explicitly approved. Trust does not remove normal tool permission prompts.
 - **Skill:** Markdown workflow guidance and supporting read-only/package assets, parsed and loaded through the existing skill path.
 - **MCP server:** An external process or remote server exposing protocol-defined tools/resources, connected by the existing MCP client.
 - **Marketplace:** A catalog of plugin identities and source references. It is not itself a plugin runtime or executable.
@@ -64,7 +63,7 @@ plugin-root/
 
 `plugin.json` is the root manifest. It should use the portable Agent Plugins identity fields where practical (`$schema`, `name`, `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords`) and place Microcode-only options under `extensions.com.microcode`. Microcode must not claim compatibility with another host's component semantics merely because it accepts a shared manifest shape.
 
-The initial supported component locations are fixed: `skills/` and `mcp.json`. Do not add path aliases or plugin-defined custom scanners in v1. `extensions.com.microcode` may declare a minimum Microcode version and optional presentation metadata; it must not let a manifest disable path-containment checks, permissions, or trust requirements.
+The initial supported component locations are fixed: `skills/` and `mcp.json`. Do not add path aliases or plugin-defined custom scanners in v1. `extensions.com.microcode` may declare a minimum Microcode version and optional presentation metadata; it must not let a manifest disable path-containment checks or tool permissions.
 
 Example identity manifest (illustrative):
 
@@ -90,7 +89,7 @@ Example identity manifest (illustrative):
 
 At runtime, server names are qualified with the plugin identity, for example `review-kit__docs`; MCP tool names remain the existing `mcp__<server>__<tool>` shape using that qualified server name. The complete identifier must be stable, unique, and reversible to its plugin/server/tool parts. Reject collisions rather than letting a plugin shadow a built-in tool or another plugin's server.
 
-Enabling a plugin must not implicitly start its MCP servers until the user has trusted/enabled those executable integrations. A skills-only plugin requires no executable trust grant.
+Enabling a valid plugin starts its declared MCP servers automatically. Disabling the plugin disconnects its servers. Skills-only plugins have no MCP connection lifecycle.
 
 ### 5.3 Manifest validation
 
@@ -132,14 +131,13 @@ Example configuration shape (subject to alignment with current config schema):
 {
   "plugins": {
     "review-kit": {
-      "enabled": true,
-      "trustedMcpServers": ["docs"]
+      "enabled": true
     }
   }
 }
 ```
 
-Do not infer trust from installation, marketplace membership, plugin name, or a manifest-declared default. Persist trust separately from enabled state so a user can inspect a plugin while keeping its executable components off.
+Plugin enablement is the sole package-level switch. MCP servers from enabled plugins connect automatically; disabled plugins may still be inspected but contribute no runtime MCP servers.
 
 ## 7. Runtime architecture and integration
 
@@ -159,11 +157,11 @@ The manager returns component descriptions/configuration; it does not import plu
 ### 7.2 Startup and session lifecycle
 
 1. Resolve `cwd`, existing user/project config, and configured plugin package roots.
-2. Discover and validate every package; apply scope/enablement and trust state.
-3. Construct a plugin snapshot containing skills, trusted MCP server configs, and diagnostics.
+2. Discover and validate every package; apply scope and enablement state.
+3. Construct a plugin snapshot containing skills, enabled-plugin MCP server configs, and diagnostics.
 4. Merge plugin skills into the skill catalog using namespaced IDs such as `review-kit:review`.
 5. Create the normal Microcode agent with this catalog, keeping existing standalone user/project skills available.
-6. Connect only enabled and trusted plugin MCP servers alongside existing standalone MCP servers.
+6. Connect MCP servers from enabled plugins alongside discovered standalone MCP servers.
 7. After successful connection, register their tools with the existing tool manager, rebuild tool discovery state, and update the prompt/status view.
 8. On disable, disconnect that plugin's servers, remove its tools/resources from the agent, remove its skills from future discovery, and rebuild the effective prompt/tool snapshot. Do not remove or rewrite conversation history.
 9. On shutdown, close all plugin-owned MCP clients using the existing MCP disconnect lifecycle.
@@ -176,7 +174,7 @@ Extend skill identity to distinguish a display name from a stable qualified ID. 
 
 Preserve current lazy-loading behavior: catalog metadata is available for selection, while complete skill bodies enter context only when loaded or invoked. Supporting references/assets remain package-relative. A plugin skill may guide the model through Microcode's existing tools, but it cannot grant itself tools or permission rules.
 
-Users MUST be able to explicitly reference a discovered Plugin as `#plugin-name` to inject that package's description and invocable Skill guidance into the current request. Typing `#` MUST trigger autocomplete after refreshing Plugin discovery, so packages created while Microcode is running are available immediately. Plugin discovery and runtime synchronization MUST also refresh before each submitted user turn. Autocomplete MUST offer valid, compatible discovered Plugins, including disabled packages. The injected package content MUST be framed as untrusted guidance. A `#plugin-name` mention MUST NOT enable the Plugin, connect MCP servers, expose tools, or grant permissions; those remain controlled by Plugin enablement, MCP trust, and existing permission rules. Existing `$plugin-name:skill-name` mentions remain supported for selecting one Plugin Skill.
+Users MUST be able to explicitly reference a discovered Plugin as `#plugin-name` to inject that package's description and invocable Skill guidance into the current request. Typing `#` MUST trigger autocomplete after refreshing Plugin discovery, so packages created while Microcode is running are available immediately. Plugin discovery and runtime synchronization MUST also refresh before each submitted user turn. Autocomplete MUST offer valid, compatible discovered Plugins, including disabled packages. The injected package content MUST be framed as untrusted guidance. A `#plugin-name` mention MUST NOT enable the Plugin, connect MCP servers, expose tools, or grant permissions; those remain controlled by Plugin enablement and existing permission rules. Existing `$plugin-name:skill-name` mentions remain supported for selecting one Plugin Skill.
 
 ### 7.4 MCP/tool integration
 
@@ -184,14 +182,14 @@ Use `McpClientManager` and the existing tool wrappers rather than creating a par
 
 Dynamic plugin tool permissions must be represented explicitly in the permission system. Unknown external tools must not accidentally receive an allow decision because a name is absent from a static built-in registry. Default plugin MCP tool behavior is `ask` in interactive mode; explicit user rules may allow/deny specific tools, and deny always wins. Plan/read-only mode must continue to block mutating tools.
 
-Do not expose all plugin MCP schemas in the initial prompt when the existing deferred-tool mechanism can discover them on demand. Keep tool names/descriptions discoverable; load full schema when selected. Resource reads and MCP actions use existing permission/approval semantics or a new equivalent explicit decision—not a trust-only bypass.
+Do not expose all plugin MCP schemas in the initial prompt when the existing deferred-tool mechanism can discover them on demand. Keep tool names/descriptions discoverable; load full schema when selected. Resource reads and MCP actions use existing permission/approval semantics.
 
 ### 7.5 TUI/CLI surface
 
 Add `/plugins` with:
 
-- `list`: ID, version, scope/source, enabled/trusted status, component counts, and concise health state.
-- `inspect <id>`: metadata, package root/source, skills, MCP server names/transports, requested integration permissions, and validation warnings. Never display secret values.
+- `list`: ID, version, scope/source, enabled status, component counts, and concise health state.
+- `inspect <id>`: metadata, package root/source, skills, MCP server names/transports, enabled state, and validation warnings. Never display secret values.
 - `enable <id>` / `disable <id>`: update only the selected scope and refresh the runtime where safe; if the active prompt/tool graph cannot be changed safely mid-turn, queue it until the turn ends or require restart with an explicit message.
 - `validate <path>`: run manifest/component validation without starting servers.
 
@@ -199,16 +197,16 @@ In the input editor, `$skill-name`, `#plugin-name`, and `@file` mentions MUST us
 
 V1 does not need install/uninstall commands; local packages can be placed in the documented directory. Future phases may add `install`, `remove`, `marketplace add/list`, and `update`.
 
-## 8. Security and trust model
+## 8. Security model
 
 1. **No in-process package code.** Plugin packages cannot import Microcode internals or execute lifecycle scripts in v1.
-2. **MCP is executable integration.** A stdio MCP server starts a child process with the user's OS privileges. Display its command and arguments before first trust; require explicit user trust/enablement. Remote MCP endpoints may read/send data under configured credentials, and receive a similarly explicit trust disclosure.
-3. **Tool calls remain permission-gated.** Plugin trust allows a server to connect; it does not approve every model-requested action. Each tool call passes through `PermissionManager` and current mode/rules.
+2. **MCP is executable integration.** A stdio MCP server starts a child process with the user's OS privileges. Discovered valid standalone MCP servers connect automatically; Plugin MCP servers connect while their Plugin is enabled. Remote MCP endpoints may read/send data under configured credentials.
+3. **Tool calls remain permission-gated.** MCP connection does not approve model-requested actions. Each tool call passes through `PermissionManager` and current mode/rules.
 4. **Skill text is untrusted package content.** Clearly delimit plugin instructions in model context; they may provide workflow advice but cannot override system/developer/user/repository instructions, access controls, permission decisions, or capability availability. Never treat manifest descriptions or skill text as executable authorization.
 5. **No secret disclosure.** Redact environment variables, authorization headers, and credentials from snapshots, logs, TUI summaries, errors, and exported sessions where applicable.
 6. **Containment.** All package-owned file reads are rooted under the canonical package directory. Component references cannot escape that root through traversal or symlinks.
-7. **Fail closed, isolate failures.** Invalid, untrusted, incompatible, or failed components are unavailable; report why. Never fall back to a same-named component from another plugin after a validation failure.
-8. **No automatic remote code updates.** Updates and source revisions are explicit; a changed revision invalidates prior executable trust and requires review again.
+7. **Fail closed, isolate failures.** Invalid, incompatible, or failed components are unavailable; report why. Never fall back to a same-named component from another plugin after a validation failure.
+8. **No automatic remote code updates.** Updates and source revisions are explicit.
 
 ## 9. Current Microcode touchpoints and prerequisite work
 
@@ -234,15 +232,15 @@ The following source facts inform the design; implementation should re-check the
 - Add manifest and path validator, local user/project/explicit discovery, enable state, namespace, diagnostics, `/plugins list|inspect|validate`, and tests.
 - No network, no server startup, no arbitrary scripts.
 
-### Phase 2 — Trusted plugin MCP
+### Phase 2 — Plugin MCP
 
-- Parse plugin-local `mcp.json`, namespace server IDs, show command/endpoint preview, persist trust separately, connect trusted servers, attach/remove tools dynamically, and pass every invocation through permission management.
+- Parse plugin-local `mcp.json`, namespace server IDs, connect servers while the Plugin is enabled, attach/remove tools dynamically, and pass every invocation through permission management.
 - Add reload/disable/disconnect behavior and per-server failure reporting.
 
 ### Phase 3 — Distribution
 
 - Add marketplace catalog format and CLI management. Pin Git-based sources to a commit/ref, stage installs into a temporary sibling directory, validate before atomic activation, preserve the previous install on failure, and require explicit updates.
-- Re-review trust on any content/revision change that affects executable integrations.
+- Revalidate changed package content before activation.
 
 ### Phase 4 — Consider optional hooks
 
@@ -271,8 +269,8 @@ Place all tests under `tests/plugins/`.
 
 ### MCP and permission tests
 
-- Untrusted plugin MCP servers never connect; skills-only plugins need no executable approval.
-- Trusted server starts once, discovers namespaced tools, and is visible to ToolSearch.
+- Disabled plugin MCP servers never connect; skills-only plugins need no separate MCP setting.
+- An enabled plugin server starts once, discovers namespaced tools, and is visible to ToolSearch.
 - Calls use the registered schema and pass through allow/ask/deny/plan policies; unknown tools fail closed.
 - Disable/reconnect removes stale tools and resources; re-enable does not duplicate them.
 - Connection failures/timeouts are isolated and visible; secrets never appear in logs/snapshots/diagnostics.
@@ -286,8 +284,8 @@ Place all tests under `tests/plugins/`.
 ### Release acceptance
 
 - `bun test ./tests` passes.
-- `bun run build` passes, and a compiled CLI can load a skills-only plugin and connect to an explicitly trusted MCP server without dynamic in-process plugin imports.
-- Documentation explains supported components, install roots, trust implications, scope precedence, and limitations.
+- `bun run build` passes, and a compiled CLI can load a skills-only plugin and connect to an enabled plugin's MCP server without dynamic in-process plugin imports.
+- Documentation explains supported components, install roots, enablement, scope precedence, and limitations.
 - No plugin mechanism introduces subagents, agent teams, a GUI, or unreviewed background execution.
 
 ## 12. Documentation/research references

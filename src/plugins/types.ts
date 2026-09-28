@@ -22,14 +22,12 @@ export interface PluginManifest {
 
 export interface PluginPreference {
   enabled: boolean
-  trustedMcpServers: string[]
 }
 
 export interface PluginServer {
   pluginName: string
   scope: 'plugin'
   sourcePath: string
-  digest: string
   name: string
   qualifiedName: string
   config: McpServerConfig
@@ -52,14 +50,13 @@ export interface PluginRecord {
   enabled: boolean
   skills: Skill[]
   servers: PluginServer[]
-  trustedMcpServers: string[]
   diagnostics: string[]
 }
 
 export interface PluginSnapshot {
   plugins: readonly PluginRecord[]
   skills: readonly Skill[]
-  trustedServers: Readonly<Record<string, McpServerConfig>>
+  mcpServers: Readonly<Record<string, McpServerConfig>>
   diagnostics: readonly string[]
 }
 

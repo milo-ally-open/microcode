@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'pat
 import { randomUUID } from 'crypto'
 import { loadSkills } from '../skill/skill.ts'
 import { getProjectConfigPath, getUserConfigPath } from '../mcp/config.ts'
-import { getMcpConfigDigest, parseMcpJson } from '../mcp/parseConfig.ts'
+import { parseMcpJson } from '../mcp/parseConfig.ts'
 import type { McpServerConfig } from '../mcp/types.ts'
 import type {
   PluginManifest,
@@ -47,13 +47,7 @@ function isWithin(root: string, target: string): boolean {
 }
 
 function preferenceFrom(value: unknown): PluginPreference {
-  if (!isRecord(value)) return { enabled: false, trustedMcpServers: [] }
-  return {
-    enabled: value.enabled === true,
-    trustedMcpServers: Array.isArray(value.trustedMcpServers)
-      ? value.trustedMcpServers.filter((item): item is string => typeof item === 'string')
-      : [],
-  }
+  return { enabled: isRecord(value) && value.enabled === true }
 }
 
 async function readConfig(path: string): Promise<{ config: PluginConfigFile; diagnostic?: string }> {
@@ -282,7 +276,7 @@ export async function validatePluginDirectory(
     for (const [name, config] of parsed.servers) {
       const qualifiedName = `${manifest.name}--${name}`
       const summary = summarizeServer(name, config)
-      servers.push({ pluginName: manifest.name, scope: 'plugin', sourcePath: mcpPath, digest: getMcpConfigDigest(config), name, qualifiedName, config, ...summary })
+      servers.push({ pluginName: manifest.name, scope: 'plugin', sourcePath: mcpPath, name, qualifiedName, config, ...summary })
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -360,7 +354,7 @@ export class PluginManager {
     const userPrefs = userConfig.config.plugins ?? {}
     const projectPrefs = projectConfig.config.plugins ?? {}
     const records: PluginRecord[] = []
-    const trustedServers: Record<string, McpServerConfig> = {}
+    const mcpServers: Record<string, McpServerConfig> = {}
     const skills: PluginRecord['skills'] = []
     const occupiedServerNames = new Set<string>()
 
@@ -372,22 +366,16 @@ export class PluginManager {
       const enabled = validation.valid && !validation.incompatible && preference.enabled
       const recordSkills = validation.skills
       const recordServers = validation.valid && !validation.incompatible ? validation.servers : []
-      const trustedMcpServers = preference.trustedMcpServers.filter((serverName) =>
-        recordServers.some((server) => server.name === serverName),
-      )
-
       for (const server of recordServers) {
         if (occupiedServerNames.has(server.qualifiedName)) {
           recordDiagnostics.push(`MCP server name collision: ${server.qualifiedName}`)
           continue
         }
         occupiedServerNames.add(server.qualifiedName)
-        if (enabled && trustedMcpServers.includes(server.name)) {
-          trustedServers[server.qualifiedName] = {
-            ...server.config,
-            ...('command' in server.config ? { cwd: candidate.rootDir } : {}),
-          } as McpServerConfig
-        }
+        if (enabled) mcpServers[server.qualifiedName] = {
+          ...server.config,
+          ...('command' in server.config ? { cwd: candidate.rootDir } : {}),
+        } as McpServerConfig
       }
 
       if (enabled) skills.push(...recordSkills)
@@ -406,32 +394,30 @@ export class PluginManager {
         enabled,
         skills: recordSkills,
         servers: recordServers,
-        trustedMcpServers,
         diagnostics: recordDiagnostics,
       })
     }
 
     this.records = records
     this.diagnostics = diagnostics
-    return this.getSnapshot(trustedServers, skills)
+    return this.getSnapshot(mcpServers, skills)
   }
 
   getSnapshot(
-    trustedServers?: Readonly<Record<string, McpServerConfig>>,
+    mcpServers?: Readonly<Record<string, McpServerConfig>>,
     skills?: readonly import('../skill/skill.ts').Skill[],
   ): PluginSnapshot {
-    const resolvedServers = trustedServers ?? this.buildTrustedServers()
+    const resolvedServers = mcpServers ?? this.buildMcpServers()
     const resolvedSkills = skills ?? this.records.filter((plugin) => plugin.enabled).flatMap((plugin) => plugin.skills)
     return Object.freeze({
       plugins: Object.freeze(this.records.map((plugin) => Object.freeze({
         ...plugin,
         skills: Object.freeze([...plugin.skills]) as unknown as PluginRecord['skills'],
         servers: Object.freeze([...plugin.servers]) as unknown as PluginRecord['servers'],
-        trustedMcpServers: Object.freeze([...plugin.trustedMcpServers]) as unknown as string[],
         diagnostics: Object.freeze([...plugin.diagnostics]) as unknown as string[],
       }))),
       skills: Object.freeze([...resolvedSkills]),
-      trustedServers: Object.freeze({ ...resolvedServers }),
+      mcpServers: Object.freeze({ ...resolvedServers }),
       diagnostics: Object.freeze([...this.diagnostics]),
     })
   }
@@ -502,28 +488,11 @@ export class PluginManager {
     return this.refresh()
   }
 
-  async setMcpServerTrusted(name: string, serverName: string, trusted: boolean): Promise<PluginSnapshot> {
-    const plugin = this.findPlugin(name)
-    if (!plugin) throw new Error(`Plugin "${name}" was not found.`)
-    if (!plugin.servers.some((server) => server.name === serverName)) {
-      throw new Error(`MCP server "${serverName}" was not found in plugin "${name}".`)
-    }
-    const scope = plugin.scope
-    await this.updatePreference(name, scope, (current) => {
-      const trustedMcpServers = new Set(current.trustedMcpServers)
-      if (trusted) trustedMcpServers.add(serverName)
-      else trustedMcpServers.delete(serverName)
-      return { ...current, trustedMcpServers: [...trustedMcpServers].sort() }
-    })
-    return this.refresh()
-  }
-
-  private buildTrustedServers(): Record<string, McpServerConfig> {
+  private buildMcpServers(): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {}
     for (const plugin of this.records) {
       if (!plugin.enabled || !plugin.valid || plugin.health === 'incompatible') continue
       for (const server of plugin.servers) {
-        if (!plugin.trustedMcpServers.includes(server.name)) continue
         servers[server.qualifiedName] = {
           ...server.config,
           ...('command' in server.config ? { cwd: plugin.rootDir } : {}),

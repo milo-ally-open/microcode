@@ -42,11 +42,7 @@ async function handleMcpList(args: string[]): Promise<void> {
 
     console.log('Discovered MCP servers:\n')
     for (const server of servers) {
-      const trust = server.trustedBy === 'system' ? 'system trusted'
-        : server.trustedBy === 'explicit-config' ? 'legacy explicit config'
-        : server.trustedBy === 'user-approval' ? 'trusted'
-        : 'untrusted'
-      console.log(`  ${server.name} [${server.scope}${server.packageName ? `/${server.packageName}` : ''}] · ${trust}`)
+      console.log(`  ${server.name} [${server.scope}${server.packageName ? `/${server.packageName}` : ''}]`)
       console.log(`    ${safeMcpConfigSummary(server.config)}`)
       if (server.sourcePath) console.log(`    ${server.sourcePath}`)
     }
@@ -322,10 +318,10 @@ Session Management:
   app.setPluginManager(pluginManager, async (updatedSnapshot) => {
     const snapshot = updatedSnapshot ?? await pluginManager.refresh(MACRO.VERSION)
     const standaloneRegistry = await discoverMcpCapabilities(cwd)
-    const standalone = standaloneRegistry.connectable
+    const standalone = standaloneRegistry.configs
     const desired = { ...standalone }
     const collisions: string[] = []
-    for (const [name, config] of Object.entries(snapshot.trustedServers)) {
+    for (const [name, config] of Object.entries(snapshot.mcpServers)) {
       if (Object.hasOwn(desired, name)) {
         collisions.push(`Plugin MCP server "${name}" conflicts with a configured MCP server; plugin server skipped.`)
         continue
@@ -392,8 +388,8 @@ Session Management:
   // Connect MCP servers in background — non-blocking
   const standaloneRegistry = await discoverMcpCapabilities(cwd)
   for (const warning of standaloneRegistry.diagnostics) app.addStartupWarning(warning)
-  const combinedMcpConfigs = { ...standaloneRegistry.connectable }
-  for (const [name, config] of Object.entries(pluginSnapshot.trustedServers)) {
+  const combinedMcpConfigs = { ...standaloneRegistry.configs }
+  for (const [name, config] of Object.entries(pluginSnapshot.mcpServers)) {
     if (Object.hasOwn(combinedMcpConfigs, name)) {
       app.addStartupWarning(`Plugin MCP server "${name}" conflicts with a configured MCP server; plugin server skipped.`)
       continue

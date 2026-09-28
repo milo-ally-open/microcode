@@ -1,14 +1,13 @@
-import { createHash, randomUUID } from 'crypto'
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'fs/promises'
+import { lstat, readFile, readdir } from 'fs/promises'
 import { homedir } from 'os'
-import { basename, dirname, join } from 'path'
+import { basename, join } from 'path'
 import { getProjectConfigPath, getUserConfigPath } from './config.ts'
-import { getMcpConfigDigest, parseMcpJson } from './parseConfig.ts'
+import { parseMcpJson } from './parseConfig.ts'
 import type { McpServerConfig, ResolvedMcpServer } from './types.ts'
 
 export interface McpCapabilitiesResult {
   servers: ResolvedMcpServer[]
-  connectable: Record<string, McpServerConfig>
+  configs: Record<string, McpServerConfig>
   diagnostics: string[]
 }
 
@@ -41,69 +40,6 @@ export function safeMcpConfigSummary(config: McpServerConfig): string {
 
 interface Candidate extends ResolvedMcpServer {
   priority: number
-  trustKey?: string
-}
-
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
-  }
-  return JSON.stringify(value)
-}
-
-function digest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonical(value)).digest('hex')}`
-}
-
-function trustIdentity(scope: 'user' | 'project', packageName: string, name: string): string {
-  return `${scope}:${packageName}:${name}`
-}
-
-async function readJson(path: string): Promise<Record<string, unknown> | null> {
-  try {
-    const value: unknown = JSON.parse(await readFile(path, 'utf8'))
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
-  } catch { return null }
-}
-
-async function getTrustedDigest(configPath: string, key: string): Promise<string | undefined> {
-  const config = await readJson(configPath)
-  const map = config?.mcpTrust
-  if (!map || typeof map !== 'object' || Array.isArray(map)) return undefined
-  const record = (map as Record<string, unknown>)[key]
-  return record && typeof record === 'object' && !Array.isArray(record) && typeof (record as Record<string, unknown>).digest === 'string'
-    ? (record as Record<string, string>).digest
-    : undefined
-}
-
-async function setTrustedDigest(configPath: string, key: string, value?: string): Promise<void> {
-  let config: Record<string, unknown> = {}
-  try {
-    const parsed: unknown = JSON.parse(await readFile(configPath, 'utf8'))
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected a JSON object')
-    config = parsed as Record<string, unknown>
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Error(`Cannot update MCP trust in ${configPath}: existing config is invalid and was left unchanged (${error instanceof Error ? error.message : String(error)})`)
-    }
-  }
-  const current = config.mcpTrust && typeof config.mcpTrust === 'object' && !Array.isArray(config.mcpTrust)
-    ? config.mcpTrust as Record<string, unknown>
-    : {}
-  const next = { ...current }
-  if (value) next[key] = { digest: value }
-  else delete next[key]
-  config.mcpTrust = next
-  await mkdir(dirname(configPath), { recursive: true })
-  const temp = `${configPath}.tmp-${process.pid}-${randomUUID()}`
-  try {
-    await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-    await rename(temp, configPath)
-  } catch (error) {
-    await rm(temp, { force: true }).catch(() => {})
-    throw error
-  }
 }
 
 async function discoverPackages(
@@ -144,10 +80,8 @@ async function discoverPackages(
       diagnostics.push(...parsed.diagnostics)
       for (const [name, config] of parsed.servers) {
         const effectiveConfig: McpServerConfig = 'command' in config ? { ...config, cwd: config.cwd ?? packageDir } : config
-        const configDigest = digest({ configDigest: getMcpConfigDigest(effectiveConfig), packageName: entry.name, scope })
         const priority = scope === 'system' ? 100 : scope === 'project' ? 40 : 20
-        const trustKey = scope === 'system' ? undefined : trustIdentity(scope, entry.name, name)
-        found.push({ name, config: effectiveConfig, scope, packageName: entry.name, sourcePath: configPath, digest: configDigest, trustedBy: scope === 'system' ? 'system' : undefined, priority, trustKey })
+        found.push({ name, config: effectiveConfig, scope, packageName: entry.name, sourcePath: configPath, priority })
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') diagnostics.push(`${configPath}: ${error instanceof Error ? error.message : String(error)}`)
@@ -182,7 +116,7 @@ async function discoverLegacy(configPath: string, scope: 'user' | 'project', dia
   const priority = scope === 'project' ? 50 : 30
   return [...parsed.servers].map(([name, serverConfig]) => ({
     name, config: serverConfig, scope: 'legacy', sourcePath: configPath,
-    digest: digest(serverConfig), trustedBy: 'explicit-config', priority,
+    priority,
   }))
 }
 
@@ -222,25 +156,11 @@ export async function discoverMcpCapabilities(cwd: string): Promise<McpCapabilit
   }
 
   const resolved: ResolvedMcpServer[] = []
-  const connectable: Record<string, McpServerConfig> = {}
+  const configs: Record<string, McpServerConfig> = {}
   for (const item of selected.values()) {
-    let trustedBy = item.trustedBy
-    if (!trustedBy && item.trustKey) {
-      const trustPath = item.scope === 'project' ? getProjectConfigPath(cwd) : getUserConfigPath()
-      if (await getTrustedDigest(trustPath, item.trustKey) === item.digest) trustedBy = 'user-approval'
-    }
-    const server = { name: item.name, config: item.config, scope: item.scope, packageName: item.packageName, sourcePath: item.sourcePath, pluginId: item.pluginId, digest: item.digest, trustedBy }
+    const server = { name: item.name, config: item.config, scope: item.scope, packageName: item.packageName, sourcePath: item.sourcePath, pluginId: item.pluginId }
     resolved.push(server)
-    if (trustedBy) connectable[item.name] = item.config
-    else diagnostics.push(`MCP server "${item.name}" from ${item.sourcePath} is untrusted and was not connected.`)
+    configs[item.name] = item.config
   }
-  return { servers: resolved, connectable, diagnostics }
-}
-
-export async function setMcpDirectoryTrust(cwd: string, server: ResolvedMcpServer, trusted: boolean): Promise<void> {
-  if (server.scope !== 'user' && server.scope !== 'project') throw new Error(`MCP server "${server.name}" cannot be trusted through the directory MCP flow.`)
-  if (!server.packageName) throw new Error(`MCP server "${server.name}" is not a directory package.`)
-  const key = trustIdentity(server.scope, server.packageName, server.name)
-  const path = server.scope === 'project' ? getProjectConfigPath(cwd) : getUserConfigPath()
-  await setTrustedDigest(path, key, trusted ? server.digest : undefined)
+  return { servers: resolved, configs, diagnostics }
 }
