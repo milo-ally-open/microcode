@@ -1,5 +1,6 @@
 import { execSync } from 'child_process'
-import { release as osRelease, type as osType, version as osVersion } from 'os'
+import { homedir, release as osRelease, type as osType, version as osVersion } from 'os'
+import { join } from 'path'
 
 // Environment facts are generated at prompt-build time so model switches and
 // resumed sessions see the current cwd, shell, OS, and model identity.
@@ -35,6 +36,13 @@ function getShellInfoLine(): string {
   return `Shell: ${shell}`
 }
 
+function getOperatingSystemName(): string {
+  if (process.platform === 'win32') return 'Windows'
+  if (process.platform === 'darwin') return 'macOS'
+  if (process.platform === 'linux') return 'Linux'
+  return osType()
+}
+
 /** Dynamic environment section shared by primary, resumed, and model-switched sessions. */
 export function getEnvInfoSection(
   cwd: string,
@@ -48,8 +56,10 @@ export function getEnvInfoSection(
   return `Here is useful information about the environment you are running in:
 <env>
 Working directory: ${cwd}
+Microcode home: ${join(homedir(), '.microcode')}
 Is directory a git repo: ${isGit ? 'Yes' : 'No'}
-Platform: ${process.platform}
+Operating system: ${getOperatingSystemName()}
+Platform identifier: ${process.platform}
 ${getShellInfoLine()}
 OS Version: ${unameSR}
 </env>

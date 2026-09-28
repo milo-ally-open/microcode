@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'pat
 import { randomUUID } from 'crypto'
 import { loadSkills } from '../skill/skill.ts'
 import { getProjectConfigPath, getUserConfigPath } from '../mcp/config.ts'
+import { getMcpConfigDigest, parseMcpJson } from '../mcp/parseConfig.ts'
 import type { McpServerConfig } from '../mcp/types.ts'
 import type {
   PluginManifest,
@@ -122,42 +123,6 @@ function summarizeServer(name: string, config: McpServerConfig): { transport: st
   let endpoint = config.url
   try { endpoint = new URL(config.url).origin } catch {}
   return { transport: config.type, safeCommandSummary: `${config.type} → ${endpoint}` }
-}
-
-function validateServerConfig(name: string, value: unknown): McpServerConfig {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || name.includes('--')) {
-    throw new Error(`invalid MCP server name "${name}"`)
-  }
-  if (!isRecord(value)) throw new Error(`MCP server "${name}" must be an object`)
-
-  if (typeof value.command === 'string') {
-    if (!value.command.trim()) throw new Error(`MCP server "${name}" command must not be empty`)
-    if (value.type !== undefined && value.type !== 'stdio') throw new Error(`MCP server "${name}" has unsupported stdio type`)
-    if (value.args !== undefined && (!Array.isArray(value.args) || value.args.some((item) => typeof item !== 'string'))) {
-      throw new Error(`MCP server "${name}" args must be an array of strings`)
-    }
-    if (value.env !== undefined && (!isRecord(value.env) || Object.values(value.env).some((item) => typeof item !== 'string'))) {
-      throw new Error(`MCP server "${name}" env must contain string values`)
-    }
-    return value as unknown as McpServerConfig
-  }
-
-  if (typeof value.url !== 'string' || !['sse', 'http', 'streamableHttp', 'ws'].includes(String(value.type))) {
-    throw new Error(`MCP server "${name}" must use stdio { command } or remote { type, url }`)
-  }
-  let url: URL
-  try {
-    url = new URL(value.url)
-  } catch {
-    throw new Error(`MCP server "${name}" URL must be absolute`)
-  }
-  const secure = url.protocol === 'https:' || url.protocol === 'wss:'
-  const loopback = ['localhost', '127.0.0.1', '::1'].includes(url.hostname)
-  if (!secure && !loopback) throw new Error(`MCP server "${name}" must use a secure URL except on loopback`)
-  if (value.headers !== undefined && (!isRecord(value.headers) || Object.values(value.headers).some((item) => typeof item !== 'string'))) {
-    throw new Error(`MCP server "${name}" headers must contain string values`)
-  }
-  return value as unknown as McpServerConfig
 }
 
 async function verifySkillTree(rootDir: string): Promise<string[]> {
@@ -299,7 +264,7 @@ export async function validatePluginDirectory(
     if (!unsafeTree) {
       const loaded = loadSkills({ cwd: rootDir, skillPaths: [skillsDir], includeDefaults: false })
       diagnostics.push(...loaded.diagnostics)
-      skills = loaded.skills.slice(0, MAX_SKILLS).map((skill) => ({ ...skill, name: `${manifest!.name}:${skill.name}`, pluginId: manifest!.name }))
+      skills = loaded.skills.slice(0, MAX_SKILLS).map((skill) => ({ ...skill, name: `${manifest!.name}:${skill.name}`, scope: 'plugin', pluginId: manifest!.name }))
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -312,17 +277,12 @@ export async function validatePluginDirectory(
     const info = await lstat(mcpPath)
     if (!info.isFile() || info.isSymbolicLink()) throw new Error('mcp.json must be a regular file')
     if (info.size > MAX_MANIFEST_BYTES) throw new Error(`mcp.json exceeds ${MAX_MANIFEST_BYTES} bytes`)
-    const parsed: unknown = JSON.parse(await readFile(mcpPath, 'utf8'))
-    if (!isRecord(parsed) || !isRecord(parsed.mcpServers)) throw new Error('mcp.json must contain an mcpServers object')
-    for (const [name, rawConfig] of Object.entries(parsed.mcpServers)) {
-      try {
-        const config = validateServerConfig(name, rawConfig)
-        const qualifiedName = `${manifest.name}--${name}`
-        const summary = summarizeServer(name, config)
-        servers.push({ pluginName: manifest.name, name, qualifiedName, config, ...summary })
-      } catch (error) {
-        diagnostics.push(`${mcpPath}: ${error instanceof Error ? error.message : String(error)}`)
-      }
+    const parsed = parseMcpJson(await readFile(mcpPath, 'utf8'), mcpPath)
+    diagnostics.push(...parsed.diagnostics)
+    for (const [name, config] of parsed.servers) {
+      const qualifiedName = `${manifest.name}--${name}`
+      const summary = summarizeServer(name, config)
+      servers.push({ pluginName: manifest.name, scope: 'plugin', sourcePath: mcpPath, digest: getMcpConfigDigest(config), name, qualifiedName, config, ...summary })
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -404,7 +364,7 @@ export class PluginManager {
     const skills: PluginRecord['skills'] = []
     const occupiedServerNames = new Set<string>()
 
-    for (const [name, candidate] of [...byName.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [name, candidate] of [...byName.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
       const validation = candidate.validation
       const rawPreference = Object.hasOwn(projectPrefs, name) ? projectPrefs[name] : userPrefs[name]
       const preference = preferenceFrom(rawPreference)
@@ -579,7 +539,7 @@ export class PluginManager {
       return { candidates, diagnostics: [`${rootDir}: ${error instanceof Error ? error.message : String(error)}`] }
     }
 
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       if (entry.name.startsWith('.')) continue
       const path = join(rootDir, entry.name)
       if (!entry.isDirectory()) {

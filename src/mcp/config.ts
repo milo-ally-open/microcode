@@ -1,16 +1,6 @@
-import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
 import type { McpServerConfig } from './types.ts'
-
-async function readJsonFile(path: string): Promise<any> {
-  try {
-    const content = await readFile(path, 'utf-8')
-    return JSON.parse(content)
-  } catch {
-    return null
-  }
-}
 
 export function getUserConfigPath(): string {
   return join(homedir(), '.microcode', 'config.json')
@@ -23,21 +13,8 @@ export function getProjectConfigPath(cwd: string): string {
 export async function loadMcpConfig(
   cwd: string,
 ): Promise<Record<string, McpServerConfig>> {
-  const configs: Record<string, McpServerConfig> = {}
-
-  // Load user-level config
-  const userConfig = await readJsonFile(getUserConfigPath())
-  if (userConfig?.mcpServers) {
-    Object.assign(configs, userConfig.mcpServers)
-  }
-
-  // Load project-level config (overrides user)
-  const projectConfig = await readJsonFile(getProjectConfigPath(cwd))
-  if (projectConfig?.mcpServers) {
-    Object.assign(configs, projectConfig.mcpServers)
-  }
-
-  return configs
+  const { discoverMcpCapabilities } = await import('./capabilities.ts')
+  return (await discoverMcpCapabilities(cwd)).connectable
 }
 
 export function isMcpConfigEmpty(configs: Record<string, McpServerConfig>): boolean {

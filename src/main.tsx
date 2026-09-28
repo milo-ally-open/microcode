@@ -3,8 +3,9 @@ import { createMicrocodeAgentRuntime } from './agent/index.ts'
 import { getAllModels, getCustomModelDefs, getModels } from './models/index.ts'
 import { App } from './tui/app.ts'
 import { McpClientManager } from './mcp/client.ts'
-import { loadMcpConfig, isMcpConfigEmpty } from './mcp/config.ts'
-import { listMcpServers, type ConfigScope } from './mcp/configWrite.ts'
+import { getProjectConfigPath, getUserConfigPath, isMcpConfigEmpty } from './mcp/config.ts'
+import { discoverMcpCapabilities, safeMcpConfigSummary } from './mcp/capabilities.ts'
+import type { ConfigScope } from './mcp/configWrite.ts'
 import { SessionManager } from './session/SessionManager.ts'
 import { createGitWorkTreeTool } from './tools/index.ts'
 import { type PermissionMode, PERMISSION_MODES } from './permissions/index.ts'
@@ -29,30 +30,27 @@ async function handleMcpList(args: string[]): Promise<void> {
   const scope = (parseFlag(args, '--scope') ?? 'all') as ConfigScope | 'all'
 
   try {
-    const servers = await listMcpServers(scope, process.cwd())
+    const registry = await discoverMcpCapabilities(process.cwd())
+    const servers = registry.servers.filter((server) => scope === 'all' ||
+      server.scope === scope ||
+      (server.scope === 'legacy' && server.sourcePath === (scope === 'user' ? getUserConfigPath() : getProjectConfigPath(process.cwd()))))
 
     if (servers.length === 0) {
       console.log('No MCP servers configured.')
       return
     }
 
-    console.log('Configured MCP servers:\n')
-    for (const { scope: s, name, config } of servers) {
-      let typeDesc: string
-      if ('command' in config) {
-        typeDesc = `stdio → ${config.command} ${(config.args ?? []).join(' ')}`.trim()
-      } else if (config.type === 'sse') {
-        typeDesc = `sse → ${config.url}`
-      } else if (config.type === 'http' || config.type === 'streamableHttp') {
-        typeDesc = `${config.type} → ${config.url}`
-      } else if (config.type === 'ws') {
-        typeDesc = `ws → ${config.url}`
-      } else {
-        typeDesc = 'unknown transport'
-      }
-      console.log(`  ${name} [${s}]`)
-      console.log(`    ${typeDesc}`)
+    console.log('Discovered MCP servers:\n')
+    for (const server of servers) {
+      const trust = server.trustedBy === 'system' ? 'system trusted'
+        : server.trustedBy === 'explicit-config' ? 'legacy explicit config'
+        : server.trustedBy === 'user-approval' ? 'trusted'
+        : 'untrusted'
+      console.log(`  ${server.name} [${server.scope}${server.packageName ? `/${server.packageName}` : ''}] · ${trust}`)
+      console.log(`    ${safeMcpConfigSummary(server.config)}`)
+      if (server.sourcePath) console.log(`    ${server.sourcePath}`)
     }
+    for (const diagnostic of registry.diagnostics) console.error(`  ${diagnostic}`)
   } catch (error) {
     console.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)
@@ -323,7 +321,8 @@ Session Management:
   const activePluginServerNames = new Set<string>()
   app.setPluginManager(pluginManager, async () => {
     const snapshot = await pluginManager.refresh(MACRO.VERSION)
-    const standalone = await loadMcpConfig(cwd)
+    const standaloneRegistry = await discoverMcpCapabilities(cwd)
+    const standalone = standaloneRegistry.connectable
     const desired = { ...snapshot.trustedServers }
     const collisions: string[] = []
     for (const [name, config] of Object.entries(standalone)) {
@@ -352,6 +351,7 @@ Session Management:
     agent.setPluginSkills([...snapshot.skills], [...snapshot.diagnostics, ...snapshot.plugins.flatMap((plugin) => plugin.diagnostics.map((diagnostic) => `${plugin.name}: ${diagnostic}`))])
     app.updateMcpState(mcpClient)
     for (const warning of collisions) app.addStartupWarning(warning)
+    for (const warning of standaloneRegistry.diagnostics) app.addStartupWarning(warning)
   })
   for (const warning of pluginSnapshot.diagnostics) app.addStartupWarning(`Plugin discovery: ${warning}`)
   for (const plugin of pluginSnapshot.plugins) {
@@ -387,8 +387,9 @@ Session Management:
   }
 
   // Connect MCP servers in background — non-blocking
-  const mcpConfigs = await loadMcpConfig(cwd)
-  const combinedMcpConfigs = { ...mcpConfigs }
+  const standaloneRegistry = await discoverMcpCapabilities(cwd)
+  for (const warning of standaloneRegistry.diagnostics) app.addStartupWarning(warning)
+  const combinedMcpConfigs = { ...standaloneRegistry.connectable }
   for (const [name, config] of Object.entries(pluginSnapshot.trustedServers)) {
     if (Object.hasOwn(combinedMcpConfigs, name)) {
       app.addStartupWarning(`Plugin MCP server "${name}" conflicts with a configured MCP server; plugin server skipped.`)

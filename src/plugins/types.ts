@@ -27,6 +27,9 @@ export interface PluginPreference {
 
 export interface PluginServer {
   pluginName: string
+  scope: 'plugin'
+  sourcePath: string
+  digest: string
   name: string
   qualifiedName: string
   config: McpServerConfig

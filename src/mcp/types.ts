@@ -1,3 +1,5 @@
+import type { CapabilityScope } from '../capabilities/types.ts'
+
 export interface McpStdioServerConfig {
   type?: 'stdio'
   command: string
@@ -29,6 +31,19 @@ export type McpServerConfig =
   | McpSSEServerConfig
   | McpHTTPServerConfig
   | McpWebSocketServerConfig
+
+export type McpScope = CapabilityScope
+
+export interface ResolvedMcpServer {
+  name: string
+  config: McpServerConfig
+  scope: McpScope
+  packageName?: string
+  sourcePath?: string
+  pluginId?: string
+  digest: string
+  trustedBy?: 'system' | 'explicit-config' | 'user-approval' | 'plugin'
+}
 
 export interface McpConfig {
   mcpServers: Record<string, McpServerConfig>

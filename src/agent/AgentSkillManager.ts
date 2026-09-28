@@ -53,7 +53,7 @@ export class AgentSkillManager {
     for (const [name, next] of nextByName) {
       const previous = previousByName.get(name)
       if (!previous || previous.description !== next.description || previous.filePath !== next.filePath ||
-        previous.baseDir !== next.baseDir || previous.disableModelInvocation !== next.disableModelInvocation) {
+        previous.baseDir !== next.baseDir || previous.scope !== next.scope || previous.disableModelInvocation !== next.disableModelInvocation) {
         changed = true
       }
     }

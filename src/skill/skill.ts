@@ -1,6 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
+import { getSystemSkillNames, getSystemSkillsRoot, installSystemCapabilities } from '../system/capabilities.ts'
+import type { CapabilityScope } from '../capabilities/types.ts'
+export type { CapabilityScope } from '../capabilities/types.ts'
 
 const MAX_NAME_LENGTH = 64
 const MAX_DESCRIPTION_LENGTH = 1024
@@ -106,11 +109,14 @@ export interface SkillFrontmatter {
   [key: string]: unknown
 }
 
+export type SkillScope = CapabilityScope
+
 export interface Skill {
   name: string
   description: string
   filePath: string
   baseDir: string
+  scope: SkillScope
   disableModelInvocation: boolean
   pluginId?: string
 }
@@ -156,12 +162,12 @@ function validateDescription(description: string | undefined): string[] {
 
 export interface LoadSkillsFromDirOptions {
   dir: string
-  source: string
+  source: SkillScope
 }
 
 function loadSkillsFromDirInternal(
   dir: string,
-  source: string,
+  source: SkillScope,
   includeRootFiles: boolean,
   ignoreMatcher?: IgnoreMatcher,
   rootDir?: string,
@@ -178,7 +184,7 @@ function loadSkillsFromDirInternal(
   addIgnoreRules(ig, dir, root)
 
   try {
-    const entries = readdirSync(dir, { withFileTypes: true })
+    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
 
     // Check for SKILL.md first (skill root)
     for (const entry of entries) {
@@ -297,7 +303,7 @@ function parseFrontmatter<T>(content: string): { frontmatter: T; content: string
 
 function loadSkillFromFile(
   filePath: string,
-  _source: string,
+  source: SkillScope,
 ): { skill: Skill | null; diagnostics: string[] } {
   const diagnostics: string[] = []
 
@@ -329,6 +335,7 @@ function loadSkillFromFile(
         description: frontmatter.description,
         filePath,
         baseDir: skillDir,
+        scope: source,
         disableModelInvocation: frontmatter['disable-model-invocation'] === true,
       },
       diagnostics,
@@ -411,30 +418,17 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
   const resolvedAgentDir = getAgentDir()
 
-  const skillMap = new Map<string, Skill>()
-  const realPathSet = new Set<string>()
+  const candidates: Skill[] = []
   const allDiagnostics: string[] = []
 
   function addSkills(result: LoadSkillsResult) {
     allDiagnostics.push(...result.diagnostics)
-    for (const skill of result.skills) {
-      const realPath = resolve(skill.filePath)
-
-      if (realPathSet.has(realPath)) {
-        continue
-      }
-
-      const existing = skillMap.get(skill.name)
-      if (existing) {
-        allDiagnostics.push(`name "${skill.name}" collision between ${existing.filePath} and ${skill.filePath}`)
-      } else {
-        skillMap.set(skill.name, skill)
-        realPathSet.add(realPath)
-      }
-    }
+    candidates.push(...result.skills)
   }
 
   if (includeDefaults) {
+    allDiagnostics.push(...installSystemCapabilities())
+    addSkills(loadSkillsFromDirInternal(getSystemSkillsRoot(), 'system', true))
     addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, 'skills'), 'user', true))
     addSkills(loadSkillsFromDirInternal(resolve(cwd, CONFIG_DIR_NAME, 'skills'), 'project', true))
   }
@@ -451,10 +445,14 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
     return target.startsWith(prefix)
   }
 
-  const getSource = (resolvedPath: string): 'user' | 'project' | 'path' => {
+  const getSource = (resolvedPath: string): SkillScope => {
+    if (isUnderPath(resolvedPath, getSystemSkillsRoot())) return 'system'
     if (!includeDefaults) {
       if (isUnderPath(resolvedPath, userSkillsDir)) return 'user'
       if (isUnderPath(resolvedPath, projectSkillsDir)) return 'project'
+    } else {
+      if (isUnderPath(resolvedPath, projectSkillsDir)) return 'project'
+      if (isUnderPath(resolvedPath, userSkillsDir)) return 'user'
     }
     return 'path'
   }
@@ -485,6 +483,38 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
       const message = error instanceof Error ? error.message : 'failed to read skill path'
       allDiagnostics.push(`${resolvedPath}: ${message}`)
     }
+  }
+
+  const systemNames = new Set(includeDefaults ? getSystemSkillNames() : candidates.filter((skill) => skill.scope === 'system').map((skill) => skill.name))
+  const priority: Record<SkillScope, number> = {
+    system: 100,
+    path: 30,
+    project: 20,
+    user: 10,
+    plugin: 0,
+    legacy: 0,
+  }
+  candidates.sort((a, b) => priority[b.scope] - priority[a.scope])
+  const skillMap = new Map<string, Skill>()
+  const realPathSet = new Set<string>()
+  for (const skill of candidates) {
+    const realPath = resolve(skill.filePath)
+    if (realPathSet.has(realPath)) continue
+    const existing = skillMap.get(skill.name)
+    if (existing) {
+      if (systemNames.has(skill.name) && existing.scope === 'system') {
+        allDiagnostics.push(`Skill "${skill.name}" conflicts with reserved system skill; ${skill.scope} skill ignored.`)
+      } else {
+        allDiagnostics.push(`Skill "${skill.name}" collision between ${existing.filePath} (${existing.scope}) and ${skill.filePath} (${skill.scope}); ${existing.scope} skill selected.`)
+      }
+      continue
+    }
+    if (systemNames.has(skill.name) && skill.scope !== 'system') {
+      allDiagnostics.push(`Skill "${skill.name}" conflicts with reserved system skill; ${skill.scope} skill ignored.`)
+      continue
+    }
+    skillMap.set(skill.name, skill)
+    realPathSet.add(realPath)
   }
 
   return {
