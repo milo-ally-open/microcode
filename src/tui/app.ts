@@ -62,6 +62,14 @@ import { applyWorkspaceFileCompletion, buildWorkspaceFileContext, filterWorkspac
 import { applySkillCompletion, buildSkillMentionContext, filterInvocableSkills, highlightSkillMatch, stripInjectedSkillContextForDisplay } from './skillMentions.ts'
 import { applyPluginCompletion, buildPluginMentionContext, filterMentionablePlugins, highlightPluginMatch, isPluginAutocompleteContext } from './pluginMentions.ts'
 import { createSessionTitle, normalizeSessionTitle } from './sessionTitle.ts'
+import {
+  canRunGitCommand,
+  GitRepository,
+  parseGitCommand,
+  requiresGitConfirmation,
+  type GitCommand,
+  type GitFileChange,
+} from '../git/index.ts'
 
 
 
@@ -162,6 +170,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'permission', description: 'Show or switch permission mode (usage: /permission [mode])', argumentHint: '[mode]' },
   { name: 'skills', description: 'List, enable, or disable skills' },
   { name: 'plugins', description: 'List and enable or disable plugins' },
+  { name: 'git', description: 'Inspect and manage the current Git repository' },
   { name: 'exit', description: 'Exit Microcode' },
   { name: 'help', description: 'Show help and available commands' },
 ]
@@ -205,6 +214,7 @@ export class App {
   private bashComponent?: BashExecutionComponent
   private activeBashProcess?: ChildProcessWithoutNullStreams
   private bashCancelRequested = false
+  private gitOperationActive = false
   private startupWarnings: string[] = []
   private pendingImages: CachedImage[] = []
   private workspaceFileIndex?: Promise<string[]>
@@ -852,9 +862,10 @@ export class App {
 
   private handleSlashCommand(input: string): boolean {
     this.editor.addToHistory(input)
-    const parts = input.split(/\s+/)
-    const command = parts[0]?.toLowerCase()
-    const args = parts.slice(1).join(' ')
+    const trimmedInput = input.trim()
+    const commandEnd = trimmedInput.search(/\s/)
+    const command = (commandEnd < 0 ? trimmedInput : trimmedInput.slice(0, commandEnd)).toLowerCase()
+    const args = commandEnd < 0 ? '' : trimmedInput.slice(commandEnd).trimStart()
 
     switch (command) {
       case '/clear':
@@ -929,6 +940,10 @@ export class App {
 
       case '/plugins':
         void this.handlePluginsCommand()
+        return true
+
+      case '/git':
+        void this.handleGitCommand(args)
         return true
 
       case '/exit':
@@ -2651,6 +2666,449 @@ export class App {
     }
   }
 
+  private async handleGitCommand(input: string): Promise<void> {
+    const command = parseGitCommand(input)
+    if (command.action === 'unknown') {
+      this.showError(command.usage)
+      return
+    }
+
+    let repository: GitRepository
+    try {
+      repository = await GitRepository.open(process.cwd())
+    } catch (error) {
+      this.showError(error instanceof Error ? error.message : String(error))
+      return
+    }
+
+    if (command.action === 'menu') {
+      await this.showGitActionMenu(repository)
+      return
+    }
+    if (!canRunGitCommand(command, this.agent.isBusy())) {
+      this.showStatus('Git changes are unavailable while the Agent is working. Finish or interrupt the current turn, then retry.')
+      return
+    }
+    if (requiresGitConfirmation(command)) {
+      const description = this.describeGitCommand(command)
+      this.showGitConfirmation(description, () => {
+        if (this.agent.isBusy()) {
+          this.showStatus('Git operation cancelled because the Agent became busy.')
+          return
+        }
+        void this.executeGitCommand(repository, command)
+      })
+      return
+    }
+    await this.executeGitCommand(repository, command)
+  }
+
+  private async showGitActionMenu(repository: GitRepository): Promise<void> {
+    try {
+      const status = await repository.status()
+      const actions: SelectItem[] = [
+        { value: 'status', label: 'Status', description: `${status.branch} · ${status.changes.length} changed paths` },
+        { value: 'diff', label: 'Diff', description: 'Inspect working-tree changes' },
+        { value: 'stage', label: 'Add (新增)', description: 'Select files to stage for commit' },
+        { value: 'commit', label: 'Commit', description: 'Commit staged changes' },
+        { value: 'pull', label: 'Pull', description: 'Fast-forward only · confirmation required' },
+        { value: 'push', label: 'Push', description: 'Push the current branch · confirmation required' },
+      ]
+      this.showGitPicker('Git', `${repository.root} · ${status.branch}`, actions, (value) => {
+        if (value === 'branch create') {
+          this.editor.setText('/git branch create ')
+          this.ui.setFocus(this.editor)
+          this.ui.requestRender()
+          return
+        }
+        if (value === 'commit') {
+          this.editor.setText('/git commit ')
+          this.ui.setFocus(this.editor)
+          this.ui.requestRender()
+          return
+        }
+        void this.handleGitCommand(value)
+      })
+    } catch (error) {
+      this.showError(`Could not inspect Git repository: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private async executeGitCommand(repository: GitRepository, command: GitCommand): Promise<void> {
+    if (this.gitOperationActive) {
+      this.showStatus('A Git operation is already running. Wait for it to finish.')
+      return
+    }
+    if (!canRunGitCommand(command, this.agent.isBusy())) {
+      this.showStatus('Git changes are unavailable while the Agent is working.')
+      return
+    }
+    this.gitOperationActive = true
+    try {
+      switch (command.action) {
+        case 'status':
+          this.showGitStatus(await repository.status())
+          return
+        case 'diff':
+        case 'diff-staged':
+          this.showGitOutput(command.action === 'diff-staged' ? 'Staged diff' : 'Working diff', await repository.diff(command.action === 'diff-staged'))
+          return
+        case 'branches':
+          await this.showGitBranches(repository)
+          return
+        case 'branch-create':
+          await repository.createBranch(command.name)
+          await this.gitMutationSucceeded(`Created and switched to branch ${command.name}.`, repository)
+          return
+        case 'branch-switch':
+          await repository.switchBranch(command.name)
+          await this.gitMutationSucceeded(`Switched to branch ${command.name}.`, repository)
+          return
+        case 'branch-delete':
+          await repository.deleteBranch(command.name)
+          await this.gitMutationSucceeded(`Deleted merged branch ${command.name}.`, repository)
+          return
+        case 'stage':
+          if (command.paths.length > 0) {
+            await repository.stage(command.paths)
+            await this.gitMutationSucceeded(`Staged ${command.paths.length} path${command.paths.length === 1 ? '' : 's'}.`, repository)
+          } else {
+            await this.showGitPathPicker(repository, 'stage')
+          }
+          return
+        case 'unstage':
+          if (command.paths.length > 0) {
+            await repository.unstage(command.paths)
+            await this.gitMutationSucceeded(`Unstaged ${command.paths.length} path${command.paths.length === 1 ? '' : 's'}.`, repository)
+          } else {
+            await this.showGitPathPicker(repository, 'unstage')
+          }
+          return
+        case 'discard':
+          if (command.paths.length > 0) {
+            await this.runGitMutation(repository, () => repository.discard(command.paths), `Discarded ${command.paths.length} path${command.paths.length === 1 ? '' : 's'}.`)
+          } else {
+            await this.showGitPathPicker(repository, 'discard')
+          }
+          return
+        case 'commit':
+          if (!command.message.trim()) {
+            this.editor.setText('/git commit ')
+            this.ui.setFocus(this.editor)
+            this.showStatus('Enter a commit message after `/git commit`. Only staged changes will be committed.')
+            return
+          }
+          await this.runGitMutation(repository, async () => {
+            const commit = await repository.commit(command.message)
+            return `Created commit ${commit}: ${command.message}`
+          })
+          return
+        case 'log':
+          this.showGitOutput('Recent commits', (await repository.history()).join('\n'))
+          return
+        case 'fetch':
+          await this.runGitMutation(repository, () => repository.fetch(), 'Fetched remote updates and pruned stale refs.')
+          return
+        case 'pull':
+          await this.runGitMutation(repository, () => repository.pull(), 'Pulled updates using fast-forward only.')
+          return
+        case 'push':
+          await this.runGitMutation(repository, () => repository.push(), 'Pushed the current branch.')
+          return
+        case 'stash-push':
+          await this.runGitMutation(repository, () => repository.stashPush(command.message), 'Saved changes to a stash.')
+          return
+        case 'stash-list':
+          await this.showGitStashes(repository)
+          return
+        case 'stash-apply':
+        case 'stash-pop':
+          if (command.ref) {
+            const run = () => repository.stashApply(command.ref!, command.action === 'stash-pop')
+            if (command.action === 'stash-pop') {
+              await this.runGitMutation(repository, run, `Applied and removed ${command.ref}.`)
+            } else {
+              await this.runGitMutation(repository, run, `Applied ${command.ref}.`)
+            }
+          } else {
+            await this.showGitStashes(repository, command.action === 'stash-pop' ? 'pop' : 'apply')
+          }
+          return
+        case 'menu':
+        case 'unknown':
+          return
+      }
+    } catch (error) {
+      this.showError(`Git operation failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      this.gitOperationActive = false
+    }
+  }
+
+  private async runGitMutation(
+    repository: GitRepository,
+    operation: () => Promise<void | string>,
+    success?: string,
+  ): Promise<void> {
+    if (this.agent.isBusy()) {
+      this.showStatus('Git changes are unavailable while the Agent is working.')
+      return
+    }
+    const ownsLock = !this.gitOperationActive
+    if (ownsLock) this.gitOperationActive = true
+    try {
+      const detail = await operation()
+      await this.gitMutationSucceeded(detail || success || 'Git operation completed.', repository)
+    } catch (error) {
+      this.showError(`Git operation failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (ownsLock) this.gitOperationActive = false
+    }
+  }
+
+  private async gitMutationSucceeded(message: string, repository: GitRepository): Promise<void> {
+    this.footer.invalidate()
+    try {
+      const status = await repository.status()
+      this.showStatus(`${message}\n${status.branch}${status.upstream ? ` · ${status.ahead} ahead · ${status.behind} behind ${status.upstream}` : ''}`)
+    } catch (error) {
+      this.showStatus(`${message}\nCould not refresh Git status: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private showGitStatus(status: Awaited<ReturnType<GitRepository['status']>>): void {
+    const lines = [
+      `Repository: ${status.root}`,
+      `Branch: ${status.branch}${status.upstream ? ` · ${status.upstream} · ${status.ahead} ahead / ${status.behind} behind` : ' · no upstream'}`,
+    ]
+    const staged = status.changes.filter((change) => change.staged)
+    const unstaged = status.changes.filter((change) => change.unstaged && !change.untracked)
+    const untracked = status.changes.filter((change) => change.untracked)
+    const append = (label: string, changes: GitFileChange[]) => {
+      lines.push('', `${label} (${changes.length})`)
+      if (changes.length === 0) lines.push('  none')
+      for (const change of changes.slice(0, 100)) {
+        lines.push(`  ${change.indexStatus}${change.worktreeStatus} ${change.path}`)
+      }
+      if (changes.length > 100) lines.push(`  … ${changes.length - 100} more paths omitted`)
+    }
+    append('Staged', staged)
+    append('Unstaged', unstaged)
+    append('Untracked', untracked)
+    this.showGitOutput('Git status', lines.join('\n'))
+  }
+
+  private async showGitBranches(repository: GitRepository): Promise<void> {
+    const branches = await repository.branches()
+    if (branches.length === 0) {
+      this.showStatus('No local branches found.')
+      return
+    }
+    const items: SelectItem[] = branches.map((branch) => ({
+      value: branch.name,
+      label: `${branch.current ? '● ' : '  '}${branch.name}`,
+      description: branch.current ? 'current branch' : 'switch to this branch',
+    }))
+    this.showGitPicker('Local branches', 'Choose a branch to switch to or manage', items, (name) => {
+      const selectedBranch = branches.find((branch) => branch.name === name)
+      if (!selectedBranch) return
+      const branchArg = `"${name.replaceAll('"', '\\"')}"`
+      const actions: SelectItem[] = selectedBranch.current
+        ? [{ value: 'cancel', label: 'Current branch', description: 'This branch is already checked out' }]
+        : [
+          { value: 'switch', label: 'Switch to branch' },
+          { value: 'delete', label: 'Delete merged branch', description: 'Uses Git safe-delete rules · confirmation required' },
+        ]
+      this.showGitPicker(`Branch ${name}`, 'Choose a branch action', actions, (action) => {
+        if (action === 'switch') void this.handleGitCommand(`branch switch ${branchArg}`)
+        else if (action === 'delete') void this.handleGitCommand(`branch delete ${branchArg}`)
+      })
+    })
+  }
+
+  private async showGitPathPicker(repository: GitRepository, operation: 'stage' | 'unstage' | 'discard'): Promise<void> {
+    const status = await repository.status()
+    let candidates: GitFileChange[]
+    let title: string
+    let subtitle: string
+    let preSelected: number[] = []
+    if (operation === 'stage') {
+      candidates = status.changes.filter((change) => change.unstaged || change.untracked)
+      title = 'Stage files'
+      subtitle = 'Space selects paths to stage; existing staged paths are marked.'
+      preSelected = candidates.flatMap((change, index) => change.staged ? [index] : [])
+    } else if (operation === 'unstage') {
+      candidates = status.changes.filter((change) => change.staged)
+      title = 'Unstage files'
+      subtitle = 'Checked paths are currently staged. Uncheck paths to unstage them.'
+      preSelected = candidates.map((_change, index) => index)
+    } else {
+      candidates = status.changes.filter((change) => change.untracked || change.unstaged)
+      title = 'Discard working changes'
+      subtitle = 'Select paths to discard. You will confirm the exact paths next.'
+    }
+    if (candidates.length === 0) {
+      this.showStatus(operation === 'stage' ? 'No unstaged or untracked paths to stage.' : operation === 'unstage' ? 'No staged paths to unstage.' : 'No working-tree changes to discard.')
+      return
+    }
+    this.showGitMultiSelect(title, subtitle, candidates.map((change) => ({
+      value: change.path,
+      label: `${change.indexStatus}${change.worktreeStatus} ${change.path}`,
+      description: change.untracked ? 'untracked' : change.staged && change.unstaged ? 'staged and unstaged edits' : change.staged ? 'staged' : 'unstaged',
+    })), preSelected, async (selected) => {
+      if (this.agent.isBusy()) {
+        this.showStatus('Git changes were cancelled because the Agent became busy.')
+        return
+      }
+      const selectedPaths = new Set(selected.map((item) => item.value))
+      if (operation === 'stage') {
+        if (selectedPaths.size === 0) return this.showStatus('No paths selected; nothing staged.')
+        await this.runGitMutation(repository, () => repository.stage([...selectedPaths]), `Staged ${selectedPaths.size} path${selectedPaths.size === 1 ? '' : 's'}.`)
+      } else if (operation === 'unstage') {
+        const paths = candidates.filter((change) => !selectedPaths.has(change.path)).map((change) => change.path)
+        if (paths.length === 0) return this.showStatus('All selected paths remain staged.')
+        await this.runGitMutation(repository, () => repository.unstage(paths), `Unstaged ${paths.length} path${paths.length === 1 ? '' : 's'}.`)
+      } else {
+        const paths = [...selectedPaths]
+        if (paths.length === 0) return this.showStatus('No paths selected; nothing discarded.')
+        this.showGitConfirmation(`Discard changes in ${paths.map((path) => `“${path}”`).join(', ')}?`, () => {
+          if (this.agent.isBusy()) return this.showStatus('Discard cancelled because the Agent became busy.')
+          void this.runGitMutation(repository, () => repository.discard(paths), `Discarded ${paths.length} path${paths.length === 1 ? '' : 's'}.`)
+        })
+      }
+    })
+  }
+
+  private async showGitStashes(repository: GitRepository, action?: 'apply' | 'pop'): Promise<void> {
+    const stashes = await repository.stashList()
+    if (stashes.length === 0) {
+      this.showStatus('No saved stashes.')
+      return
+    }
+    this.showGitPicker(action ? `Select stash to ${action}` : 'Stashes', action ? `Choose a stash to ${action}` : 'Choose a stash to apply or pop', stashes.map((entry) => {
+      const [ref = entry, ...description] = entry.split('\t')
+      return { value: ref, label: ref, description: description.join(' · ') }
+    }), (ref) => {
+      const chooseAction = (selectedAction: 'apply' | 'pop') => {
+        if (selectedAction === 'pop') {
+          this.showGitConfirmation(`Apply and remove ${ref}?`, () => {
+            if (this.agent.isBusy()) return this.showStatus('Stash pop cancelled because the Agent became busy.')
+            void this.runGitMutation(repository, () => repository.stashApply(ref, true), `Applied and removed ${ref}.`)
+          })
+        } else {
+          void this.runGitMutation(repository, () => repository.stashApply(ref), `Applied ${ref}.`)
+        }
+      }
+      if (action) {
+        chooseAction(action)
+      } else {
+        this.showGitPicker('Stash action', `Choose what to do with ${ref}`, [
+          { value: 'apply', label: 'Apply stash', description: 'Keep the stash entry' },
+          { value: 'pop', label: 'Pop stash', description: 'Apply and remove the stash · confirmation required' },
+        ], (value) => chooseAction(value === 'pop' ? 'pop' : 'apply'))
+      }
+    })
+  }
+
+  private describeGitCommand(command: GitCommand): string {
+    switch (command.action) {
+      case 'fetch': return 'Fetch all remotes and prune stale remote refs?'
+      case 'pull': return 'Pull the current branch using fast-forward only?'
+      case 'push': return 'Push the current branch to its configured remote?'
+      case 'branch-delete': return `Delete merged branch ${command.name}?`
+      case 'stash-pop': return `Apply and remove ${command.ref ?? 'the selected stash'}?`
+      case 'discard': return `Discard working-tree changes in ${command.paths.map((path) => `“${path}”`).join(', ')}?`
+      default: return `Run ${command.action}?`
+    }
+  }
+
+  private showGitConfirmation(message: string, onConfirm: () => void): void {
+    this.showGitPicker('Confirm Git operation', message, [
+      { value: 'confirm', label: 'Continue', description: message },
+      { value: 'cancel', label: 'Cancel' },
+    ], (value) => {
+      if (value === 'confirm') onConfirm()
+      else this.showStatus('Git operation cancelled.')
+    })
+  }
+
+  private showGitPicker(title: string, subtitle: string, items: SelectItem[], onSelect: (value: string) => void): void {
+    const list = new SelectList(items, Math.min(items.length, 14), {
+      selectedPrefix: (text) => chalk.cyan(text),
+      selectedText: (text) => chalk.cyan(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+      noMatch: (text) => theme.dim(text),
+    })
+    this.chatContainer.addChild(new Text(theme.fg('accent', title), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim(subtitle), 1, 0))
+    this.chatContainer.addChild(list)
+    this.ui.setFocus(list)
+    this.ui.requestRender()
+    const close = () => {
+      this.chatContainer.removeChild(list)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+    }
+    list.onSelect = (item) => {
+      close()
+      onSelect(item.value)
+      this.ui.requestRender()
+    }
+    list.onCancel = () => {
+      close()
+      this.showStatus('Git menu closed.')
+    }
+  }
+
+  private showGitMultiSelect(
+    title: string,
+    subtitle: string,
+    items: MultiSelectItem[],
+    preSelected: number[],
+    onConfirm: (selected: MultiSelectItem[]) => void | Promise<void>,
+  ): void {
+    const list = new MultiSelectList(items, Math.min(items.length, 14), {
+      selectedText: (text) => chalk.cyan(text),
+      disabledText: (text) => theme.dim(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+    }, preSelected)
+    this.chatContainer.addChild(new Text(theme.fg('accent', title), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim(subtitle), 1, 0))
+    this.chatContainer.addChild(list)
+    this.ui.setFocus(list)
+    this.ui.requestRender()
+    const close = () => {
+      this.chatContainer.removeChild(list)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+    }
+    list.onConfirm = (selected) => {
+      close()
+      void onConfirm(selected)
+      this.ui.requestRender()
+    }
+    list.onCancel = () => {
+      close()
+      this.showStatus('Git selection cancelled; no changes made.')
+    }
+  }
+
+  private showGitOutput(title: string, output: string): void {
+    const limit = 12000
+    const clipped = output.length > limit ? `${output.slice(0, limit)}\n\n… output truncated; rerun with narrower paths to inspect the remainder.` : output
+    this.chatContainer.addChild(new Text(theme.fg('accent', title), 1, 0))
+    if (!clipped.trim()) {
+      this.chatContainer.addChild(new Text(theme.dim('(no changes)'), 1, 0))
+    } else {
+      for (const line of clipped.split(/\r?\n/)) this.chatContainer.addChild(new Text(line, 1, 0))
+    }
+    this.chatContainer.addChild(new Spacer(1))
+    this.ui.setFocus(this.editor)
+    this.ui.requestRender()
+  }
+
   private showPluginPicker(
     title: string,
     subtitle: string,
@@ -3078,6 +3536,7 @@ export class App {
       `  ${theme.bold('/session')}            Browse and load saved sessions`,
       `  ${theme.bold('/skills')}             List, enable, or disable skills`,
       `  ${theme.bold('/plugins')}            List and enable or disable plugins`,
+      `  ${theme.bold('/git')}                Inspect status, diffs, branches, staging, commits, and remotes`,
       `  ${theme.bold('/tasks')}              Browse and prioritize tasks in the current session`,
       `  ${theme.bold('/instructions')}       Show loaded project instruction files`,
       `  ${theme.bold('/instructions reload')} Reload project instruction files`,
