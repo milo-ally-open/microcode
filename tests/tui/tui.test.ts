@@ -408,6 +408,43 @@ describe('tui modules', () => {
       .toEqual({ phase: 'running-tool', toolName: 'Bash' })
   })
 
+  test('model turn ends do not add transcript gaps until the user turn is finalized', () => {
+    const app = Object.create(App.prototype) as any
+    let onAgentEvent: ((event: any) => void) | undefined
+    const transcriptChildren: unknown[] = []
+    app.agent = {
+      subscribe: (listener: (event: any) => void) => { onAgentEvent = listener },
+      persistMessages: async () => {},
+    }
+    app.permissionPromptActive = false
+    app.pendingTools = new Map([['tool-1', {}]])
+    app.activeTurnTimeline = { setActivity: () => {} }
+    app.chatContainer = { addChild: (child: unknown) => transcriptChildren.push(child) }
+    app.turnFinalized = false
+    app.titleGenerated = true
+    app.setAgentActivity = () => {}
+    app.clearPendingToolState = () => {}
+    app.updateContextUsage = () => {}
+    app.footer = { invalidate: () => {} }
+    app.ui = { requestRender: () => {} }
+    app.isAgentBusy = () => false
+    app.applyQueuedMcpState = () => {}
+
+    app.setupAgentSubscription()
+    const emit = onAgentEvent!
+    for (let i = 0; i < 8; i++) {
+      emit({ type: 'turn_end', message: { role: 'assistant', stopReason: 'toolUse' } })
+    }
+    expect(transcriptChildren).toHaveLength(0)
+
+    emit({ type: 'turn_end', message: { role: 'assistant', stopReason: 'stop' } })
+    expect(transcriptChildren).toHaveLength(1)
+
+    // agent_end may follow the final turn_end; finalization must stay idempotent.
+    emit({ type: 'agent_end' })
+    expect(transcriptChildren).toHaveLength(1)
+  })
+
   test('turn activity updates replace the current row instead of appending history', () => {
     const timeline = new TurnTimeline()
     timeline.setActivity('Thinking…')

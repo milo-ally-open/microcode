@@ -381,7 +381,6 @@ export class App {
         this.appendTurnEntry(new Text(chalk.hex('#cc6666')(`Error: ${errorMessage}`), 1, 0))
         this.finishTurn()
         this.activeTurnTimeline = undefined
-        this.chatContainer.addChild(new Spacer(1))
         this.ui.requestRender()
       }
     }
@@ -3742,6 +3741,9 @@ export class App {
     if (this.turnFinalized) return
     this.activeTurnTimeline?.setActivity(undefined)
     this.turnFinalized = true
+    // A single visual gap belongs between user turns, not between every model
+    // turn (tool handoffs can produce many turn_end events in one user turn).
+    this.chatContainer.addChild(new Spacer(1))
   }
 
   private setupAgentSubscription(): void {
@@ -3875,7 +3877,7 @@ export class App {
               1,
               0,
             ))
-            this.turnFinalized = true
+            this.finishTurn()
             this.hideWorking()
           // A streamed tool call may already be pending before tool_execution_start.
           // Do not hide Working during that model -> tool handoff.
@@ -3887,7 +3889,6 @@ export class App {
           if (event.message.role === 'assistant' && event.message.stopReason === 'stop') {
             this.finishTurn()
           }
-          this.chatContainer.addChild(new Spacer(1))
           // Generate session title from first user message
           if (!this.titleGenerated) {
             this.titleGenerated = true
