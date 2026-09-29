@@ -2718,7 +2718,7 @@ export class App {
       const actions: SelectItem[] = [
         { value: 'status', label: 'Status', description: `${status.branch} · ${status.changes.length} changed paths` },
         { value: 'diff', label: 'Diff', description: 'Inspect working-tree changes' },
-        { value: 'stage', label: 'Add (新增)', description: 'Select files to stage for commit' },
+        { value: 'stage', label: 'Add', description: 'Select files to stage for commit' },
         { value: 'commit', label: 'Commit', description: 'Commit staged changes' },
         { value: 'pull', label: 'Pull', description: 'Fast-forward only · confirmation required' },
         { value: 'push', label: 'Push', description: 'Push the current branch · confirmation required' },
