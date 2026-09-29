@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Create English Matplotlib activity and agent-trajectory charts from session JSONL."""
-
+"""Analyze Microcode sessions by user turn; render privacy-conscious Matplotlib charts."""
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 import re
+import statistics
 import sys
 from typing import Any, Iterable
 
 
 def parse_timestamp(value: Any) -> float | None:
-    """Return seconds since epoch for millisecond epochs or ISO timestamps."""
     if isinstance(value, (int, float)):
         return value / 1000 if value > 10_000_000_000 else float(value)
     if isinstance(value, str):
@@ -26,14 +26,13 @@ def parse_timestamp(value: Any) -> float | None:
 
 
 def read_records(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
-    """Read v4 transaction JSONL and legacy v3 records without loading message bodies into the report."""
-    warnings: list[str] = []
+    """Read v4 transaction arrays or v3 JSONL; tolerate a malformed final line."""
     records: list[dict[str, Any]] = []
+    warnings: list[str] = []
     try:
         stream = path.open("r", encoding="utf-8")
     except OSError as error:
         raise ValueError(f"Cannot open {path}: {error}") from error
-
     with stream:
         first = stream.readline()
         if not first:
@@ -47,430 +46,517 @@ def read_records(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list
             or (header.get("type") == "session" and header.get("version") == 3)
         ):
             raise ValueError("Unsupported session header; expected Microcode JSONL v4 or legacy v3.")
-
-        for line_number, line in enumerate(stream, start=2):
+        for line_no, line in enumerate(stream, 2):
             if not line.strip():
                 continue
             try:
                 parsed = json.loads(line)
             except json.JSONDecodeError as error:
                 if not line.endswith("\n"):
-                    warnings.append(f"Ignored incomplete final record on line {line_number}.")
+                    warnings.append(f"Ignored incomplete final record on line {line_no}.")
                     break
-                raise ValueError(f"Invalid JSON on line {line_number}: {error.msg}") from error
-            writes = parsed if isinstance(parsed, list) else [parsed]
-            for record in writes:
+                raise ValueError(f"Invalid JSON on line {line_no}: {error.msg}") from error
+            for record in parsed if isinstance(parsed, list) else [parsed]:
                 if isinstance(record, dict):
                     records.append(record)
                 else:
-                    warnings.append(f"Ignored non-object record on line {line_number}.")
+                    warnings.append(f"Ignored non-object record on line {line_no}.")
             if not line.endswith("\n"):
-                warnings.append(f"Final record on line {line_number} has no trailing newline.")
+                warnings.append(f"Final record on line {line_no} has no trailing newline.")
                 break
     return header, records, warnings
 
 
 def extract_message(record: dict[str, Any]) -> tuple[dict[str, Any], int | None] | None:
-    """Normalize v4 entries, v3 message entries, and raw serialized Agent messages."""
-    if record.get("kind") == "entry" and record.get("type") == "message":
-        message = record.get("message")
-        if isinstance(message, dict):
-            return message, record.get("seq") if isinstance(record.get("seq"), int) else None
-    if record.get("type") == "message" and isinstance(record.get("message"), dict):
-        return record["message"], record.get("seq") if isinstance(record.get("seq"), int) else None
-    if record.get("role") in {"user", "assistant", "toolResult"}:
-        return record, record.get("seq") if isinstance(record.get("seq"), int) else None
+    message = record.get("message")
+    if isinstance(message, dict) and (record.get("type") == "message" or record.get("kind") == "entry"):
+        seq = record.get("seq")
+        return message, seq if isinstance(seq, int) else None
+    if record.get("role") in {"system", "user", "assistant", "toolResult"}:
+        seq = record.get("seq")
+        return record, seq if isinstance(seq, int) else None
     return None
 
 
-def format_time(timestamp: float | None) -> str:
-    if timestamp is None:
-        return "—"
-    return datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+def _num(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
 
 
-def format_duration(seconds: float | None) -> str:
-    if seconds is None or seconds < 0:
-        return "—"
-    if seconds < 1:
-        return f"{seconds * 1000:.0f} ms"
-    if seconds < 60:
-        return f"{seconds:.1f} s"
-    minutes, remainder = divmod(int(seconds), 60)
-    return f"{minutes}m {remainder}s"
+def _percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, math.ceil(len(ordered) * fraction) - 1)]
 
 
-def analyze(header: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def _active_entries(
+    header: dict[str, Any], records: list[dict[str, Any]], branch: str | None, all_branches: bool,
+) -> tuple[list[dict[str, Any]], int, str, list[str]]:
+    if header.get("v") == 4:
+        entries = [r for r in records if r.get("kind") == "entry"]
+    else:
+        entries = [r for r in records if r.get("type") in {"message", "compaction", "branch_summary", "custom"}]
+    tips: dict[str, tuple[int, str | None]] = {}
+    for record in records:
+        if record.get("kind") == "value" and record.get("namespace") == "pi.branch.tip":
+            seq = record.get("seq") if isinstance(record.get("seq"), int) else 0
+            value = record.get("value")
+            tips[str(record.get("key", "main"))] = (seq, str(value) if value is not None else None)
+    if all_branches or not tips:
+        name = "all branches" if all_branches else "archive"
+        return sorted(entries, key=lambda e: (e.get("seq", 0), e.get("timestamp", 0))), len(entries), name, []
+    name = branch or ("main" if "main" in tips else sorted(tips)[0])
+    if name not in tips:
+        raise ValueError(f"Branch {name!r} not found; available: {', '.join(sorted(tips))}")
+    by_id = {str(e["id"]): e for e in entries if e.get("id") is not None}
+    current = tips[name][1]
+    path: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    warnings: list[str] = []
+    while current is not None:
+        if current in seen:
+            warnings.append(f"Branch {name!r} has a parent cycle.")
+            break
+        seen.add(current)
+        entry = by_id.get(current)
+        if entry is None:
+            warnings.append(f"Branch {name!r} points to a missing entry; source may be incomplete.")
+            break
+        path.append(entry)
+        parent = entry.get("parentId")
+        current = str(parent) if parent is not None else None
+    path.reverse()
+    return path, len(entries), name, warnings
+
+
+def analyze(
+    header: dict[str, Any], records: Iterable[dict[str, Any]], *,
+    branch: str | None = None, all_branches: bool = False,
+) -> dict[str, Any]:
+    """Resolve branch ancestry and group the chronological agent activity by user turn."""
+    records = list(records)
+    entries, all_entry_count, branch_name, warnings = _active_entries(header, records, branch, all_branches)
+    messages: Counter[str] = Counter()
+    block_types: Counter[str] = Counter()
+    stop_reasons: Counter[str] = Counter()
+    models: Counter[str] = Counter()
+    events: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
     calls_by_id: dict[str, deque[int]] = defaultdict(deque)
-    events: list[dict[str, Any]] = []
-    role_counts: dict[str, int] = defaultdict(int)
-    model_names: set[str] = set()
-    compactions = 0
-    entry_count = 0
+    turns: list[dict[str, Any]] = []
+    compactions: list[dict[str, Any]] = []
+    usage_totals: Counter[str] = Counter()
+    total_cost = 0.0
+    cost_count = 0
+    unmatched_results = response_errors = aborted = 0
+    turn_no = 0
+    current_turn: dict[str, Any] | None = None
+    cursor = 0.0
 
-    for record in records:
-        if record.get("kind") == "entry":
-            entry_count += 1
-            if record.get("type") == "compaction":
-                compactions += 1
-                stamp = parse_timestamp(record.get("timestamp"))
-                events.append({"seq": record.get("seq"), "time": stamp, "kind": "compaction", "label": "Context compacted", "order": len(events)})
-            elif record.get("type") == "custom" and record.get("customType") == "microcode.compaction-checkpoint":
-                compactions += 1
-                stamp = parse_timestamp(record.get("timestamp"))
-                events.append({"seq": record.get("seq"), "time": stamp, "kind": "compaction", "label": "Context compacted", "order": len(events)})
+    def add_event(kind: str, **metadata: Any) -> float:
+        nonlocal cursor
+        x = cursor
+        events.append({"kind": kind, "x": x, **metadata})
+        cursor += 1
+        return x
 
-        normalized = extract_message(record)
-        if normalized is None:
+    for entry in entries:
+        etype = entry.get("type")
+        seq = entry.get("seq")
+        stamp = parse_timestamp(entry.get("timestamp"))
+        entry_id = str(entry["id"]) if entry.get("id") is not None else None
+        if etype == "compaction" or (etype == "custom" and entry.get("customType") == "microcode.compaction-checkpoint"):
+            data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+            info = {
+                "automatic": data.get("automatic") if isinstance(data.get("automatic"), bool) else None,
+                "tokens_before": _num(data.get("tokensBefore", entry.get("tokensBefore"))),
+                "tokens_after": _num(data.get("tokensAfter")),
+            }
+            compactions.append(info)
+            add_event("compaction", seq=seq, time=stamp, turn=turn_no or None, data=info)
+            if current_turn:
+                current_turn["compactions"] += 1
             continue
-        message, sequence = normalized
-        role = message.get("role", "other")
-        role_counts[role] += 1
-        # Agent-message timestamps reflect response/tool completion; the storage
-        # entry timestamp only reflects when the append was persisted.
-        stamp = parse_timestamp(message.get("timestamp")) or parse_timestamp(record.get("timestamp"))
+        if etype == "branch_summary":
+            add_event("summary", seq=seq, time=stamp, turn=turn_no or None)
+            continue
+        normalized = extract_message(entry)
+        if normalized is None:
+            if etype == "custom":
+                add_event("custom", seq=seq, time=stamp, turn=turn_no or None)
+            continue
+        message, _ = normalized
+        role = str(message.get("role", "other"))
+        messages[role] += 1
+        stamp = parse_timestamp(message.get("timestamp")) or stamp
+        content = message.get("content", [])
+        blocks = content if isinstance(content, list) else []
+        block_types.update(str(b.get("type", "other")) for b in blocks if isinstance(b, dict))
 
         if role == "user":
-            events.append({"seq": sequence, "time": stamp, "kind": "user", "label": "User message", "order": len(events)})
+            turn_no += 1
+            current_turn = {
+                "number": turn_no, "start_x": cursor, "end_x": cursor,
+                "start_time": stamp, "end_time": stamp, "assistant_messages": 0,
+                "tool_calls": 0, "tool_failures": 0, "compactions": 0,
+                "tokens": 0.0, "has_tokens": False, "cost": 0.0, "has_cost": False,
+            }
+            turns.append(current_turn)
+            x = add_event("user", seq=seq, time=stamp, turn=turn_no, entry_id=entry_id)
+            current_turn["start_x"] = current_turn["end_x"] = x
         elif role == "assistant":
-            provider = message.get("provider")
-            model = message.get("model")
-            if provider or model:
-                model_names.add("/".join(str(value) for value in (provider, model) if value))
-            blocks = message.get("content", [])
-            tool_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") == "toolCall"] if isinstance(blocks, list) else []
-            if tool_blocks:
-                for block in tool_blocks:
-                    tool_name = str(block.get("name") or "(unknown tool)")
-                    call_id = block.get("id")
-                    call = {
-                        "id": str(call_id) if call_id is not None else None,
-                        "tool": tool_name,
-                        "time": stamp,
-                        "seq": sequence,
-                        "status": "pending",
-                        "duration": None,
-                        "call_order": len(events),
-                        "result_order": None,
-                    }
-                    call_index = len(calls)
-                    calls.append(call)
-                    if call["id"]:
-                        calls_by_id[call["id"]].append(call_index)
-                    events.append({"seq": sequence, "time": stamp, "kind": "call", "label": f"Call {tool_name}", "order": len(events)})
-            else:
-                events.append({"seq": sequence, "time": stamp, "kind": "assistant", "label": "Assistant response", "order": len(events)})
+            turn = current_turn
+            if turn:
+                turn["assistant_messages"] += 1
+                turn["end_x"] = cursor
+            provider, model = message.get("provider"), message.get("model")
+            model_name = "/".join(str(v) for v in (provider, model) if v)
+            if model_name:
+                models[model_name] += 1
+            reason = str(message.get("stopReason") or "unknown")
+            stop_reasons[reason] += 1
+            if reason == "error" or message.get("errorMessage"):
+                response_errors += 1
+            if reason == "aborted":
+                aborted += 1
+            assistant_x = add_event("assistant", seq=seq, time=stamp, turn=turn["number"] if turn else None,
+                                    model=model_name or None, stop_reason=reason, entry_id=entry_id)
+            usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+            for key in ("input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"):
+                value = _num(usage.get(key))
+                if value is not None:
+                    usage_totals[key] += value
+            token_count = _num(usage.get("totalTokens"))
+            if token_count is None:
+                incoming, outgoing = _num(usage.get("input")), _num(usage.get("output"))
+                if incoming is not None or outgoing is not None:
+                    token_count = (incoming or 0) + (outgoing or 0)
+            if turn and token_count is not None:
+                turn["tokens"] += token_count
+                turn["has_tokens"] = True
+            cost_obj = usage.get("cost")
+            cost = _num(cost_obj.get("total")) if isinstance(cost_obj, dict) else _num(cost_obj)
+            if cost is not None:
+                total_cost += cost
+                cost_count += 1
+                if turn:
+                    turn["cost"] += cost
+                    turn["has_cost"] = True
+
+            tool_blocks = [(i, b) for i, b in enumerate(blocks) if isinstance(b, dict) and b.get("type") == "toolCall"]
+            for block_index, block in tool_blocks:
+                tool = str(block.get("name") or "(unknown tool)")
+                call_id = block.get("id")
+                x = assistant_x + (block_index + 1) / (len(blocks) + 1) * 0.8
+                call = {
+                    "id": str(call_id) if call_id is not None else None, "tool": tool, "status": "pending",
+                    "start_x": x, "end_x": None, "start_time": stamp, "end_time": None, "duration": None,
+                    "turn": turn["number"] if turn else None, "seq": seq,
+                }
+                index = len(calls)
+                calls.append(call)
+                if call["id"]:
+                    calls_by_id[call["id"]].append(index)
+                events.append({"kind": "tool_call", "x": x, "seq": seq, "time": stamp, "turn": call["turn"], "tool": tool})
+                if turn:
+                    turn["tool_calls"] += 1
+                    turn["end_x"] = max(turn["end_x"], x)
         elif role == "toolResult":
             call_id = message.get("toolCallId")
-            tool_name = str(message.get("toolName") or "(unknown tool)")
+            tool = str(message.get("toolName") or "(unknown tool)")
             matching = calls_by_id.get(str(call_id), deque()) if call_id is not None else deque()
+            result_x = cursor
+            status = "unknown"
             if matching:
                 call = calls[matching.popleft()]
-                call["tool"] = tool_name if tool_name != "(unknown tool)" else call["tool"]
-                call["status"] = "failed" if message.get("isError") is True else "success" if message.get("isError") is False else "unknown"
-                call["duration"] = stamp - call["time"] if stamp is not None and call["time"] is not None else None
-                call["result_order"] = len(events)
-            events.append({
-                "seq": sequence,
-                "time": stamp,
-                "kind": "tool_failed" if message.get("isError") is True else "tool_success" if message.get("isError") is False else "tool_unknown",
-                "label": f"Result {tool_name}",
-                "order": len(events),
-            })
+                if tool != "(unknown tool)":
+                    call["tool"] = tool
+                status = "failed" if message.get("isError") is True else "success" if message.get("isError") is False else "unknown"
+                call["status"] = status
+                call["end_x"] = result_x
+                call["end_time"] = stamp
+                if stamp is not None and call["start_time"] is not None and stamp >= call["start_time"]:
+                    call["duration"] = stamp - call["start_time"]
+            else:
+                unmatched_results += 1
+            x = add_event("tool_result", seq=seq, time=stamp, turn=turn_no or None, tool=tool, status=status)
+            if current_turn:
+                current_turn["end_x"] = x
+                if status == "failed":
+                    current_turn["tool_failures"] += 1
         else:
-            events.append({"seq": sequence, "time": stamp, "kind": "other", "label": f"{role} record", "order": len(events)})
+            add_event("other", seq=seq, time=stamp, role=role, turn=turn_no or None)
+        if current_turn and stamp is not None:
+            current_turn["end_time"] = stamp
 
-    tool_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"calls": 0, "success": 0, "failed": 0, "pending": 0, "unknown": 0, "durations": []})
     for call in calls:
-        stat = tool_stats[call["tool"]]
+        if call["status"] == "pending":
+            call["end_x"] = cursor
+    tools: dict[str, dict[str, Any]] = {}
+    for call in calls:
+        stat = tools.setdefault(call["tool"], {"calls": 0, "success": 0, "failed": 0, "pending": 0, "unknown": 0, "durations": []})
         stat["calls"] += 1
         stat[call["status"]] += 1
-        if call["duration"] is not None and call["duration"] >= 0:
+        if call["duration"] is not None:
             stat["durations"].append(call["duration"])
-
-    for stat in tool_stats.values():
-        known = stat["success"] + stat["failed"]
-        stat["rate"] = stat["success"] / known * 100 if known else None
-        stat["average_duration"] = sum(stat["durations"]) / len(stat["durations"]) if stat["durations"] else None
-
-    timestamps = [event["time"] for event in events if event["time"] is not None]
-    successes = sum(call["status"] == "success" for call in calls)
-    failures = sum(call["status"] == "failed" for call in calls)
-    known_results = successes + failures
+    for stat in tools.values():
+        resolved = stat["success"] + stat["failed"]
+        stat["success_rate"] = stat["success"] / resolved * 100 if resolved else None
+        stat["median_seconds"] = statistics.median(stat["durations"]) if stat["durations"] else None
+        stat["p95_seconds"] = _percentile(stat["durations"], 0.95)
+    tools = dict(sorted(tools.items(), key=lambda pair: (-pair[1]["calls"], pair[0].casefold())))
+    success = sum(c["status"] == "success" for c in calls)
+    failed = sum(c["status"] == "failed" for c in calls)
+    resolved = success + failed
+    timestamps = [e["time"] for e in events if e.get("time") is not None]
     return {
-        "header": header,
-        "entries": entry_count,
-        "messages": dict(role_counts),
-        "calls": calls,
-        "tool_stats": dict(sorted(tool_stats.items(), key=lambda item: (-item[1]["calls"], item[0].lower()))),
-        "events": events,
-        "models": sorted(model_names),
-        "compactions": compactions,
-        "successes": successes,
-        "failures": failures,
-        "success_rate": successes / known_results * 100 if known_results else None,
-        "unresolved": sum(call["status"] == "pending" for call in calls),
-        "unknown": sum(call["status"] == "unknown" for call in calls),
-        "start": min(timestamps) if timestamps else parse_timestamp(header.get("createdAt") or header.get("timestamp")),
-        "end": max(timestamps) if timestamps else None,
+        "header": header, "branch": branch_name, "all_entry_count": all_entry_count, "active_entry_count": len(entries),
+        "messages": dict(messages), "block_types": dict(block_types), "stop_reasons": dict(stop_reasons),
+        "models": dict(models), "events": events, "turns": turns, "calls": calls, "tool_stats": tools,
+        "successes": success, "failures": failed, "pending": sum(c["status"] == "pending" for c in calls),
+        "unknown": sum(c["status"] == "unknown" for c in calls), "unmatched_results": unmatched_results,
+        "success_rate": success / resolved * 100 if resolved else None,
+        "response_errors": response_errors, "aborted_responses": aborted, "compactions": compactions,
+        "usage_totals": dict(usage_totals), "cost_total": total_cost if cost_count else None,
+        "start": min(timestamps) if timestamps else parse_timestamp(header.get("createdAt")),
+        "end": max(timestamps) if timestamps else None, "warnings": warnings,
     }
 
 
-def render_chart(result: dict[str, Any], source: Path, output: Path, warnings: list[str]) -> None:
-    """Render an English-language PNG using Matplotlib's non-interactive backend."""
+def _plot_modules():
     try:
         import matplotlib
-
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
         from matplotlib.patches import Patch
     except ImportError as error:
         raise ValueError("Matplotlib is required. Install it with: python3 -m pip install matplotlib") from error
-
     plt.rcParams["text.parse_math"] = False
-    background, panel, foreground, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
-    colors = {
-        "success": "#47c78a", "failed": "#fa6b73", "pending": "#e8b85e", "unknown": "#8694a8",
-        "user": "#69aaf8", "assistant": "#b89cff", "call": "#4ecbd1", "tool_success": "#47c78a",
-        "tool_failed": "#fa6b73", "tool_unknown": "#8694a8", "compaction": "#e8b85e", "other": "#8694a8",
-    }
-    header = result["header"]
-    session_id = str(header.get("id") or source.stem)
-    duration = result["end"] - result["start"] if result["end"] is not None and result["start"] is not None else None
-    message_count = sum(result["messages"].values())
-    rate_text = f'{result["success_rate"]:.1f}%' if result["success_rate"] is not None else "n/a"
-    model_text = ", ".join(result["models"]) or "model metadata unavailable"
+    return plt, Line2D, Patch
 
-    fig = plt.figure(figsize=(15, 10), facecolor=background)
-    grid = fig.add_gridspec(2, 2, left=0.08, right=0.97, top=0.74, bottom=0.12, hspace=0.38, wspace=0.26)
-    fig.text(0.08, 0.955, "Agent Session Activity", color=foreground, fontsize=22, fontweight="bold")
-    fig.text(0.08, 0.918, f"Session {session_id}  |  {model_text}", color=muted, fontsize=10)
-    metrics = [
+
+def render_chart(result: dict[str, Any], source: Path, output: Path, warnings: list[str] | None = None) -> None:
+    """Render per-turn activity, tool reliability, provider usage, and latency."""
+    plt, _, Patch = _plot_modules()
+    from matplotlib.ticker import FuncFormatter
+    bg, panel, fg, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
+    colors = {"success": "#47c78a", "failed": "#fa6b73", "pending": "#e8b85e", "unknown": "#8694a8"}
+    session = str(result["header"].get("id") or source.stem)
+    fig = plt.figure(figsize=(16, 11), facecolor=bg)
+    grid = fig.add_gridspec(2, 2, left=0.08, right=0.97, top=0.77, bottom=0.12, hspace=0.4, wspace=0.28)
+    fig.text(0.08, 0.955, "Agent Session Analysis", color=fg, fontsize=22, fontweight="bold")
+    fig.text(0.08, 0.92, f"Session {session}  |  branch: {result['branch']}  |  {len(result['turns'])} user turns", color=muted, fontsize=10)
+    token_total, cost = result["usage_totals"].get("totalTokens"), result["cost_total"]
+    cost_text = "USD n/a" if cost is None else f"USD {cost:.4f}"
+    cards = [
         ("TOOL CALLS", str(len(result["calls"]))),
-        ("SUCCESS RATE", rate_text),
-        ("FAILED / UNRESOLVED", f'{result["failures"]} / {result["unresolved"]}'),
-        ("MESSAGES / DURATION", f'{message_count} / {format_duration(duration)}'),
+        ("SUCCESS RATE", f"{result['success_rate']:.1f}%" if result["success_rate"] is not None else "n/a"),
+        ("FAILED / OPEN", f"{result['failures']} / {result['pending']}"),
+        ("TOKENS / COST", f"{token_total:,.0f} / {cost_text}" if token_total is not None else f"n/a / {cost_text}"),
     ]
-    for index, (label, value) in enumerate(metrics):
-        x = 0.08 + index * 0.225
+    for i, (label, value) in enumerate(cards):
+        x = 0.08 + i * 0.225
         fig.text(x, 0.865, label, color=muted, fontsize=9, fontweight="bold")
-        fig.text(x, 0.825, value, color=foreground, fontsize=15, fontweight="bold")
-
-    ax_outcomes = fig.add_subplot(grid[0, 0], facecolor=panel)
-    ax_timeline = fig.add_subplot(grid[0, 1], facecolor=panel)
-    ax_duration = fig.add_subplot(grid[1, :], facecolor=panel)
-    axes = (ax_outcomes, ax_timeline, ax_duration)
-    for axis in axes:
-        axis.tick_params(colors=muted, labelsize=9)
-        for spine in axis.spines.values():
+        fig.text(x, 0.825, value, color=fg, fontsize=15, fontweight="bold")
+    axes = [fig.add_subplot(grid[r, c], facecolor=panel) for r, c in ((0, 0), (0, 1), (1, 0), (1, 1))]
+    for ax in axes:
+        ax.tick_params(colors=muted, labelsize=8)
+        for spine in ax.spines.values():
             spine.set_color("#2b3848")
-        axis.xaxis.label.set_color(muted)
-        axis.yaxis.label.set_color(muted)
-        axis.title.set_color(foreground)
-        axis.grid(axis="x", color="#2b3848", linewidth=0.6, alpha=0.75)
-        axis.set_axisbelow(True)
-
-    tool_stats = list(result["tool_stats"].items())[:14]
-    ax_outcomes.set_title("Tool Call Outcomes", loc="left", pad=12, fontsize=13, fontweight="bold", color=foreground)
-    if tool_stats:
-        names = [name if stat["rate"] is None else f'{name}  ({stat["rate"]:.0f}%)' for name, stat in tool_stats]
-        y_positions = list(range(len(tool_stats)))
-        left = [0.0] * len(tool_stats)
-        for status in ("success", "failed", "pending", "unknown"):
-            values = [stat[status] for _, stat in tool_stats]
-            ax_outcomes.barh(y_positions, values, left=left, color=colors[status], label=status.title(), height=0.66)
-            left = [previous + value for previous, value in zip(left, values)]
-        ax_outcomes.set_yticks(y_positions, names)
-        ax_outcomes.invert_yaxis()
-        ax_outcomes.set_xlabel("Calls")
-        ax_outcomes.legend(handles=[Patch(color=colors[key], label=key.title()) for key in ("success", "failed", "pending", "unknown")],
-                           loc="lower right", frameon=False, labelcolor=muted, fontsize=8, ncol=2)
+        ax.xaxis.label.set_color(muted)
+        ax.yaxis.label.set_color(muted)
+        ax.title.set_color(fg)
+        ax.grid(axis="x", color="#2b3848", linewidth=0.6, alpha=0.7)
+        ax.set_axisbelow(True)
+    ax_tools, ax_turns, ax_usage, ax_latency = axes
+    stats = list(result["tool_stats"].items())[:12]
+    ax_tools.set_title("Tool Outcomes", loc="left", pad=10, fontsize=12, fontweight="bold", color=fg)
+    if stats:
+        ys, left = list(range(len(stats))), [0] * len(stats)
+        for key in ("success", "failed", "pending", "unknown"):
+            values = [s[key] for _, s in stats]
+            ax_tools.barh(ys, values, left=left, color=colors[key], height=0.65)
+            left = [a + b for a, b in zip(left, values)]
+        ax_tools.set_yticks(ys, [name for name, _ in stats])
+        ax_tools.invert_yaxis()
+        ax_tools.set_xlabel("Calls")
+        ax_tools.legend(handles=[Patch(color=colors[k], label=k.title()) for k in colors],
+                        loc="lower right", frameon=False, labelcolor=muted, fontsize=7, ncol=2)
     else:
-        ax_outcomes.text(0.5, 0.5, "No tool calls", color=muted, ha="center", va="center", transform=ax_outcomes.transAxes)
-        ax_outcomes.set_xticks([])
-        ax_outcomes.set_yticks([])
-
-    timeline_title = "Activity Timeline"
-    events = result["events"]
-    selected = events[-500:]
-    if len(events) > len(selected):
-        timeline_title += f" (most recent {len(selected)} of {len(events)})"
-    ax_timeline.set_title(timeline_title, loc="left", pad=12, fontsize=13, fontweight="bold", color=foreground)
-    lanes = [("user", "User"), ("assistant", "Assistant"), ("call", "Tool call"),
-             ("tool_success", "Tool success"), ("tool_failed", "Tool failed"),
-             ("tool_unknown", "Tool result"), ("compaction", "Compaction"), ("other", "Other")]
-    lane_y = {key: len(lanes) - index - 1 for index, (key, _) in enumerate(lanes)}
-    ax_timeline.set_yticks([lane_y[key] for key, _ in lanes], [label for _, label in lanes])
-    if selected:
-        known_times = [event["time"] for event in selected]
-        use_time = all(value is not None for value in known_times) and max(known_times) > min(known_times)
-        xs = [((event["time"] - min(known_times)) / 60) if use_time else index for index, event in enumerate(selected)]
-        for event, x_value in zip(selected, xs):
-            kind = event["kind"] if event["kind"] in lane_y else "other"
-            ax_timeline.scatter(x_value, lane_y[kind], color=colors[kind], s=22, alpha=0.9, linewidths=0)
-        ax_timeline.set_xlabel("Elapsed time (minutes)" if use_time else "Event order")
+        ax_tools.text(0.5, 0.5, "No tool calls in selected branch", transform=ax_tools.transAxes, color=muted, ha="center", va="center")
+        ax_tools.set_xticks([])
+        ax_tools.set_yticks([])
+    ax_turns.set_title("Work per User Turn", loc="left", pad=10, fontsize=12, fontweight="bold", color=fg)
+    if result["turns"]:
+        xs = [t["number"] for t in result["turns"]]
+        assistant = [t["assistant_messages"] for t in result["turns"]]
+        ax_turns.bar(xs, assistant, color="#b89cff", width=0.75, label="Assistant messages")
+        ax_turns.bar(xs, [t["tool_calls"] for t in result["turns"]], bottom=assistant, color="#4ecbd1", width=0.75, label="Tool calls")
+        ax_turns.set_xlabel("User turn")
+        ax_turns.set_ylabel("Events")
+        ax_turns.legend(frameon=False, labelcolor=muted, fontsize=7)
+        if len(xs) > 16:
+            ax_turns.set_xticks(xs[::max(1, math.ceil(len(xs) / 12))])
     else:
-        ax_timeline.text(0.5, 0.5, "No activity events", color=muted, ha="center", va="center", transform=ax_timeline.transAxes)
-        ax_timeline.set_xticks([])
-
-    ax_duration.set_title("Average Call-to-Result Delay (Approx.)", loc="left", pad=12, fontsize=13, fontweight="bold", color=foreground)
-    duration_stats = [(name, stat["average_duration"]) for name, stat in result["tool_stats"].items() if stat["average_duration"] is not None]
-    if duration_stats:
-        duration_stats = duration_stats[:20]
-        names = [name for name, _ in duration_stats]
-        values = [seconds * 1000 for _, seconds in duration_stats]
-        ax_duration.barh(names, values, color="#4ecbd1", height=0.62)
-        ax_duration.invert_yaxis()
-        ax_duration.set_xlabel("Milliseconds")
-        for index, value in enumerate(values):
-            ax_duration.text(value, index, f"  {format_duration(value / 1000)}", va="center", color=foreground, fontsize=8)
+        ax_turns.text(0.5, 0.5, "No user turns", transform=ax_turns.transAxes, color=muted, ha="center", va="center")
+        ax_turns.set_xticks([])
+        ax_turns.set_yticks([])
+    ax_usage.set_title("Token Usage by Turn", loc="left", pad=10, fontsize=12, fontweight="bold", color=fg)
+    token_turns = [t for t in result["turns"] if t["has_tokens"]]
+    if token_turns:
+        xs = [t["number"] for t in token_turns]
+        ax_usage.bar(xs, [t["tokens"] for t in token_turns], color="#69aaf8", width=0.75)
+        ax_usage.set_xlabel("User turn")
+        ax_usage.set_ylabel("Reported tokens (symlog)")
+        ax_usage.set_yscale("symlog", linthresh=10_000)
+        ax_usage.yaxis.set_major_formatter(FuncFormatter(
+            lambda value, _: f"{value / 1_000_000:.1f}M" if abs(value) >= 1_000_000
+            else f"{value / 1_000:.0f}k" if abs(value) >= 1_000 else f"{value:.0f}"
+        ))
+        if len(xs) > 16:
+            ax_usage.set_xticks(xs[::max(1, math.ceil(len(xs) / 12))])
     else:
-        ax_duration.text(0.5, 0.5, "No paired call/result timestamps available", color=muted,
-                         ha="center", va="center", transform=ax_duration.transAxes)
-        ax_duration.set_xticks([])
-        ax_duration.set_yticks([])
-
-    fig.text(0.08, 0.055, "Success rate excludes unresolved and unknown outcomes. Timing is message-to-message approximation, not isolated tool runtime.",
+        ax_usage.text(0.5, 0.5, "Provider did not report token usage", transform=ax_usage.transAxes, color=muted, ha="center", va="center")
+        ax_usage.set_xticks([])
+        ax_usage.set_yticks([])
+    latency = [(name, s) for name, s in stats if s["median_seconds"] is not None]
+    ax_latency.set_title("Tool Latency: Median / P95", loc="left", pad=10, fontsize=12, fontweight="bold", color=fg)
+    if latency:
+        ys = list(range(len(latency)))
+        ax_latency.barh(ys, [s["p95_seconds"] for _, s in latency], color="#33465b", height=0.62, label="P95")
+        ax_latency.barh(ys, [s["median_seconds"] for _, s in latency], color="#4ecbd1", height=0.35, label="Median")
+        ax_latency.set_yticks(ys, [name for name, _ in latency])
+        ax_latency.invert_yaxis()
+        ax_latency.set_xlabel("Seconds (message timestamp delta)")
+        ax_latency.legend(frameon=False, labelcolor=muted, fontsize=7)
+    else:
+        ax_latency.text(0.5, 0.5, "No paired call/result timestamps", transform=ax_latency.transAxes, color=muted, ha="center", va="center")
+        ax_latency.set_xticks([])
+        ax_latency.set_yticks([])
+    notes = list(warnings or []) + result["warnings"]
+    fig.text(0.08, 0.055,
+             f"Assistant stop reasons: {result['stop_reasons']}  |  compactions: {len(result['compactions'])}  |  unmatched results: {result['unmatched_results']}",
              color=muted, fontsize=8)
-    if warnings:
-        fig.text(0.08, 0.035, f"Parser notes: {len(warnings)}", color="#e8b85e", fontsize=8)
+    if notes:
+        fig.text(0.08, 0.032, f"Data quality notes: {len(notes)} (see terminal output)", color="#e8b85e", fontsize=8)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=160, facecolor=background, bbox_inches="tight")
+    fig.savefig(output, dpi=160, facecolor=bg, bbox_inches="tight")
     plt.close(fig)
 
 
 def render_trajectory(result: dict[str, Any], source: Path, output: Path) -> None:
-    """Render a chronological agent flow with tool calls linked to their results."""
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except ImportError as error:
-        raise ValueError("Matplotlib is required. Install it with: python3 -m pip install matplotlib") from error
-
-    plt.rcParams["text.parse_math"] = False
-    background, panel, foreground, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
-    colors = {
-        "user": "#69aaf8", "assistant": "#b89cff", "success": "#47c78a",
-        "failed": "#fa6b73", "pending": "#e8b85e", "unknown": "#8694a8",
-        "compaction": "#e8b85e", "other": "#8694a8",
-    }
-    events = result["events"]
-    visible = events[-300:]
-    first_order = visible[0]["order"] if visible else 0
-    last_order = visible[-1]["order"] if visible else 0
-    calls = [
-        call for call in result["calls"]
-        if call["call_order"] <= last_order
-        and (call["result_order"] is None or call["result_order"] >= first_order)
-    ][-120:]
-    tool_names = list(dict.fromkeys(call["tool"] for call in calls))
-    if len(tool_names) > 14:
-        kept_tools = set(tool_names[:13])
-        tool_names = tool_names[:13] + ["Other tools"]
-    else:
-        kept_tools = set(tool_names)
-    actor_y = len(tool_names)
-    lane_labels = tool_names + ["Assistant", "User"]
-    lane_y = {name: index for index, name in enumerate(tool_names)}
-    lane_y["assistant"] = actor_y
-    lane_y["user"] = actor_y + 1
-
-    fig_height = max(5.5, 2.8 + len(lane_labels) * 0.43)
-    fig, axis = plt.subplots(figsize=(15, fig_height), facecolor=background)
-    axis.set_facecolor(panel)
-    session_id = str(result["header"].get("id") or source.stem)
-    fig.suptitle(f"Agent Trajectory  |  Session {session_id}", x=0.08, ha="left", y=0.98,
-                 color=foreground, fontsize=19, fontweight="bold")
-    axis.set_title("Chronological message flow and tool call/result spans", loc="left", pad=15,
-                   color=muted, fontsize=10)
-
-    for call in calls:
-        displayed_tool = call["tool"] if call["tool"] in kept_tools else "Other tools"
-        y_value = lane_y[displayed_tool]
-        start = call["call_order"]
-        end = call["result_order"] if call["result_order"] is not None else last_order
-        status = call["status"]
-        axis.plot([start, max(start + 0.12, end)], [y_value, y_value], color=colors[status],
-                  linewidth=5, solid_capstyle="round", alpha=0.9, zorder=2)
-        axis.scatter(start, y_value, marker=">", s=58, color=colors[status], edgecolors=panel, linewidths=0.6, zorder=3)
-        if call["result_order"] is not None:
-            axis.scatter(end, y_value, marker="o", s=40, color=colors[status], edgecolors=panel, linewidths=0.6, zorder=3)
-
-    for event in visible:
-        order = event["order"]
-        kind = event["kind"]
-        if kind in {"user", "assistant"}:
-            axis.scatter(order, lane_y[kind], marker="o" if kind == "user" else "D",
-                         s=45 if kind == "user" else 35, color=colors[kind], edgecolors=panel,
-                         linewidths=0.6, zorder=4)
+    """Plot one swimlane timeline organized around user turns; never show raw text or arguments."""
+    plt, Line2D, _ = _plot_modules()
+    bg, panel, fg, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
+    colors = {"user": "#69aaf8", "assistant": "#b89cff", "success": "#47c78a", "failed": "#fa6b73",
+              "pending": "#e8b85e", "unknown": "#8694a8", "compaction": "#e8b85e"}
+    counts = Counter(c["tool"] for c in result["calls"])
+    tools = [name for name, _ in counts.most_common(10)]
+    shown = set(tools)
+    if len(counts) > 10:
+        tools.append("Other tools")
+    tool_y = {name: i + 2 for i, name in enumerate(tools)}
+    labels = ["User request", "Assistant response"] + tools
+    width = min(30, max(16, 10 + len(result["turns"]) * 0.28))
+    fig, ax = plt.subplots(figsize=(width, max(6, 3.3 + len(labels) * 0.48)), facecolor=bg)
+    ax.set_facecolor(panel)
+    sid = str(result["header"].get("id") or source.stem)
+    fig.suptitle(f"Agent Trajectory  |  Session {sid}  |  Branch {result['branch']}", x=0.08, ha="left",
+                 y=0.985, color=fg, fontsize=17, fontweight="bold")
+    ax.set_title("Each T marker starts a user-request turn; tool bars connect calls to results", loc="left", pad=14, color=muted, fontsize=9)
+    for turn in result["turns"]:
+        x = turn["start_x"]
+        ax.axvline(x, color="#2b3848", linewidth=0.7, alpha=0.65, zorder=0)
+    for item in result["events"]:
+        x, kind = item["x"], item["kind"]
+        if kind == "user":
+            ax.scatter(x, 0, marker="o", s=52, color=colors["user"], edgecolors=panel, linewidths=0.8, zorder=4)
+        elif kind == "assistant":
+            ax.scatter(x, 1, marker="D", s=38, color=colors["assistant"], edgecolors=panel, linewidths=0.7, zorder=4)
         elif kind == "compaction":
-            axis.axvline(order, color=colors["compaction"], linewidth=1.2, linestyle="--", alpha=0.8, zorder=1)
-            axis.text(order, len(lane_labels) + 0.18, "compact", rotation=90, va="bottom", ha="center",
-                      color=colors["compaction"], fontsize=8)
-
-    axis.set_yticks(range(len(lane_labels)), lane_labels)
-    # Tool lanes are displayed bottom-up, with actors at the top for an easy-to-follow flow.
-    axis.set_ylim(-0.7, len(lane_labels) + 0.65)
-    axis.invert_yaxis()
-    axis.set_xlim(max(-1, first_order - 1), max(first_order + 1, last_order + 1))
-    axis.set_xlabel("Event order (stored session sequence)", color=muted)
-    axis.tick_params(colors=muted, labelsize=9)
-    axis.grid(axis="x", color="#2b3848", linewidth=0.6, alpha=0.75)
-    axis.set_axisbelow(True)
-    for spine in axis.spines.values():
+            ax.axvline(x, color=colors["compaction"], linewidth=1.4, linestyle="--", alpha=0.9, zorder=1)
+    max_x = max((e["x"] for e in result["events"]), default=1.0)
+    for call in result["calls"]:
+        lane = call["tool"] if call["tool"] in shown else "Other tools"
+        if lane not in tool_y:
+            continue
+        y = tool_y[lane]
+        start = call["start_x"]
+        end = call["end_x"] if call["end_x"] is not None else max_x
+        color = colors[call["status"]]
+        ax.plot([start, max(start + 0.08, end)], [y, y], color=color, linewidth=4.5,
+                alpha=0.88, solid_capstyle="round", zorder=2)
+        ax.scatter(start, y, marker=">", s=54, color=color, edgecolors=panel, linewidths=0.6, zorder=3)
+        if call["status"] != "pending":
+            ax.scatter(end, y, marker="o", s=34, color=color, edgecolors=panel, linewidths=0.5, zorder=3)
+    ax.set_yticks(range(len(labels)), labels)
+    ax.set_ylim(-0.8, len(labels) - 0.35)
+    ax.invert_yaxis()
+    ax.set_xlim(-0.8, max_x + 1)
+    tick_turns = []
+    min_tick_gap = max_x / 13 if max_x > 0 else 1
+    for turn in result["turns"]:
+        if not tick_turns or turn["start_x"] - tick_turns[-1]["start_x"] >= min_tick_gap:
+            tick_turns.append(turn)
+    if result["turns"] and tick_turns[-1] is not result["turns"][-1]:
+        if result["turns"][-1]["start_x"] - tick_turns[-1]["start_x"] >= min_tick_gap * 0.55:
+            tick_turns.append(result["turns"][-1])
+    ax.set_xticks([turn["start_x"] for turn in tick_turns], [f"T{turn['number']:02d}" for turn in tick_turns])
+    ax.set_xlabel("User-request turn (spacing reflects recorded event volume)", color=muted)
+    ax.tick_params(colors=muted, labelsize=8)
+    ax.grid(axis="x", color="#2b3848", linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
         spine.set_color("#2b3848")
-
-    from matplotlib.lines import Line2D
     legend = [
-        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors["user"], label="User message", markersize=7),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors["user"], label="User request", markersize=7),
         Line2D([0], [0], marker="D", color="none", markerfacecolor=colors["assistant"], label="Assistant response", markersize=6),
-        Line2D([0], [0], color=colors["success"], linewidth=4, label="Tool succeeded"),
-        Line2D([0], [0], color=colors["failed"], linewidth=4, label="Tool failed"),
-        Line2D([0], [0], color=colors["pending"], linewidth=4, label="Pending / unresolved"),
-        Line2D([0], [0], color=colors["unknown"], linewidth=4, label="Unknown outcome"),
+        Line2D([0], [0], color=colors["success"], linewidth=4, label="Tool success"),
+        Line2D([0], [0], color=colors["failed"], linewidth=4, label="Tool failure"),
+        Line2D([0], [0], color=colors["pending"], linewidth=4, label="Still pending"),
+        Line2D([0], [0], color=colors["compaction"], linewidth=1.5, linestyle="--", label="Context compaction"),
     ]
-    axis.legend(handles=legend, loc="lower right", frameon=False, labelcolor=muted, fontsize=8, ncol=2)
-    if not visible:
-        axis.text(0.5, 0.5, "No trajectory events", transform=axis.transAxes, ha="center", va="center", color=muted)
-    if len(events) > len(visible):
-        fig.text(0.08, 0.015, f"Showing the most recent {len(visible)} of {len(events)} events.", color=muted, fontsize=8)
-
+    ax.legend(handles=legend, loc="upper center", bbox_to_anchor=(0.5, -0.13), frameon=False,
+              labelcolor=muted, fontsize=8, ncol=3)
+    if not result["turns"]:
+        ax.text(0.5, 0.5, "No user requests on this branch", transform=ax.transAxes, ha="center", va="center", color=muted)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=160, facecolor=background, bbox_inches="tight")
+    fig.savefig(output, dpi=160, facecolor=bg, bbox_inches="tight")
     plt.close(fig)
 
 
 def safe_filename(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
-    return cleaned[:120] or "session"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")[:120] or "session"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyze an exported Microcode session JSONL and create activity and trajectory charts.")
-    parser.add_argument("session_jsonl", type=Path, help="Exported Microcode session JSONL file")
-    parser.add_argument("-o", "--output", type=Path, help="Activity chart path (default: .microcode/analysis/session-<id>.png)")
+    parser = argparse.ArgumentParser(description="Analyze session turns, tool activity, usage, and chronological trajectory.")
+    parser.add_argument("session_jsonl", type=Path, help="Exported Microcode session JSONL")
+    parser.add_argument("-o", "--output", type=Path, help="Dashboard path; trajectory is written beside it")
+    parser.add_argument("--branch", help="Select a branch (default: main, otherwise the first available branch)")
+    parser.add_argument("--all-branches", action="store_true", help="Analyze all entries instead of one branch path")
     args = parser.parse_args()
-
     try:
         source = args.session_jsonl.expanduser().resolve(strict=True)
         header, records, warnings = read_records(source)
-        result = analyze(header, records)
-        session_id = str(header.get("id") or source.stem)
-        output = args.output.expanduser() if args.output else Path.cwd() / ".microcode" / "analysis" / f"session-{safe_filename(session_id)}.png"
+        result = analyze(header, records, branch=args.branch, all_branches=args.all_branches)
+        sid = str(header.get("id") or source.stem)
+        output = args.output.expanduser() if args.output else Path.cwd() / ".microcode" / "analysis" / f"session-{safe_filename(sid)}.png"
         output = output.resolve()
-        trajectory_output = output.with_name(f"{output.stem}-trajectory{output.suffix}")
+        trajectory = output.with_name(f"{output.stem}-trajectory{output.suffix}")
         render_chart(result, source, output, warnings)
-        render_trajectory(result, source, trajectory_output)
+        render_trajectory(result, source, trajectory)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-
-    print(f"Report written to {output}")
-    print(f"Trajectory written to {trajectory_output}")
-    print(f"Tool calls: {len(result['calls'])}; success rate: " + (f"{result['success_rate']:.1f}%" if result["success_rate"] is not None else "n/a"))
+    print(f"Dashboard: {output}")
+    print(f"Trajectory: {trajectory}")
+    print(f"Branch: {result['branch']} ({result['active_entry_count']}/{result['all_entry_count']} entries); turns: {len(result['turns'])}")
+    rate = f"{result['success_rate']:.1f}%" if result["success_rate"] is not None else "n/a"
+    print(f"Messages: {result['messages']}; tool calls: {len(result['calls'])}; success rate: {rate}")
+    for note in warnings + result["warnings"]:
+        print(f"warning: {note}", file=sys.stderr)
     return 0
 
 
