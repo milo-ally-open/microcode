@@ -18,16 +18,17 @@ import { WelcomeBanner } from '../../src/tui/components/welcomeBanner.ts'
 
 describe('tui modules', () => {
   test('startup logo is a compact Unicode pixel wordmark', () => {
-    expect(LOGO_LINES).toHaveLength(5)
+    expect(LOGO_LINES).toHaveLength(6)
     expect(LOGO_LINES.some((line) => line.includes('█'))).toBe(true)
     expect(LOGO_LINES.every((line) => line.length === 71)).toBe(true)
-    expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(false)
-    // E 的三条横画由一行字腔隔开，避免粗终端行高下粘连成色块。
-    expect(LOGO_LINES[0]!.slice(64, 70)).toBe('██████')
-    expect(LOGO_LINES[1]!.slice(64, 70)).toBe('██    ')
-    expect(LOGO_LINES[2]!.slice(64, 70)).toBe('████  ')
-    expect(LOGO_LINES[3]!.slice(64, 70)).toBe('██    ')
-    expect(LOGO_LINES[4]!.slice(64, 70)).toBe('██████')
+    expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(true)
+    // E 的三条面体横画各自分行；贴边侧影不能填入字腔或漂浮在旁边。
+    expect(LOGO_LINES[0]!.slice(64, 71)).toBe('██████▓')
+    expect(LOGO_LINES[1]!.slice(64, 71)).toBe('██     ')
+    expect(LOGO_LINES[2]!.slice(64, 71)).toBe('████   ')
+    expect(LOGO_LINES[3]!.slice(64, 71)).toBe('██     ')
+    expect(LOGO_LINES[4]!.slice(64, 71)).toBe('██████▓')
+    expect(LOGO_LINES[5]!.slice(64, 71)).toBe(' ▓▓▓▓▓▓')
     expect(COMPACT_LOGO_LINES[2]!.slice(-5)).toBe('████ ')
     expect(COMPACT_LOGO_LINES[3]!.slice(-5)).toBe('█    ')
     expect(COMPACT_LOGO_LINES[4]!.slice(-5)).toBe('█████')

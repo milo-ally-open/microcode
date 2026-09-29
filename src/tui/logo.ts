@@ -22,12 +22,31 @@ const COMPACT_GLYPHS: Record<string, readonly string[]> = {
 
 const WORD_GLYPHS = [...'MICROCODE'].map((letter) => GLYPHS[letter]!)
 
-// 先完整绘制所有字形面体。像素字直接保持纯色，避免底影被误读成额外横画。
-const WORDMARK_FACE = Array.from({ length: 5 }, (_, row) =>
-  WORD_GLYPHS.map((glyph) => glyph[row]!.padEnd(7)).join(' '),
-)
+function extrudeGlyph(glyph: readonly string[]): string[] {
+  return Array.from({ length: 6 }, (_, row) => {
+    const cells = Array<string>(7).fill(' ')
 
-export const LOGO_LINES = WORDMARK_FACE
+    // 侧面与正面同一行相接，避免终端高字符格把斜向阴影显示成悬空色块。
+    if (row < glyph.length && glyph[row]![5] === '█') cells[6] = '▓'
+    // 仅在字形底边投影；E、C、O 等字腔保持原样，不会被阴影填满。
+    if (row === glyph.length) {
+      for (let column = 0; column < 6; column++) {
+        if (glyph[glyph.length - 1]![column] === '█') cells[column + 1] = '▓'
+      }
+    }
+    if (row < glyph.length) {
+      for (let column = 0; column < 6; column++) {
+        if (glyph[row]![column] === '█') cells[column] = '█'
+      }
+    }
+    return cells.join('')
+  })
+}
+
+const EXTRUDED_WORD_GLYPHS = WORD_GLYPHS.map(extrudeGlyph)
+export const LOGO_LINES = Array.from({ length: 6 }, (_, row) =>
+  EXTRUDED_WORD_GLYPHS.map((glyph) => glyph[row]!).join(' '),
+)
 
 export const COMPACT_LOGO_LINES = Array.from({ length: 5 }, (_, row) =>
   [...'MICROCODE'].map((letter) => COMPACT_GLYPHS[letter]![row]).join(' '),
