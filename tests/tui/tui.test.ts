@@ -22,10 +22,10 @@ describe('tui modules', () => {
     expect(LOGO_LINES.some((line) => line.includes('█'))).toBe(true)
     expect(LOGO_LINES.every((line) => line.length === 71)).toBe(true)
     expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(true)
-    // E 保留干净的横画间隙，只在底边投影阴影，不能被阴影糊成色块。
+    // E 保留干净的横画间隙，阴影仅落在下横的右侧和底边。
     expect(LOGO_LINES[1]!.slice(64, 70)).toBe('██    ')
     expect(LOGO_LINES[2]!.slice(64, 70)).toBe('█████ ')
-    expect(LOGO_LINES[3]!.slice(64, 70)).toBe('████  ')
+    expect(LOGO_LINES[3]!.slice(64, 70)).toBe('████▓▓')
     expect(LOGO_LINES[4]!.slice(64, 71)).toBe(' ▓▓▓▓  ')
   })
 

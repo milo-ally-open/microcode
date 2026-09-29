@@ -20,11 +20,11 @@ const COMPACT_GLYPHS: Record<string, readonly string[]> = {
   E: ['█████', '█    ', '████ ', '███  '],
 }
 
-function extrudeGlyph(glyph: readonly string[], shadowStyle: 'full' | 'base' = 'full'): string[] {
+function extrudeGlyph(glyph: readonly string[], shadowStyle: 'full' | 'legible' = 'full'): string[] {
   return Array.from({ length: 5 }, (_, row) => {
     const cells = Array<string>(7).fill(' ')
-    // E 的横画之间需要留出干净的负空间；只给底边投影，避免阴影把字腔填成色块。
-    const showShadow = row > 0 && (shadowStyle === 'full' || row === glyph.length)
+    // E 保留横画间的负空间，只在下横和底边投影，避免阴影把字腔填成色块。
+    const showShadow = row > 0 && (shadowStyle === 'full' || row >= glyph.length - 1)
     if (showShadow) {
       for (let column = 0; column < 6; column++) {
         if (glyph[row - 1]![column] === '█') cells[column + 1] = '▓'
@@ -40,7 +40,7 @@ function extrudeGlyph(glyph: readonly string[], shadowStyle: 'full' | 'base' = '
 }
 
 const WORD_GLYPHS = [...'MICROCODE'].map((letter) =>
-  extrudeGlyph(GLYPHS[letter]!, letter === 'E' ? 'base' : 'full'),
+  extrudeGlyph(GLYPHS[letter]!, letter === 'E' ? 'legible' : 'full'),
 )
 
 export const LOGO_LINES = Array.from({ length: 5 }, (_, row) =>
