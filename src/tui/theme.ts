@@ -4,6 +4,7 @@ import type { MarkdownTheme } from '@earendil-works/pi-tui'
 // Color constants matching pi-coding-agent dark theme
 const COLORS = {
   accent: '#8abeb7',
+  logo: '#7ce8f5',
   cyan: '#00d7ff',
   green: '#b5bd68',
   red: '#cc6666',
@@ -17,6 +18,7 @@ export const theme = {
   fg: (color: string, text: string) => {
     switch (color) {
       case 'accent': return chalk.hex(COLORS.accent)(text)
+      case 'logo': return chalk.hex(COLORS.logo)(text)
       case 'dim': return chalk.hex(COLORS.dimGray)(text)
       case 'muted': return chalk.hex(COLORS.gray)(text)
       case 'error': return chalk.hex(COLORS.red)(text)

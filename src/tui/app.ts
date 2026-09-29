@@ -23,8 +23,8 @@ import { MicrocodeEditor } from './components/microcodeEditor.ts'
 import { FooterComponent } from './components/footer.ts'
 import { AppLayout } from './components/appLayout.ts'
 import { AssistantMessageComponent } from './components/assistantMessage.ts'
+import { WelcomeBanner } from './components/welcomeBanner.ts'
 import { shouldShowRespondingActivity } from './agentActivity.ts'
-import { LOGO_LINES } from './logo.ts'
 import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
 import { parseBashInput } from './bashInput.ts'
@@ -393,20 +393,7 @@ export class App {
   private init(): void {
     if (this.isInitialized) return
 
-    // Header: logo + compact keybinding hints (matching pi-coding-agent style)
-    const compactInstructions = [
-      `v${MACRO.VERSION}`,
-      'Esc interrupt',
-      'Ctrl+C/D exit',
-      'Ctrl+O tools',
-      '/ commands',
-      '! shell',
-    ].map((hint) => theme.dim(hint)).join(theme.dim(' · '))
-    // 用 Unicode 方块像素字标呈现 Logo，替换占空间的介绍语。
-    for (const line of LOGO_LINES) {
-      this.headerContainer.addChild(new Text(theme.bold(theme.fg('accent', line)), 1, 0))
-    }
-    this.headerContainer.addChild(new Text(compactInstructions, 1, 0))
+    this.headerContainer.addChild(new WelcomeBanner())
 
     // Editor with border
     this.editor = new MicrocodeEditor(this.ui, getEditorTheme(), { paddingX: 1 })

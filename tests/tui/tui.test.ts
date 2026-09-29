@@ -14,12 +14,29 @@ import { createSessionTitle, firstSentence, normalizeSessionTitle } from '../../
 import { parseBashInput } from '../../src/tui/bashInput.ts'
 import { shouldShowRespondingActivity } from '../../src/tui/agentActivity.ts'
 import { LOGO_LINES } from '../../src/tui/logo.ts'
+import { WelcomeBanner } from '../../src/tui/components/welcomeBanner.ts'
 
 describe('tui modules', () => {
   test('startup logo is a compact Unicode pixel wordmark', () => {
-    expect(LOGO_LINES).toHaveLength(7)
-    expect(LOGO_LINES.every((line) => line.includes('█'))).toBe(true)
-    expect(LOGO_LINES.every((line) => line.length === 53)).toBe(true)
+    expect(LOGO_LINES).toHaveLength(8)
+    expect(LOGO_LINES.some((line) => line.includes('█'))).toBe(true)
+    expect(LOGO_LINES.every((line) => line.length === 62)).toBe(true)
+    expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(true)
+  })
+
+  test('welcome banner frames the logo and adapts to narrower terminals', () => {
+    const banner = new WelcomeBanner()
+    const wide = banner.render(80)
+    expect(wide[0]).toContain('╭')
+    expect(wide.join('\n')).toContain('long-running sessions')
+    expect(wide.every((line) => line.replace(/\u001b\[[0-9;]*m/g, '').length === 80)).toBe(true)
+
+    const narrow = banner.render(60)
+    expect(narrow.join('\n')).toContain('Agentic coding assistant')
+    expect(narrow.every((line) => line.replace(/\u001b\[[0-9;]*m/g, '').length === 60)).toBe(true)
+
+    const compact = banner.render(40)
+    expect(compact.every((line) => line.replace(/\u001b\[[0-9;]*m/g, '').length === 40)).toBe(true)
   })
 
   test('theme helpers return styled strings and editor/markdown contracts', () => {
