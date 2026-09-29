@@ -1,7 +1,9 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { ToolPreviewController } from '../previewController.ts'
+import type { ToolInteractionTarget } from '../registry.ts'
+import { boundedTextPreview, oneLine, textFromToolResult } from '../toolPreview.ts'
 
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
@@ -29,6 +31,7 @@ export class GrepToolUI extends Container {
   private result?: ToolResult
   private details?: GrepDetails
   private contentBox: Box
+  private readonly preview = new ToolPreviewController()
 
   constructor(_toolCallId: string, args: any) {
     super()
@@ -38,8 +41,24 @@ export class GrepToolUI extends Container {
     this.rebuild()
   }
 
-  setExpanded(_expanded: boolean): void {
+  setExpanded(expanded: boolean): void {
+    this.preview.setExpanded(expanded)
     this.rebuild()
+  }
+
+  hasToggleButton(): boolean {
+    return this.previewRows().length > 0
+  }
+
+  toggleExpanded(): void {
+    this.preview.toggle()
+    this.rebuild()
+  }
+
+  getInteractionTargets(renderedLines: readonly string[]): ToolInteractionTarget[] {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
+      : []
   }
 
   markExecutionStarted(): void {
@@ -91,15 +110,11 @@ export class GrepToolUI extends Container {
     }
 
     if (this.result.isError) {
-      const errText = this.result.content
-        ?.filter((c) => c.type === 'text')
-        .map((c) => (c.text ?? '').slice(0, 200))
-        .join(' ') ?? ''
-      this.contentBox.addChild(
-        new Text(
-          `${formatToolLabel(icon, 'Grep')}${theme.fg('accent', '/' + shortPattern + '/')}  ${theme.fg('error', errText)}`,
-        ),
-      )
+      const summary = oneLine(textFromToolResult(this.result) || 'Search failed', 120)
+      const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+      const lines = [`${formatToolLabel(icon, 'Grep')}${theme.fg('accent', '/' + shortPattern + '/')}  ${theme.fg('error', summary)}${toggle}`]
+      if (this.preview.isExpanded()) lines.push(...this.previewRows())
+      this.contentBox.addChild(new Text(lines.join('\n')))
       return
     }
 
@@ -114,10 +129,14 @@ export class GrepToolUI extends Container {
     if (parts.length === 0) parts.push('no matches')
     parts.push(formatCompletedStatus(this.elapsedMs))
 
-    this.contentBox.addChild(
-      new Text(
-        `${formatToolLabel(icon, 'Grep')}${theme.fg('accent', '/' + shortPattern + '/')} ${modeTag}  ${theme.fg('muted', parts.join(', '))}`,
-      ),
-    )
+    const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+    const lines = [`${formatToolLabel(icon, 'Grep')}${theme.fg('accent', '/' + shortPattern + '/')} ${modeTag}  ${theme.fg('muted', parts.join(', '))}${toggle}`]
+    if (this.preview.isExpanded()) lines.push(...this.previewRows())
+    this.contentBox.addChild(new Text(lines.join('\n')))
+  }
+
+  private previewRows(): string[] {
+    const output = textFromToolResult(this.result)
+    return output.trim() ? boundedTextPreview(output).rows : []
   }
 }

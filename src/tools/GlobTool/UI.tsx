@@ -1,7 +1,9 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { ToolPreviewController } from '../previewController.ts'
+import type { ToolInteractionTarget } from '../registry.ts'
+import { boundedTextPreview, oneLine, textFromToolResult } from '../toolPreview.ts'
 
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
@@ -22,6 +24,7 @@ export class GlobToolUI extends Container {
   private result?: ToolResult
   private details?: GlobDetails
   private contentBox: Box
+  private readonly preview = new ToolPreviewController()
 
   constructor(_toolCallId: string, args: any) {
     super()
@@ -31,8 +34,24 @@ export class GlobToolUI extends Container {
     this.rebuild()
   }
 
-  setExpanded(_expanded: boolean): void {
+  setExpanded(expanded: boolean): void {
+    this.preview.setExpanded(expanded)
     this.rebuild()
+  }
+
+  hasToggleButton(): boolean {
+    return this.previewRows().length > 0
+  }
+
+  toggleExpanded(): void {
+    this.preview.toggle()
+    this.rebuild()
+  }
+
+  getInteractionTargets(renderedLines: readonly string[]): ToolInteractionTarget[] {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
+      : []
   }
 
   markExecutionStarted(): void {
@@ -79,18 +98,26 @@ export class GlobToolUI extends Container {
 
     const numFiles = this.details?.numFiles
     const truncated = this.details?.truncated
-
-    if (numFiles !== undefined) {
-      const fileInfo = truncated
-        ? `${numFiles} files ${theme.dim('(truncated)')}`
-        : `${numFiles} files`
-      this.contentBox.addChild(new Text(`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)}  ${theme.fg('muted', fileInfo)} ${theme.dim(`· ${formatCompletedStatus(this.elapsedMs)}`)}`))
-    } else {
-      const output = this.result.content
-        ?.filter((c) => c.type === 'text')
-        .map((c) => (c.text ?? '').slice(0, 200).replace(/\n/g, ' '))
-        .join(' ') ?? ''
-      this.contentBox.addChild(new Text(`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)}\n  ${theme.fg('muted', output)}`))
+    if (this.result.isError) {
+      const summary = oneLine(textFromToolResult(this.result) || 'File search failed', 120)
+      const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+      const lines = [`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)}  ${theme.fg('error', summary)}${toggle}`]
+      if (this.preview.isExpanded()) lines.push(...this.previewRows())
+      this.contentBox.addChild(new Text(lines.join('\n')))
+      return
     }
+    const fileInfo = numFiles === undefined
+      ? 'completed'
+      : `${numFiles} file${numFiles === 1 ? '' : 's'}${truncated ? ' (truncated)' : ''}`
+    const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+    const lines = [`${formatToolLabel(icon, 'Glob')}${theme.fg('accent', shortPattern)}  ${theme.fg('muted', fileInfo)} ${theme.dim(`· ${formatCompletedStatus(this.elapsedMs)}`)}${toggle}`]
+    if (this.preview.isExpanded()) lines.push(...this.previewRows())
+    this.contentBox.addChild(new Text(lines.join('\n')))
+  }
+
+  private previewRows(): string[] {
+    const filenames = this.details?.filenames
+    const output = filenames?.length ? filenames.join('\n') : textFromToolResult(this.result)
+    return output.trim() ? boundedTextPreview(output).rows : []
   }
 }

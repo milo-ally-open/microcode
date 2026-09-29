@@ -1,9 +1,11 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import { formatToolLabel } from '../../tui/toolPresentation.ts'
+import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 import type { TaskList } from '../../tasks/TaskSystem.ts'
 import type { ToolResult, ToolUIComponent } from '../registry.ts'
+import { ToolPreviewController } from '../previewController.ts'
+import type { ToolInteractionTarget } from '../registry.ts'
+import { boundedTextPreview, oneLine, textFromToolResult } from '../toolPreview.ts'
 
 interface TaskToolDetails {
   action: 'write' | 'claim' | 'mark' | 'mark_batch'
@@ -20,7 +22,9 @@ export class TaskToolUI extends Container implements ToolUIComponent {
   private result?: ToolResult
   private details?: TaskToolDetails
   private executionStarted = false
+  private elapsedMs = 0
   private readonly contentBox: Box
+  private readonly preview = new ToolPreviewController()
 
   constructor(_toolCallId: string, args: any) {
     super()
@@ -30,7 +34,25 @@ export class TaskToolUI extends Container implements ToolUIComponent {
     this.rebuild()
   }
 
-  setExpanded(_expanded: boolean): void {}
+  setExpanded(expanded: boolean): void {
+    this.preview.setExpanded(expanded)
+    this.rebuild()
+  }
+
+  hasToggleButton(): boolean {
+    return this.previewRows().length > 0
+  }
+
+  toggleExpanded(): void {
+    this.preview.toggle()
+    this.rebuild()
+  }
+
+  getInteractionTargets(renderedLines: readonly string[]): ToolInteractionTarget[] {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
+      : []
+  }
 
   markExecutionStarted(): void {
     this.executionStarted = true
@@ -42,7 +64,10 @@ export class TaskToolUI extends Container implements ToolUIComponent {
     this.rebuild()
   }
 
-  updateElapsed(_elapsedMs: number): void {}
+  updateElapsed(elapsedMs: number): void {
+    this.elapsedMs = elapsedMs
+    this.rebuild()
+  }
 
   updateResult(result: ToolResult, isPartial = false): void {
     this.result = result
@@ -57,9 +82,22 @@ export class TaskToolUI extends Container implements ToolUIComponent {
 
   private rebuild(): void {
     this.contentBox.clear()
+    const icon = this.result && !this.executionStarted
+      ? this.result.isError ? theme.fg('error', '✗') : theme.fg('success', '✓')
+      : this.executionStarted ? theme.fg('warning', getProgressFrame(this.elapsedMs)) : theme.dim('○')
+    const status = this.result && !this.executionStarted
+      ? formatCompletedStatus(this.elapsedMs)
+      : formatRunningStatus(this.elapsedMs)
 
     if (this.result?.isError) {
-      this.renderError()
+      const error = textFromToolResult(this.result) || 'The task operation failed.'
+      const summary = error.includes('Validation failed for tool')
+        ? 'The task request was incomplete or used an unsupported field.'
+        : oneLine(error, 120)
+      const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+      const lines = [`${formatToolLabel(icon, 'Tasks')}${theme.fg('error', summary)} ${theme.dim(`· ${status}`)}${toggle}`]
+      if (this.preview.isExpanded()) lines.push(...this.previewRows())
+      this.contentBox.addChild(new Text(lines.join('\n')))
       return
     }
 
@@ -74,70 +112,40 @@ export class TaskToolUI extends Container implements ToolUIComponent {
           ? `${this.args.tasks.length} tasks`
           : 'task'
       const state = this.executionStarted ? 'Updating' : 'Updated'
-      this.contentBox.addChild(
-        new Text(
-          `${formatToolLabel(theme.fg('accent', '◆'), 'Tasks')}${theme.dim(`${state} ${taskId}…`)}`,
-        ),
-      )
+      const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+      const lines = [`${formatToolLabel(icon, 'Tasks')}${theme.dim(`${state} ${taskId}… · ${status}`)}${toggle}`]
+      if (this.preview.isExpanded()) lines.push(...this.previewRows())
+      this.contentBox.addChild(new Text(lines.join('\n')))
       return
     }
 
     const title = list?.title ?? this.args?.title ?? 'Task list'
     const tasks = list?.tasks ?? this.tasksFromArgs()
     const completedCount = tasks.filter((task) => task.completed).length
-    const progress = tasks.length > 0
+    const progress = action === 'claim' && tasks.length === 0
+      ? theme.fg('success', 'All tasks are complete')
+      : tasks.length > 0
       ? theme.dim(`${completedCount}/${tasks.length} complete`)
       : theme.dim('No tasks')
     const heading = action === 'claim' ? 'Next tasks' : 'Tasks'
-    const lines = [
-      `${formatToolLabel(theme.fg('accent', '◆'), heading)}${theme.fg('accent', title)}  ${progress}`,
-    ]
-
-    if (action === 'claim') {
-      if (tasks.length === 0) {
-        lines.push(`  ${theme.fg('success', '✓')} ${theme.dim('All tasks are complete')}`)
-      } else {
-        for (const task of tasks) {
-          lines.push(`  ${theme.fg('accent', '→')} ${theme.fg('text', task.content)}`)
-        }
-      }
-    } else {
-      for (const task of tasks) {
-        const marker = task.completed
-          ? theme.fg('success', '✓')
-          : theme.dim('○')
-        const content = task.completed
-          ? theme.dim(task.content)
-          : theme.fg('text', task.content)
-        lines.push(`  ${marker} ${content}`)
-      }
-    }
+    const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+    const lines = [`${formatToolLabel(icon, heading)}${theme.fg('accent', title)}  ${progress} ${theme.dim(`· ${status}`)}${toggle}`]
+    if (this.preview.isExpanded()) lines.push(...this.previewRows())
 
     this.contentBox.addChild(new Text(lines.join('\n')))
   }
 
-  private renderError(): void {
-    this.contentBox.addChild(
-      new Text([
-        `${theme.fg('error', '!')} ${chalk.bold('Tasks')}  ${theme.fg('error', 'Could not update task list')}`,
-        `  ${theme.fg('muted', this.errorSummary())}`,
-      ].join('\n')),
-    )
-  }
-
-  private errorSummary(): string {
-    const error = this.result?.content
-      .filter((item) => item.type === 'text')
-      .map((item) => item.text ?? '')
-      .join('\n')
-      .trim() ?? ''
-    if (!error) return 'The task operation failed.'
-    if (error.includes('Validation failed for tool')) {
-      return 'The task request was incomplete or used an unsupported field.'
+  private previewRows(): string[] {
+    const list = this.details?.list
+    if (list) {
+      const rows = list.tasks.map((task) => {
+        const marker = task.completed ? '✓' : '○'
+        return `  ${marker} ${task.content}`
+      })
+      return rows.length ? boundedTextPreview(rows.join('\n')).rows : []
     }
-    const firstLine = error.split('\n').find((line) => line.trim())?.trim()
-    if (!firstLine) return 'The task operation failed.'
-    return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine
+    const resultText = textFromToolResult(this.result)
+    return resultText.trim() ? boundedTextPreview(resultText).rows : []
   }
 
   private tasksFromArgs(): DisplayTask[] {

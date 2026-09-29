@@ -144,6 +144,46 @@ describe('tui modules', () => {
     expect(timeline.render(80).filter((line) => line.includes('tool completed'))).toHaveLength(1)
   })
 
+  test('context compaction is recorded as a concise status in the active turn', () => {
+    const timeline = new TurnTimeline()
+    timeline.addEntry(new Text('user input'), 'user')
+    const app = Object.create(App.prototype) as any
+    Object.assign(app, {
+      activeTurnTimeline: timeline,
+      turnFinalized: false,
+      compacting: false,
+      chatContainer: new ChatTranscript(),
+      footer: { invalidate() {} },
+      ui: { requestRender() {} },
+    })
+
+    app.appendContextCompactedEntry()
+
+    expect(timeline.render(80).join('\n')).toContain('Context Compacted')
+    expect(app.chatContainer.children).toHaveLength(0)
+  })
+
+  test('manual compaction gets its own status timeline instead of modifying an old turn', () => {
+    const oldTurn = new TurnTimeline()
+    oldTurn.addEntry(new Text('previous turn'), 'user')
+    const chatContainer = new ChatTranscript()
+    chatContainer.addChild(oldTurn)
+    const app = Object.create(App.prototype) as any
+    Object.assign(app, {
+      activeTurnTimeline: oldTurn,
+      turnFinalized: true,
+      compacting: true,
+      chatContainer,
+      footer: { invalidate() {} },
+      ui: { requestRender() {} },
+    })
+
+    app.appendContextCompactedEntry()
+
+    expect(oldTurn.render(80).join('\n')).not.toContain('Context Compacted')
+    expect(chatContainer.render(80).join('\n')).toContain('Context Compacted')
+  })
+
   test('turn timeline derives preview hit targets from the same render pass', () => {
     let renderCount = 0
     const row = {

@@ -1,8 +1,10 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 import type { ToolResult, ToolUIComponent } from '../registry.ts'
+import type { ToolInteractionTarget } from '../registry.ts'
+import { ToolPreviewController } from '../previewController.ts'
+import { boundedTextPreview, oneLine, textFromToolResult } from '../toolPreview.ts'
 
 interface WebSearchDetails {
   query?: string
@@ -18,7 +20,7 @@ function shorten(value: string, length: number): string {
 
 export class WebSearchToolUI extends Container implements ToolUIComponent {
   private args: Record<string, unknown>
-  private expanded = false
+  private readonly preview = new ToolPreviewController()
   private executionStarted = false
   private elapsedMs = 0
   private result?: ToolResult
@@ -34,8 +36,23 @@ export class WebSearchToolUI extends Container implements ToolUIComponent {
   }
 
   setExpanded(expanded: boolean): void {
-    this.expanded = expanded
+    this.preview.setExpanded(expanded)
     this.rebuild()
+  }
+
+  hasToggleButton(): boolean {
+    return this.previewRows().length > 0
+  }
+
+  toggleExpanded(): void {
+    this.preview.toggle()
+    this.rebuild()
+  }
+
+  getInteractionTargets(renderedLines: readonly string[]): ToolInteractionTarget[] {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
+      : []
   }
 
   markExecutionStarted(): void {
@@ -89,7 +106,11 @@ export class WebSearchToolUI extends Container implements ToolUIComponent {
     }
 
     if (this.result.isError) {
-      this.contentBox.addChild(new Text(`${header}\n  ${theme.fg('error', this.getOutputPreview())}`))
+      const summary = oneLine(textFromToolResult(this.result) || 'Search failed', 120)
+      const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+      const lines = [`${header}  ${theme.fg('error', summary)}${toggle}`]
+      if (this.preview.isExpanded()) lines.push(...this.previewRows())
+      this.contentBox.addChild(new Text(lines.join('\n')))
       return
     }
 
@@ -98,15 +119,22 @@ export class WebSearchToolUI extends Container implements ToolUIComponent {
       ? 'completed'
       : `${resultCount} result${resultCount === 1 ? '' : 's'}`
     const status = formatCompletedStatus(this.elapsedMs)
-    this.contentBox.addChild(new Text(`${header}  ${theme.fg('muted', resultInfo)} ${theme.dim(`· ${status}`)}`))
+    const toggle = this.hasToggleButton() ? `  ${theme.fg('accent', this.preview.toggleLabel())}` : ''
+    const lines = [`${header}  ${theme.fg('muted', resultInfo)} ${theme.dim(`· ${status}`)}${toggle}`]
+    if (this.preview.isExpanded()) lines.push(...this.previewRows())
+    this.contentBox.addChild(new Text(lines.join('\n')))
   }
 
-  private getOutputPreview(): string {
-    return this.result?.content
-      ?.filter((content) => content.type === 'text')
-      .map((content) => content.text ?? '')
-      .join(' ')
-      .slice(0, this.expanded ? 1000 : 200)
-      .replace(/\n/g, ' ') || 'unknown error'
+  private previewRows(): string[] {
+    if (this.details?.results?.length) {
+      const text = this.details.results.map((result, index) => [
+        `${index + 1}. ${result.title}`,
+        `   ${result.url}`,
+        result.snippet ? `   ${result.snippet}` : '',
+      ].filter(Boolean).join('\n')).join('\n\n')
+      return boundedTextPreview(text).rows
+    }
+    const output = textFromToolResult(this.result)
+    return output.trim() ? boundedTextPreview(output).rows : []
   }
 }

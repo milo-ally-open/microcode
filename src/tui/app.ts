@@ -208,7 +208,6 @@ export class App {
   private pluginRuntimeRefreshPending = false
   private sessionManager: SessionManager
   private compacting = false
-  private compactionProgressText?: Text
   private permissionPromptActive = false
   private pendingEventsWhilePermission: Array<() => void> = []
   private isBashMode = false
@@ -965,7 +964,7 @@ export class App {
         return
       }
 
-      const destinationPath = await exportSessionJsonl(metadata.path, process.cwd())
+      const destinationPath = await exportSessionJsonl(metadata.path, process.cwd(), metadata.id)
       this.showStatus(`Conversation exported to ${destinationPath}`)
     } catch (error) {
       this.showError(`Could not export conversation: ${error instanceof Error ? error.message : String(error)}`)
@@ -1443,15 +1442,6 @@ export class App {
     const customInstructions = args.trim() || undefined
     this.compacting = true
 
-    const progressText = new Text(
-      theme.fg('accent', '⟳ Compacting conversation context...'),
-      1,
-      0,
-    )
-    this.compactionProgressText = progressText
-    this.chatContainer.addChild(progressText)
-    this.ui.requestRender()
-
     try {
       await this.agent.compact({
         instructions: customInstructions,
@@ -1461,21 +1451,27 @@ export class App {
       // Update footer
       this.updateContextUsage()
       this.footer.invalidate()
-      const usage = this.agent.getTokenStats().context
-      progressText.setText(
-        theme.dim(`Compacted. Context: ${usage.percentUsed}% used (${Math.round(usage.usedTokens / 1000)}k/${Math.round(usage.contextWindow / 1000)}k)`),
-      )
-      this.chatContainer.addChild(new Spacer(1))
     } catch (error) {
-      progressText.setText(
-        chalk.hex('#cc6666')(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`),
-      )
-      this.chatContainer.addChild(new Spacer(1))
+      this.showError(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       this.compacting = false
-      this.compactionProgressText = undefined
       this.ui.requestRender()
     }
+  }
+
+  private appendContextCompactedEntry(): void {
+    const entry = new Text(theme.fg('accent', 'Context Compacted'), 1, 0)
+    if (this.compacting || !this.activeTurnTimeline || this.turnFinalized) {
+      const timeline = new TurnTimeline()
+      timeline.addEntry(entry, 'status')
+      this.chatContainer.addChild(timeline)
+      this.chatContainer.addChild(new Spacer(1))
+    } else {
+      this.activeTurnTimeline.addEntry(entry, 'status')
+    }
+    this.updateContextUsage()
+    this.footer.invalidate()
+    this.ui.requestRender()
   }
 
   private handleStatusCommand(): void {
@@ -3809,8 +3805,14 @@ export class App {
     this.agent.subscribe((event: MicrocodeAgentEvent) => {
       const process = () => {
         switch (event.type) {
-          case 'compaction_changed':
+        case 'compaction_changed':
           this.updateCompactionProgress(event.progress)
+          break
+
+        case 'state_changed':
+          if (event.reason === 'compaction_completed') {
+            this.appendContextCompactedEntry()
+          }
           break
 
         case 'agent_start':
@@ -4101,36 +4103,14 @@ export class App {
       { type: 'compaction_changed' }
     >['progress'],
   ): void {
-    if (!this.compactionProgressText) {
-      this.compactionProgressText = new Text('', 1, 0)
-      this.chatContainer.addChild(this.compactionProgressText)
+    if (progress.phase === 'done') {
+      const label = getAgentActivityLabel(this.activityState)
+      if (label) this.showWorking(label)
+      else this.hideWorking()
+      return
     }
 
-    const percent = Math.max(0, Math.min(100, progress.progress ?? 0))
-    const width = 20
-    const filled = Math.round((percent / 100) * width)
-    const bar =
-      `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}`
-    const elapsed = progress.elapsedMs === undefined
-      ? ''
-      : ` ${(progress.elapsedMs / 1000).toFixed(1)}s`
-    const units =
-      progress.totalUnits !== undefined && progress.processedUnits !== undefined
-        ? ` · ${progress.processedUnits}/${progress.totalUnits} units`
-        : ''
-    const color = progress.phase === 'done' &&
-      progress.message.startsWith('Compaction failed')
-      ? (text: string) => chalk.hex('#cc6666')(text)
-      : (text: string) => theme.fg('accent', text)
-    this.compactionProgressText.setText(
-      color(`${bar} ${percent}% ${progress.message}${units}${elapsed}`),
-    )
-
-    if (progress.phase === 'done' && !this.compacting) {
-      this.chatContainer.addChild(new Spacer(1))
-      this.compactionProgressText = undefined
-    }
-    this.ui.requestRender()
+    this.showWorking('Compacting context…')
   }
 
   private updateContextUsage(): void {

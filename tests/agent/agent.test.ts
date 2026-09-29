@@ -3,9 +3,13 @@ import { mkdir, rm, writeFile } from 'fs/promises'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { Type } from 'typebox'
+import { createAssistantMessageEventStream } from '@earendil-works/pi-ai'
 import { AgentModelManager, resolveAgentModelConfig } from '../../src/agent/AgentModelManager.ts'
 import { AgentSkillManager } from '../../src/agent/AgentSkillManager.ts'
 import { AgentTokenTracker } from '../../src/agent/AgentTokenTracker.ts'
+import { MicrocodeAgent } from '../../src/agent/MicrocodeAgent.ts'
+import { ensureBootstrapMacro } from '../../src/macro.ts'
 
 describe('agent modules', () => {
   test('model manager resolves, commits, snapshots, and tracks thinking level', () => {
@@ -104,5 +108,211 @@ describe('agent modules', () => {
     expect(tracker.getSnapshot({ systemPrompt: '', messages: [], model }).session.requests).toBe(0)
     tracker.rebuild([assistant])
     expect(tracker.getSnapshot({ systemPrompt: '', messages: [], model }).session.requests).toBe(1)
+  })
+
+  test('automatic compaction replaces the running loop context across tool turns', async () => {
+    ensureBootstrapMacro()
+    const model = resolveAgentModelConfig('deepseek-v4-pro', 'openai-completions').model
+    const compactAtTokens = 60_000
+    let summaryCalls = 0
+    let requestCount = 0
+    const observedContexts: string[] = []
+    const agent = new MicrocodeAgent({
+      cwd: process.cwd(),
+      modelId: 'deepseek-v4-pro',
+      api: 'openai-completions',
+      permission: { mode: 'auto-approve' },
+      compactionSettings: { reserveTokens: model.contextWindow - compactAtTokens },
+      generateSummaryFn: async () => {
+        summaryCalls++
+        return { ok: true, value: 'Earlier work summary.' } as any
+      },
+      streamFn: (requestModel, context) => {
+        requestCount++
+        const text = context.messages.map((message: any) =>
+          typeof message.content === 'string'
+            ? message.content
+            : message.content?.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n') ?? '',
+        ).join('\n')
+        observedContexts.push(text)
+        const message: any = {
+          role: 'assistant',
+          content: requestCount === 1
+            ? [{ type: 'toolCall', id: 'ctx-tool-call', name: 'test_context_tool', arguments: {} }]
+            : [{ type: 'text', text: 'Finished.' }],
+          api: requestModel.api,
+          provider: requestModel.provider,
+          model: requestModel.id,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: requestCount === 1 ? 'toolUse' : 'stop',
+          timestamp: Date.now(),
+        }
+        const stream = createAssistantMessageEventStream()
+        stream.push({ type: 'start', partial: message })
+        stream.push({ type: 'done', reason: message.stopReason, message })
+        return stream
+      },
+    })
+
+    const systemMessage = agent.getMessages()[0]!
+    const history = 'old-history-marker '.repeat(5_500)
+    const historicalUsage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    }
+    agent.replaceMessages([
+      systemMessage,
+      { role: 'user', content: history, timestamp: 1 } as any,
+      {
+        role: 'assistant', content: [{ type: 'text', text: 'First old answer.' }],
+        api: model.api, provider: model.provider, model: model.id, usage: historicalUsage, timestamp: 2,
+      } as any,
+      { role: 'user', content: history, timestamp: 3 } as any,
+      {
+        role: 'assistant', content: [{ type: 'text', text: 'Second old answer.' }],
+        api: model.api, provider: model.provider, model: model.id, usage: historicalUsage, timestamp: 4,
+      } as any,
+    ])
+    agent.addTools([{
+      name: 'test_context_tool',
+      label: 'Context test',
+      description: 'A deterministic test tool.',
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [{ type: 'text', text: 'small tool result' }] }),
+    } as any])
+
+    expect(agent.getTokenStats().context.usedTokens).toBeLessThan(compactAtTokens)
+    await agent.prompt(`Continue the test. ${'new-prompt-context '.repeat(5_000)}`)
+
+    expect(requestCount).toBe(2)
+    expect(summaryCalls).toBe(1)
+    expect(observedContexts.every((context) => !context.includes('old-history-marker'))).toBe(true)
+    expect(agent.getTokenStats().context.usedTokens).toBeLessThan(compactAtTokens)
+  })
+
+  test('a restored context above 100% forces compaction before the first model request', async () => {
+    ensureBootstrapMacro()
+    const model = resolveAgentModelConfig('gpt-5.6-luna', 'openai-codex-responses').model
+    let agent!: MicrocodeAgent
+    let summaryCalls = 0
+    let promptWasPresentWhenSummarizing = true
+    const observedContexts: string[] = []
+    agent = new MicrocodeAgent({
+      cwd: process.cwd(),
+      modelId: 'gpt-5.6-luna',
+      api: 'openai-codex-responses',
+      permission: { mode: 'auto-approve' },
+      compactionSettings: { enabled: false },
+      generateSummaryFn: async () => {
+        summaryCalls++
+        promptWasPresentWhenSummarizing = agent.getMessages().some((message: any) =>
+          message.role === 'user' && message.content?.includes('Resume over budget session.'),
+        )
+        return { ok: true, value: 'Earlier work summary.' } as any
+      },
+      streamFn: (requestModel, context) => {
+        observedContexts.push(context.messages.map((message: any) =>
+          typeof message.content === 'string'
+            ? message.content
+            : message.content?.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n') ?? '',
+        ).join('\n'))
+        const message: any = {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Resumed.' }],
+          api: requestModel.api,
+          provider: requestModel.provider,
+          model: requestModel.id,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: 'stop',
+          timestamp: Date.now(),
+        }
+        const stream = createAssistantMessageEventStream()
+        stream.push({ type: 'start', partial: message })
+        stream.push({ type: 'done', reason: 'stop', message })
+        return stream
+      },
+    })
+
+    const history = `restored-history-marker ${'x'.repeat(model.contextWindow * 4 + 10_000)}`
+    const usage = {
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    }
+    agent.replaceMessages([
+      agent.getMessages()[0]!,
+      { role: 'user', content: history, timestamp: 1 } as any,
+      {
+        role: 'assistant', content: [{ type: 'text', text: 'Old response.' }],
+        api: model.api, provider: model.provider, model: model.id, usage, timestamp: 2,
+      } as any,
+      { role: 'user', content: history, timestamp: 3 } as any,
+      {
+        role: 'assistant', content: [{ type: 'text', text: 'Latest old response.' }],
+        api: model.api, provider: model.provider, model: model.id, usage, timestamp: 4,
+      } as any,
+    ])
+
+    await agent.prompt('Resume over budget session.')
+
+    expect(summaryCalls).toBe(1)
+    expect(promptWasPresentWhenSummarizing).toBe(false)
+    expect(observedContexts[0]).toContain('Earlier work summary.')
+    expect(observedContexts[0]).not.toContain('restored-history-marker')
+    expect(agent.getTokenStats().context.usedTokens).toBeLessThan(model.contextWindow)
+  })
+
+  test('over-limit context still summarizes after microcompacting old tool results', async () => {
+    ensureBootstrapMacro()
+    const model = resolveAgentModelConfig('gpt-5.6-luna', 'openai-codex-responses').model
+    let summaryCalls = 0
+    const agent = new MicrocodeAgent({
+      cwd: process.cwd(),
+      modelId: 'gpt-5.6-luna',
+      api: 'openai-codex-responses',
+      compactionSettings: { enabled: false },
+      generateSummaryFn: async () => {
+        summaryCalls++
+        return { ok: true, value: 'Summarized old tool activity.' } as any
+      },
+    })
+    const largeResult = 'old-tool-result '.repeat(8_000)
+    const messages: any[] = [agent.getMessages()[0]!]
+    for (let index = 0; index < 10; index++) {
+      messages.push({
+        role: 'toolResult',
+        toolCallId: `old-call-${index}`,
+        toolName: 'bash',
+        content: [{ type: 'text', text: largeResult }],
+        timestamp: index + 1,
+      })
+    }
+    agent.replaceMessages(messages)
+    expect(agent.getTokenStats().context.usedTokens).toBeGreaterThan(model.contextWindow)
+
+    const compacted = await agent.compactIfNeeded()
+
+    expect(summaryCalls).toBe(1)
+    expect(compacted.some((message: any) =>
+      message.role === 'user' && message.content.includes('Summarized old tool activity.'),
+    )).toBe(true)
+    expect(agent.getTokenStats().context.usedTokens).toBeLessThan(model.contextWindow)
   })
 })

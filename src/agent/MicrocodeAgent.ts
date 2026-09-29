@@ -186,7 +186,15 @@ export class MicrocodeAgent {
       streamFn: options.streamFn ?? ((model, context, streamOptions) =>
         getModels().streamSimple(model, context, streamOptions)),
       convertToLlm: createConvertToLlm(() => this.core.state.model),
-      transformContext: (messages) => this.prepareModelContext(messages),
+      // prepareRequest can replace the loop's current context. transformContext
+      // only projects a one-request copy, so compaction there leaves subsequent
+      // tool/model turns running on the original oversized transcript.
+      prepareRequest: async ({ context }) => ({
+        context: {
+          ...context,
+          messages: await this.prepareModelContext(context.messages),
+        },
+      }),
     })
 
     if (options.thinkingLevel) {
@@ -314,6 +322,7 @@ export class MicrocodeAgent {
     images?: ImageContent[],
   ): Promise<void> {
     this.refreshSkillCatalog()
+    if (!this.isBusy()) await this.compactIfNeeded()
     if (typeof input === 'string') {
       await this.core.prompt(input, images)
     } else {
@@ -325,6 +334,7 @@ export class MicrocodeAgent {
   async promptReadOnly(input: string): Promise<void> {
     if (this.isBusy()) throw new Error('Cannot change the available tools while the agent is busy.')
 
+    await this.compactIfNeeded()
     this.toolManager.setPromptReadOnly(true)
     this.core.state.tools = this.toolManager.getTools()
     this.emitStateChangedDetached('tools_changed')
@@ -547,8 +557,13 @@ export class MicrocodeAgent {
   async compactIfNeeded(
     messages: readonly AgentMessage[] = this.core.state.messages,
   ): Promise<AgentMessage[]> {
+    const originalUsage = this.compactionManager.getContextUsage([...messages])
+    const contextWindowExceeded = originalUsage.tokens > originalUsage.contextWindow
     const { messages: microcompacted } = this.compactionManager.microcompact([...messages])
-    if (!this.compactionManager.isCompactionNeeded(microcompacted)) {
+    if (
+      !contextWindowExceeded &&
+      !this.compactionManager.isCompactionNeeded(microcompacted)
+    ) {
       return microcompacted
     }
     try {
@@ -575,7 +590,12 @@ export class MicrocodeAgent {
   private async prepareModelContext(
     messages: readonly AgentMessage[],
   ): Promise<AgentMessage[]> {
-    const compacted = await this.compactIfNeeded(messages)
+    // The prepared context is carried into the next request by the Agent loop.
+    // Replace, rather than accumulate, the transient reminder each time.
+    const withoutPreviousReminder = messages.filter((message) =>
+      !(message.role === 'custom' && message.customType === 'task-reminder'),
+    )
+    const compacted = await this.compactIfNeeded(withoutPreviousReminder)
     const reminder = await this.getTaskReminder()
     if (!reminder) return compacted
 

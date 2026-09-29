@@ -24,17 +24,20 @@ Thumbs.db
 *.swo
 *~
 
-# Project-local config (may contain MCP server configs)
-.microcode/
+# Project-local config and generated session analysis reports
+/.microcode/
 
 # Bun
 bun.lockb
+
+# Python
+__pycache__/
+*.py[cod]
 
 # coding agent
 .claude
 .agents
 .codex
-.microcode
 
 # playwright-cli 
 .playwright-cli/

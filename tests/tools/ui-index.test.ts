@@ -24,6 +24,7 @@ import { WebFetchToolUI } from '../../src/tools/WebFetchTool/UI.tsx'
 import { WebSearchToolUI } from '../../src/tools/WebSearchTool/UI.tsx'
 import { formatToolActivity, formatToolDetail, formatToolStatus, formatToolSummary, getToolDefinition } from '../../src/tools/registry.ts'
 import { ToolPreviewController } from '../../src/tools/previewController.ts'
+import { ToolExecutionComponent } from '../../src/tui/components/toolExecution.ts'
 
 function renderText(ui: any): string {
   return ui.render(120, 40).join('\n')
@@ -93,6 +94,108 @@ describe('tool UI and registration modules', () => {
       ui.updateResult(complete('failed', true), false)
       expect(renderText(ui)).toContain('✗')
     }
+  })
+
+  test('remaining specialized previews start collapsed and expose clickable header actions', () => {
+    const glob = new GlobToolUI('glob-preview', { pattern: '**/*.ts' })
+    const filenames = Array.from({ length: 12 }, (_, index) => `src/file-${index}.ts`)
+    glob.updateDetails({ numFiles: filenames.length, filenames, truncated: false })
+    glob.updateResult(complete(filenames.join('\n')))
+    expect(renderText(glob)).not.toContain('src/file-0.ts')
+    expect(renderText(glob)).toContain('[Expand preview]')
+    const globTarget = glob.getInteractionTargets(glob.render(120, 40))[0]
+    expect(globTarget).toBeDefined()
+    globTarget!.activate()
+    expect(renderText(glob)).toContain('src/file-0.ts')
+    expect(renderText(glob)).toContain('[Collapse preview]')
+
+    const grep = new GrepToolUI('grep-preview', { pattern: 'needle' })
+    const matches = Array.from({ length: 12 }, (_, index) => `src/file-${index}.ts:${index + 1}: needle`)
+    const grepResult = complete(matches.join('\n'))
+    grep.updateDetails({ mode: 'content', numFiles: 12, numMatches: 12 })
+    grep.updateResult(grepResult)
+    expect(renderText(grep)).not.toContain('src/file-0.ts')
+    expect(renderText(grep)).toContain('[Expand preview]')
+    grep.getInteractionTargets(grep.render(120, 40))[0]!.activate()
+    expect(renderText(grep)).toContain('src/file-0.ts:1: needle')
+    expect(grepResult.content[0]?.text).toBe(matches.join('\n'))
+
+    const webSearch = new WebSearchToolUI('search-preview', { query: 'docs' })
+    webSearch.updateDetails({ query: 'docs', results: [{ title: 'First result', url: 'https://example.test', snippet: 'Useful snippet' }] })
+    webSearch.updateResult(complete('model-facing search result'))
+    expect(renderText(webSearch)).not.toContain('First result')
+    expect(renderText(webSearch)).toContain('[Expand preview]')
+    webSearch.setExpanded(true)
+    expect(renderText(webSearch)).toContain('First result')
+    expect(renderText(webSearch)).toContain('Useful snippet')
+
+    const webFetch = new WebFetchToolUI('fetch-preview', { url: 'https://example.test' })
+    const fetched = complete(Array.from({ length: 220 }, (_, index) => `page line ${index}`).join('\n'))
+    webFetch.updateDetails({ url: 'https://example.test', code: 200, bytes: 4000 })
+    webFetch.updateResult(fetched)
+    expect(renderText(webFetch)).not.toContain('page line 0')
+    webFetch.setExpanded(true)
+    const fetchPreview = renderText(webFetch)
+    expect(fetchPreview).toContain('page line 0')
+    expect(fetchPreview).toContain('more lines')
+    expect(fetchPreview).not.toContain('page line 219')
+    expect(fetched.content[0]?.text).toContain('page line 219')
+
+    const vision = new VisionToolUI('vision-preview', { image_source: 'photo.png' })
+    const visionResult = {
+      content: [{ type: 'text', text: 'Image description' }, { type: 'image', data: 'secret-image-payload' }],
+      isError: false,
+    }
+    vision.updateDetails({ source: 'photo.png', sourceType: 'file', mimeType: 'image/png' })
+    vision.updateResult(visionResult)
+    expect(renderText(vision)).not.toContain('Image description')
+    vision.setExpanded(true)
+    expect(renderText(vision)).toContain('Image description')
+    expect(renderText(vision)).not.toContain('secret-image-payload')
+
+    const task = new TaskToolUI('task-preview', { action: 'write', title: 'Plan' })
+    task.updateDetails({
+      action: 'write',
+      list: { id: 'list', title: 'Plan', tasks: Array.from({ length: 10 }, (_, index) => ({ id: `${index}`, content: `Task ${index}`, completed: false, pending: false })) },
+    })
+    task.updateResult(complete('task result'))
+    expect(renderText(task)).not.toContain('Task 0')
+    expect(renderText(task)).toContain('[Expand preview]')
+    task.setExpanded(true)
+    expect(renderText(task)).toContain('Task 0')
+
+    const ask = new AskUserQuestionToolUI('ask-preview', { questions: [{ question: 'Choose?', header: 'Choice', options: [] }] })
+    ask.updateDetails({ questions: [{ question: 'Choose?', header: 'Choice', options: [] }], answers: { 'Choose?': 'A' } })
+    ask.updateResult(complete('answered'))
+    expect(renderText(ask)).not.toContain('Choose?')
+    expect(renderText(ask)).toContain('[Expand preview]')
+    ask.setExpanded(true)
+    expect(renderText(ask)).toContain('Choose?')
+    expect(renderText(ask)).toContain('→ A')
+  })
+
+  test('shared fallback preview is collapsed, clickable, bounded, and presentation-only', () => {
+    const output = Array.from({ length: 140 }, (_, index) => `line ${index}`).join('\n')
+    const result = complete(output)
+    const fallback = new ToolExecutionComponent('mcp__demo__inspect', 'generic', { query: 'state' })
+    fallback.updateResult(result)
+
+    const collapsed = renderText(fallback)
+    expect(collapsed).toContain('[Expand preview]')
+    expect(collapsed).not.toContain('line 1\n')
+    const target = fallback.getInteractionTargets(fallback.render(120, 40))[0]
+    expect(target).toBeDefined()
+    target!.activate()
+    const expanded = renderText(fallback)
+    expect(expanded).toContain('line 0')
+    expect(expanded).toContain('more output')
+    expect(expanded).not.toContain('line 139')
+    expect(result.content[0]?.text).toBe(output)
+
+    const imageOnly = new ToolExecutionComponent('mcp__demo__image', 'binary', {})
+    imageOnly.updateResult({ content: [{ type: 'image', data: 'hidden' }], isError: false })
+    expect(renderText(imageOnly)).not.toContain('[Expand preview]')
+    expect(renderText(imageOnly)).not.toContain('hidden')
   })
 
   test('read UI hides file contents by default and expands on request; edit UI previews diffs', () => {
