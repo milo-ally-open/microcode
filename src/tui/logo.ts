@@ -6,7 +6,8 @@ const GLYPHS: Record<string, readonly string[]> = {
   R: ['█████ ', '██  ██', '█████ ', '██  ██'],
   O: [' ████ ', '██  ██', '██  ██', ' ████ '],
   D: ['█████ ', '██  ██', '██  ██', '█████ '],
-  E: ['██████', '██    ', '█████ ', '██████'],
+  // 上横最长、中横略短、下横再收一格，确保小尺寸下仍一眼读作 E。
+  E: ['██████', '██    ', '█████ ', '████  '],
 }
 
 const COMPACT_GLYPHS: Record<string, readonly string[]> = {
@@ -16,7 +17,7 @@ const COMPACT_GLYPHS: Record<string, readonly string[]> = {
   R: ['████ ', '█   █', '████ ', '█  ██'],
   O: [' ███ ', '█   █', '█   █', ' ███ '],
   D: ['████ ', '█   █', '█   █', '████ '],
-  E: ['█████', '█    ', '████ ', '█████'],
+  E: ['█████', '█    ', '████ ', '███  '],
 }
 
 function extrudeGlyph(glyph: readonly string[]): string[] {
