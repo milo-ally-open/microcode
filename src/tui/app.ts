@@ -24,6 +24,7 @@ import { FooterComponent } from './components/footer.ts'
 import { AppLayout } from './components/appLayout.ts'
 import { AssistantMessageComponent } from './components/assistantMessage.ts'
 import { shouldShowRespondingActivity } from './agentActivity.ts'
+import { LOGO_LINES } from './logo.ts'
 import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
 import { parseBashInput } from './bashInput.ts'
@@ -401,14 +402,11 @@ export class App {
       theme.dim('/') + theme.dim(' commands'),
       theme.dim('!') + theme.dim(' shell'),
     ].join(theme.dim(' · '))
-    const onboarding = theme.dim(
-      `${APP_NAME} can explain its own features and help you write, edit, and understand code. Ask it anything.`,
-    )
-
-    this.headerContainer.addChild(new Spacer(1))
+    // 用 Unicode 方块像素字标呈现 Logo，替换占空间的介绍语。
+    for (const line of LOGO_LINES) {
+      this.headerContainer.addChild(new Text(theme.bold(theme.fg('accent', line)), 1, 0))
+    }
     this.headerContainer.addChild(new Text(`${logo}  ${compactInstructions}`, 1, 0))
-    this.headerContainer.addChild(new Text(onboarding, 1, 0))
-    this.headerContainer.addChild(new Spacer(1))
 
     // Editor with border
     this.editor = new MicrocodeEditor(this.ui, getEditorTheme(), { paddingX: 1 })

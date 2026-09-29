@@ -13,8 +13,15 @@ import { getEditorTheme } from '../../src/tui/theme.ts'
 import { createSessionTitle, firstSentence, normalizeSessionTitle } from '../../src/tui/sessionTitle.ts'
 import { parseBashInput } from '../../src/tui/bashInput.ts'
 import { shouldShowRespondingActivity } from '../../src/tui/agentActivity.ts'
+import { LOGO_LINES } from '../../src/tui/logo.ts'
 
 describe('tui modules', () => {
+  test('startup logo is a compact Unicode pixel wordmark', () => {
+    expect(LOGO_LINES).toHaveLength(5)
+    expect(LOGO_LINES.every((line) => line.includes('█'))).toBe(true)
+    expect(LOGO_LINES.every((line) => line.length === 53)).toBe(true)
+  })
+
   test('theme helpers return styled strings and editor/markdown contracts', () => {
     expect(theme.fg('unknown', 'text')).toBe('text')
     expect(theme.bold('text')).toContain('text')
