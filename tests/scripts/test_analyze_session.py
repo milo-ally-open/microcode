@@ -102,8 +102,12 @@ class AnalyzeSessionTests(unittest.TestCase):
             )
 
             chart = root / ".microcode" / "analysis" / "session-session-cli-test.png"
+            trajectory = root / ".microcode" / "analysis" / "session-session-cli-test-trajectory.png"
             self.assertTrue(chart.is_file())
+            self.assertTrue(trajectory.is_file())
+            self.assertGreater(trajectory.stat().st_size, 1000)
             self.assertIn(str(chart), completed.stdout)
+            self.assertIn(str(trajectory), completed.stdout)
 
 
 if __name__ == "__main__":

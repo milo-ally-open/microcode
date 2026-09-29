@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an English Matplotlib activity chart from a Microcode session JSONL."""
+"""Create English Matplotlib activity and agent-trajectory charts from session JSONL."""
 
 from __future__ import annotations
 
@@ -115,11 +115,11 @@ def analyze(header: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[s
             if record.get("type") == "compaction":
                 compactions += 1
                 stamp = parse_timestamp(record.get("timestamp"))
-                events.append({"seq": record.get("seq"), "time": stamp, "kind": "compaction", "label": "Context compacted"})
+                events.append({"seq": record.get("seq"), "time": stamp, "kind": "compaction", "label": "Context compacted", "order": len(events)})
             elif record.get("type") == "custom" and record.get("customType") == "microcode.compaction-checkpoint":
                 compactions += 1
                 stamp = parse_timestamp(record.get("timestamp"))
-                events.append({"seq": record.get("seq"), "time": stamp, "kind": "compaction", "label": "Context compacted"})
+                events.append({"seq": record.get("seq"), "time": stamp, "kind": "compaction", "label": "Context compacted", "order": len(events)})
 
         normalized = extract_message(record)
         if normalized is None:
@@ -132,7 +132,7 @@ def analyze(header: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[s
         stamp = parse_timestamp(message.get("timestamp")) or parse_timestamp(record.get("timestamp"))
 
         if role == "user":
-            events.append({"seq": sequence, "time": stamp, "kind": "user", "label": "User message"})
+            events.append({"seq": sequence, "time": stamp, "kind": "user", "label": "User message", "order": len(events)})
         elif role == "assistant":
             provider = message.get("provider")
             model = message.get("model")
@@ -151,14 +151,16 @@ def analyze(header: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[s
                         "seq": sequence,
                         "status": "pending",
                         "duration": None,
+                        "call_order": len(events),
+                        "result_order": None,
                     }
                     call_index = len(calls)
                     calls.append(call)
                     if call["id"]:
                         calls_by_id[call["id"]].append(call_index)
-                    events.append({"seq": sequence, "time": stamp, "kind": "call", "label": f"Call {tool_name}"})
+                    events.append({"seq": sequence, "time": stamp, "kind": "call", "label": f"Call {tool_name}", "order": len(events)})
             else:
-                events.append({"seq": sequence, "time": stamp, "kind": "assistant", "label": "Assistant response"})
+                events.append({"seq": sequence, "time": stamp, "kind": "assistant", "label": "Assistant response", "order": len(events)})
         elif role == "toolResult":
             call_id = message.get("toolCallId")
             tool_name = str(message.get("toolName") or "(unknown tool)")
@@ -168,14 +170,16 @@ def analyze(header: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[s
                 call["tool"] = tool_name if tool_name != "(unknown tool)" else call["tool"]
                 call["status"] = "failed" if message.get("isError") is True else "success" if message.get("isError") is False else "unknown"
                 call["duration"] = stamp - call["time"] if stamp is not None and call["time"] is not None else None
+                call["result_order"] = len(events)
             events.append({
                 "seq": sequence,
                 "time": stamp,
                 "kind": "tool_failed" if message.get("isError") is True else "tool_success" if message.get("isError") is False else "tool_unknown",
                 "label": f"Result {tool_name}",
+                "order": len(events),
             })
         else:
-            events.append({"seq": sequence, "time": stamp, "kind": "other", "label": f"{role} record"})
+            events.append({"seq": sequence, "time": stamp, "kind": "other", "label": f"{role} record", "order": len(events)})
 
     tool_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"calls": 0, "success": 0, "failed": 0, "pending": 0, "unknown": 0, "durations": []})
     for call in calls:
@@ -336,15 +340,118 @@ def render_chart(result: dict[str, Any], source: Path, output: Path, warnings: l
     plt.close(fig)
 
 
+def render_trajectory(result: dict[str, Any], source: Path, output: Path) -> None:
+    """Render a chronological agent flow with tool calls linked to their results."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as error:
+        raise ValueError("Matplotlib is required. Install it with: python3 -m pip install matplotlib") from error
+
+    plt.rcParams["text.parse_math"] = False
+    background, panel, foreground, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
+    colors = {
+        "user": "#69aaf8", "assistant": "#b89cff", "success": "#47c78a",
+        "failed": "#fa6b73", "pending": "#e8b85e", "unknown": "#8694a8",
+        "compaction": "#e8b85e", "other": "#8694a8",
+    }
+    events = result["events"]
+    visible = events[-300:]
+    first_order = visible[0]["order"] if visible else 0
+    last_order = visible[-1]["order"] if visible else 0
+    calls = [
+        call for call in result["calls"]
+        if call["call_order"] <= last_order
+        and (call["result_order"] is None or call["result_order"] >= first_order)
+    ][-120:]
+    tool_names = list(dict.fromkeys(call["tool"] for call in calls))
+    if len(tool_names) > 14:
+        kept_tools = set(tool_names[:13])
+        tool_names = tool_names[:13] + ["Other tools"]
+    else:
+        kept_tools = set(tool_names)
+    actor_y = len(tool_names)
+    lane_labels = tool_names + ["Assistant", "User"]
+    lane_y = {name: index for index, name in enumerate(tool_names)}
+    lane_y["assistant"] = actor_y
+    lane_y["user"] = actor_y + 1
+
+    fig_height = max(5.5, 2.8 + len(lane_labels) * 0.43)
+    fig, axis = plt.subplots(figsize=(15, fig_height), facecolor=background)
+    axis.set_facecolor(panel)
+    session_id = str(result["header"].get("id") or source.stem)
+    fig.suptitle(f"Agent Trajectory  |  Session {session_id}", x=0.08, ha="left", y=0.98,
+                 color=foreground, fontsize=19, fontweight="bold")
+    axis.set_title("Chronological message flow and tool call/result spans", loc="left", pad=15,
+                   color=muted, fontsize=10)
+
+    for call in calls:
+        displayed_tool = call["tool"] if call["tool"] in kept_tools else "Other tools"
+        y_value = lane_y[displayed_tool]
+        start = call["call_order"]
+        end = call["result_order"] if call["result_order"] is not None else last_order
+        status = call["status"]
+        axis.plot([start, max(start + 0.12, end)], [y_value, y_value], color=colors[status],
+                  linewidth=5, solid_capstyle="round", alpha=0.9, zorder=2)
+        axis.scatter(start, y_value, marker=">", s=58, color=colors[status], edgecolors=panel, linewidths=0.6, zorder=3)
+        if call["result_order"] is not None:
+            axis.scatter(end, y_value, marker="o", s=40, color=colors[status], edgecolors=panel, linewidths=0.6, zorder=3)
+
+    for event in visible:
+        order = event["order"]
+        kind = event["kind"]
+        if kind in {"user", "assistant"}:
+            axis.scatter(order, lane_y[kind], marker="o" if kind == "user" else "D",
+                         s=45 if kind == "user" else 35, color=colors[kind], edgecolors=panel,
+                         linewidths=0.6, zorder=4)
+        elif kind == "compaction":
+            axis.axvline(order, color=colors["compaction"], linewidth=1.2, linestyle="--", alpha=0.8, zorder=1)
+            axis.text(order, len(lane_labels) + 0.18, "compact", rotation=90, va="bottom", ha="center",
+                      color=colors["compaction"], fontsize=8)
+
+    axis.set_yticks(range(len(lane_labels)), lane_labels)
+    # Tool lanes are displayed bottom-up, with actors at the top for an easy-to-follow flow.
+    axis.set_ylim(-0.7, len(lane_labels) + 0.65)
+    axis.invert_yaxis()
+    axis.set_xlim(max(-1, first_order - 1), max(first_order + 1, last_order + 1))
+    axis.set_xlabel("Event order (stored session sequence)", color=muted)
+    axis.tick_params(colors=muted, labelsize=9)
+    axis.grid(axis="x", color="#2b3848", linewidth=0.6, alpha=0.75)
+    axis.set_axisbelow(True)
+    for spine in axis.spines.values():
+        spine.set_color("#2b3848")
+
+    from matplotlib.lines import Line2D
+    legend = [
+        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors["user"], label="User message", markersize=7),
+        Line2D([0], [0], marker="D", color="none", markerfacecolor=colors["assistant"], label="Assistant response", markersize=6),
+        Line2D([0], [0], color=colors["success"], linewidth=4, label="Tool succeeded"),
+        Line2D([0], [0], color=colors["failed"], linewidth=4, label="Tool failed"),
+        Line2D([0], [0], color=colors["pending"], linewidth=4, label="Pending / unresolved"),
+        Line2D([0], [0], color=colors["unknown"], linewidth=4, label="Unknown outcome"),
+    ]
+    axis.legend(handles=legend, loc="lower right", frameon=False, labelcolor=muted, fontsize=8, ncol=2)
+    if not visible:
+        axis.text(0.5, 0.5, "No trajectory events", transform=axis.transAxes, ha="center", va="center", color=muted)
+    if len(events) > len(visible):
+        fig.text(0.08, 0.015, f"Showing the most recent {len(visible)} of {len(events)} events.", color=muted, fontsize=8)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=160, facecolor=background, bbox_inches="tight")
+    plt.close(fig)
+
+
 def safe_filename(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
     return cleaned[:120] or "session"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyze an exported Microcode session JSONL and create an English Matplotlib chart.")
+    parser = argparse.ArgumentParser(description="Analyze an exported Microcode session JSONL and create activity and trajectory charts.")
     parser.add_argument("session_jsonl", type=Path, help="Exported Microcode session JSONL file")
-    parser.add_argument("-o", "--output", type=Path, help="Chart image path (default: .microcode/analysis/session-<id>.png)")
+    parser.add_argument("-o", "--output", type=Path, help="Activity chart path (default: .microcode/analysis/session-<id>.png)")
     args = parser.parse_args()
 
     try:
@@ -354,12 +461,15 @@ def main() -> int:
         session_id = str(header.get("id") or source.stem)
         output = args.output.expanduser() if args.output else Path.cwd() / ".microcode" / "analysis" / f"session-{safe_filename(session_id)}.png"
         output = output.resolve()
+        trajectory_output = output.with_name(f"{output.stem}-trajectory{output.suffix}")
         render_chart(result, source, output, warnings)
+        render_trajectory(result, source, trajectory_output)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
     print(f"Report written to {output}")
+    print(f"Trajectory written to {trajectory_output}")
     print(f"Tool calls: {len(result['calls'])}; success rate: " + (f"{result['success_rate']:.1f}%" if result["success_rate"] is not None else "n/a"))
     return 0
 
