@@ -445,6 +445,78 @@ describe('tui modules', () => {
     expect(transcriptChildren).toHaveLength(1)
   })
 
+  test('Git menu opens a local branch picker and switches the selected branch directly', async () => {
+    const app = Object.create(App.prototype) as any
+    const pickers: Array<{ title: string; items: Array<{ value: string; label: string }>; onSelect: (value: string) => void }> = []
+    const commands: string[] = []
+    const statuses: string[] = []
+    app.showGitPicker = (title: string, _subtitle: string, items: any[], onSelect: (value: string) => void) => {
+      pickers.push({ title, items, onSelect })
+    }
+    app.showStatus = (message: string) => statuses.push(message)
+    app.showError = (message: string) => statuses.push(message)
+    app.handleGitCommand = async (command: string) => { commands.push(command) }
+
+    const repository = {
+      root: '/repo',
+      status: async () => ({ branch: 'main', changes: [] }),
+      branches: async () => [
+        { name: 'feature/ui', current: false },
+        { name: 'main', current: true },
+      ],
+    }
+    await app.showGitActionMenu(repository)
+    const menu = pickers[0]!
+    expect(menu.items.find((item) => item.value === 'branches')).toMatchObject({ label: 'Branch' })
+    expect(menu.items.find((item) => item.value === 'log')).toMatchObject({ label: 'Log' })
+    menu.onSelect('log')
+    expect(commands).toContain('log')
+    menu.onSelect('branches')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const branchPicker = pickers.find((picker) => picker.title === 'Local branches')!
+    expect(branchPicker.items.map((item) => item.label)).toEqual(['  feature/ui', '● main'])
+    branchPicker.onSelect('feature/ui')
+    expect(commands).toContain('branch switch "feature/ui"')
+    branchPicker.onSelect('main')
+    expect(statuses).toContain('Already on branch main.')
+  })
+
+  test('Git menu commit opens a dedicated message prompt instead of pre-filling a slash command', async () => {
+    const app = Object.create(App.prototype) as any
+    const children: any[] = []
+    const inputWrites: string[] = []
+    const commands: string[] = []
+    let menuItems: Array<{ value: string; label: string }> = []
+    app.editor = {
+      onSubmit: () => {},
+      onEscape: () => {},
+      setText: (value: string) => inputWrites.push(value),
+    }
+    app.chatContainer = {
+      addChild: (child: any) => children.push(child),
+      removeChild: (child: any) => { const index = children.indexOf(child); if (index >= 0) children.splice(index, 1) },
+    }
+    app.ui = { setFocus: () => {}, requestRender: () => {} }
+    app.handleGitCommand = async (command: string) => { commands.push(command) }
+    app.showGitPicker = (_title: string, _subtitle: string, items: Array<{ value: string; label: string }>, onSelect: (value: string) => void) => {
+      menuItems = items
+      app.menuOnSelect = onSelect
+    }
+    await app.showGitActionMenu({
+      root: '/repo',
+      status: async () => ({ branch: 'main', changes: [] }),
+    })
+    expect(menuItems.find((item) => item.value === 'commit')).toMatchObject({ label: 'Commit' })
+    app.menuOnSelect('commit')
+
+    expect(children[0].render(80).join('')).toContain('Commit message')
+    expect(inputWrites).toEqual([''])
+    app.editor.onSubmit('fix: keep branch status fresh')
+    expect(commands).toEqual(['commit "fix: keep branch status fresh"'])
+    expect(children).toHaveLength(0)
+  })
+
   test('turn activity updates replace the current row instead of appending history', () => {
     const timeline = new TurnTimeline()
     timeline.setActivity('Thinking…')

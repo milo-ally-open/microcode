@@ -2718,12 +2718,18 @@ export class App {
       const actions: SelectItem[] = [
         { value: 'status', label: 'Status', description: `${status.branch} · ${status.changes.length} changed paths` },
         { value: 'diff', label: 'Diff', description: 'Inspect working-tree changes' },
+        { value: 'branches', label: 'Branch', description: 'View and switch local branches' },
         { value: 'stage', label: 'Add', description: 'Select files to stage for commit' },
         { value: 'commit', label: 'Commit', description: 'Commit staged changes' },
+        { value: 'log', label: 'Log', description: 'View recent commits' },
         { value: 'pull', label: 'Pull', description: 'Fast-forward only · confirmation required' },
         { value: 'push', label: 'Push', description: 'Push the current branch · confirmation required' },
       ]
       this.showGitPicker('Git', `${repository.root} · ${status.branch}`, actions, (value) => {
+        if (value === 'branches') {
+          void this.showGitBranches(repository, true)
+          return
+        }
         if (value === 'branch create') {
           this.editor.setText('/git branch create ')
           this.ui.setFocus(this.editor)
@@ -2731,9 +2737,7 @@ export class App {
           return
         }
         if (value === 'commit') {
-          this.editor.setText('/git commit ')
-          this.ui.setFocus(this.editor)
-          this.ui.requestRender()
+          this.promptGitCommitMessage()
           return
         }
         void this.handleGitCommand(value)
@@ -2854,6 +2858,44 @@ export class App {
     }
   }
 
+  private promptGitCommitMessage(): void {
+    const previousSubmit = this.editor.onSubmit
+    const previousEscape = this.editor.onEscape
+    const prompt = new Text('Commit message · Enter to commit · Esc to cancel', 1, 0)
+    this.chatContainer.addChild(prompt)
+    this.editor.setText('')
+    this.ui.setFocus(this.editor)
+    this.ui.requestRender()
+
+    let settled = false
+    const cleanup = () => {
+      if (settled) return
+      settled = true
+      this.editor.onSubmit = previousSubmit
+      this.editor.onEscape = previousEscape
+      this.chatContainer.removeChild(prompt)
+      this.editor.setText('')
+      this.ui.setFocus(this.editor)
+      this.ui.requestRender()
+    }
+
+    this.editor.onSubmit = (value: string) => {
+      const message = value.trim()
+      if (!message) {
+        prompt.setText('Commit message cannot be empty · Enter to commit · Esc to cancel')
+        this.ui.requestRender()
+        return
+      }
+      cleanup()
+      const quotedMessage = `"${message.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+      void this.handleGitCommand(`commit ${quotedMessage}`)
+    }
+    this.editor.onEscape = () => {
+      cleanup()
+      this.lastSigintTime = 0
+    }
+  }
+
   private async runGitMutation(
     repository: GitRepository,
     operation: () => Promise<void | string>,
@@ -2907,32 +2949,49 @@ export class App {
     this.showGitOutput('Git status', lines.join('\n'))
   }
 
-  private async showGitBranches(repository: GitRepository): Promise<void> {
-    const branches = await repository.branches()
-    if (branches.length === 0) {
-      this.showStatus('No local branches found.')
-      return
+  private async showGitBranches(repository: GitRepository, switchOnSelect = false): Promise<void> {
+    try {
+      const branches = await repository.branches()
+      if (branches.length === 0) {
+        this.showStatus('No local branches found.')
+        return
+      }
+      const items: SelectItem[] = branches.map((branch) => ({
+        value: branch.name,
+        label: `${branch.current ? '● ' : '  '}${branch.name}`,
+        description: branch.current ? 'current branch' : 'switch to this branch',
+      }))
+      this.showGitPicker(
+        'Local branches',
+        switchOnSelect ? 'Select a local branch to switch to' : 'Choose a branch to switch to or manage',
+        items,
+        (name) => {
+          const selectedBranch = branches.find((branch) => branch.name === name)
+          if (!selectedBranch) return
+          const branchArg = `"${name.replaceAll('"', '\\"')}"`
+          if (switchOnSelect) {
+            if (selectedBranch.current) {
+              this.showStatus(`Already on branch ${name}.`)
+            } else {
+              void this.handleGitCommand(`branch switch ${branchArg}`)
+            }
+            return
+          }
+          const actions: SelectItem[] = selectedBranch.current
+            ? [{ value: 'cancel', label: 'Current branch', description: 'This branch is already checked out' }]
+            : [
+              { value: 'switch', label: 'Switch to branch' },
+              { value: 'delete', label: 'Delete merged branch', description: 'Uses Git safe-delete rules · confirmation required' },
+            ]
+          this.showGitPicker(`Branch ${name}`, 'Choose a branch action', actions, (action) => {
+            if (action === 'switch') void this.handleGitCommand(`branch switch ${branchArg}`)
+            else if (action === 'delete') void this.handleGitCommand(`branch delete ${branchArg}`)
+          })
+        },
+      )
+    } catch (error) {
+      this.showError(`Could not list local branches: ${error instanceof Error ? error.message : String(error)}`)
     }
-    const items: SelectItem[] = branches.map((branch) => ({
-      value: branch.name,
-      label: `${branch.current ? '● ' : '  '}${branch.name}`,
-      description: branch.current ? 'current branch' : 'switch to this branch',
-    }))
-    this.showGitPicker('Local branches', 'Choose a branch to switch to or manage', items, (name) => {
-      const selectedBranch = branches.find((branch) => branch.name === name)
-      if (!selectedBranch) return
-      const branchArg = `"${name.replaceAll('"', '\\"')}"`
-      const actions: SelectItem[] = selectedBranch.current
-        ? [{ value: 'cancel', label: 'Current branch', description: 'This branch is already checked out' }]
-        : [
-          { value: 'switch', label: 'Switch to branch' },
-          { value: 'delete', label: 'Delete merged branch', description: 'Uses Git safe-delete rules · confirmation required' },
-        ]
-      this.showGitPicker(`Branch ${name}`, 'Choose a branch action', actions, (action) => {
-        if (action === 'switch') void this.handleGitCommand(`branch switch ${branchArg}`)
-        else if (action === 'delete') void this.handleGitCommand(`branch delete ${branchArg}`)
-      })
-    })
   }
 
   private async showGitPathPicker(repository: GitRepository, operation: 'stage' | 'unstage' | 'discard'): Promise<void> {
