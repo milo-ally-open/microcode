@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'fs/promises'
 import { isAbsolute, resolve } from 'path'
 import { Type, type Static } from 'typebox'
 import type { PermissionBehavior } from '../../permissions/types.ts'
-import { countLineChanges } from '../../utils/diffUtils.ts'
+import { countLineChanges, generateDiff } from '../../utils/diffUtils.ts'
 
 export const TOOL_NAME = 'edit'
 export const TOOL_DEFAULT_PERMISSION: PermissionBehavior = 'ask'
@@ -24,7 +24,78 @@ export interface FileEditToolDetails {
   replacements: number
   additions: number
   removals: number
+  diff?: string[]
+  diffTruncated?: boolean
+  previewNotice?: string
   phase?: 'preparing' | 'writing' | 'complete'
+}
+
+function getDiffDetails(oldContent: string, newContent: string) {
+  if (oldContent.length + newContent.length > 1_000_000) {
+    return { ...countLineChanges(oldContent, newContent), diff: [], diffTruncated: true }
+  }
+
+  const { patch, additions, removals } = generateDiff(oldContent, newContent, '')
+  const diff = patch.hunks.flatMap((hunk) => [
+    `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+    ...hunk.lines,
+  ])
+  return {
+    additions,
+    removals,
+    diff,
+    diffTruncated: false,
+  }
+}
+
+interface PreparedFileEdit {
+  filePath: string
+  newContent: string
+  details: FileEditToolDetails
+}
+
+async function prepareFileEdit(cwd: string, params: FileEditToolInput): Promise<PreparedFileEdit> {
+  const filePath = isAbsolute(params.file_path)
+    ? params.file_path
+    : resolve(cwd, params.file_path)
+  const content = await readFile(filePath, 'utf-8')
+
+  if (params.old_string === params.new_string) {
+    throw new Error('old_string and new_string are identical')
+  }
+
+  const replaceAll = params.replace_all ?? false
+  const count = content.split(params.old_string).length - 1
+  if (count === 0) {
+    throw new Error(
+      replaceAll
+        ? `old_string not found in ${filePath}`
+        : `old_string not found in ${filePath}. Make sure the string matches exactly, including whitespace and indentation.`,
+    )
+  }
+  if (!replaceAll && count > 1) {
+    throw new Error(
+      `old_string is not unique in ${filePath} (${count} matches found). Provide more context to make it unique, or use replace_all.`,
+    )
+  }
+
+  const newContent = replaceAll
+    ? content.replaceAll(params.old_string, params.new_string)
+    : content.replace(params.old_string, params.new_string)
+  const changes = getDiffDetails(content, newContent)
+  return {
+    filePath,
+    newContent,
+    details: {
+      path: filePath,
+      replacements: replaceAll ? count : 1,
+      ...changes,
+    },
+  }
+}
+
+export async function previewFileEdit(cwd: string, params: FileEditToolInput): Promise<FileEditToolDetails> {
+  return (await prepareFileEdit(cwd, params)).details
 }
 
 export function createFileEditTool(cwd: string): AgentTool<typeof editSchema, FileEditToolDetails> {
@@ -40,14 +111,14 @@ export function createFileEditTool(cwd: string): AgentTool<typeof editSchema, Fi
       _signal?: AbortSignal,
       onUpdate?: (partial: AgentToolResult<FileEditToolDetails>) => void,
     ): Promise<AgentToolResult<FileEditToolDetails>> {
-      const filePath = isAbsolute(params.file_path)
+      const requestedPath = isAbsolute(params.file_path)
         ? params.file_path
         : resolve(cwd, params.file_path)
 
       onUpdate?.({
-        content: [{ type: 'text', text: `Preparing edit ${filePath}` }],
+        content: [{ type: 'text', text: `Preparing edit ${requestedPath}` }],
         details: {
-          path: filePath,
+          path: requestedPath,
           replacements: 0,
           additions: 0,
           removals: 0,
@@ -55,85 +126,20 @@ export function createFileEditTool(cwd: string): AgentTool<typeof editSchema, Fi
         },
       })
 
-      const content = await readFile(filePath, 'utf-8')
-
-      if (params.old_string === params.new_string) {
-        throw new Error('old_string and new_string are identical')
-      }
-
-      const replaceAll = params.replace_all ?? false
-
-      if (replaceAll) {
-        const count = content.split(params.old_string).length - 1
-        if (count === 0) {
-          throw new Error(`old_string not found in ${filePath}`)
-        }
-        const newContent = content.replaceAll(params.old_string, params.new_string)
-        const changes = countLineChanges(content, newContent)
-        onUpdate?.({
-          content: [{ type: 'text', text: `Editing ${filePath}` }],
-          details: {
-            path: filePath,
-            replacements: count,
-            ...changes,
-            phase: 'writing',
-          },
-        })
-        await writeFile(filePath, newContent, 'utf-8')
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Replaced ${count} occurrence(s) in ${filePath}`,
-            },
-          ],
-          details: {
-            path: filePath,
-            replacements: count,
-            ...changes,
-            phase: 'complete',
-          },
-        }
-      }
-
-      const count = content.split(params.old_string).length - 1
-      if (count === 0) {
-        throw new Error(
-          `old_string not found in ${filePath}. Make sure the string matches exactly, including whitespace and indentation.`,
-        )
-      }
-      if (count > 1) {
-        throw new Error(
-          `old_string is not unique in ${filePath} (${count} matches found). Provide more context to make it unique, or use replace_all.`,
-        )
-      }
-
-      const newContent = content.replace(params.old_string, params.new_string)
-      const changes = countLineChanges(content, newContent)
+      const prepared = await prepareFileEdit(cwd, params)
+      const { filePath, newContent, details } = prepared
       onUpdate?.({
         content: [{ type: 'text', text: `Editing ${filePath}` }],
-        details: {
-          path: filePath,
-          replacements: 1,
-          ...changes,
-          phase: 'writing',
-        },
+        details: { ...details, phase: 'writing' },
       })
       await writeFile(filePath, newContent, 'utf-8')
 
+      const resultText = params.replace_all
+        ? `Replaced ${details.replacements} occurrence(s) in ${filePath}`
+        : `Replaced 1 occurrence in ${filePath}`
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Replaced 1 occurrence in ${filePath}`,
-          },
-        ],
-        details: {
-          path: filePath,
-          replacements: 1,
-          ...changes,
-          phase: 'complete',
-        },
+        content: [{ type: 'text', text: resultText }],
+        details: { ...details, phase: 'complete' },
       }
     },
   }

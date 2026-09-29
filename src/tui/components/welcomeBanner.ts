@@ -23,7 +23,7 @@ export class WelcomeBanner implements Component {
         ? ['Agentic coding assistant · focused terminal work']
         : []
     const hints = large
-      ? 'Esc interrupt · Ctrl+C/D exit · Ctrl+O tools · / commands · ! shell'
+      ? 'Esc interrupt · Ctrl+C/D exit · / commands · ! shell'
       : terminalWidth >= 60
         ? 'Esc interrupt · Ctrl+C/D exit · /help'
         : 'Esc · /help'

@@ -32,6 +32,7 @@
 
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Development setup](#development-setup)
 - [TUI input](#tui-input)
 - [Slash commands](#slash-commands)
 - [Models and authentication](#models-and-authentication)
@@ -72,7 +73,22 @@ bun run dev
 
 Run tests with `bun test ./tests`.
 
-Then launch Microcode in the project you want to work on:
+To launch Microcode in the project you want to work on, first change to that project's directory, then run `microcode`.
+
+### Development setup
+
+For local development, clone the repository and install the locked dependencies:
+
+```bash
+git clone https://github.com/milo-ally/microcode.git
+cd microcode
+bun install --frozen-lockfile
+bun run dev
+```
+
+Set the API key for your chosen provider in the environment, or use `/login` after starting the TUI. Run `bun test ./tests` before submitting changes; `bun run build` also verifies the standalone build and installs it to the user-level bin directory.
+
+After installing, launch Microcode from the project you want to work on:
 
 ```bash
 microcode                         # Start in the current directory

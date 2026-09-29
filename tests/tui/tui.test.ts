@@ -195,6 +195,26 @@ describe('tui modules', () => {
     expect(lines).not.toContain('chat 0')
   })
 
+  test('tool preview buttons toggle only the clicked tool row', () => {
+    let firstExpanded = false
+    let secondExpanded = false
+    const layout = new AppLayout(
+      { render: () => ['header'] },
+      { render: () => ['  [Expand preview]', '  [Collapse preview]'] },
+      [{ render: () => ['editor', 'footer'] }],
+      () => 8,
+      () => [
+        () => { firstExpanded = !firstExpanded },
+        () => { secondExpanded = !secondExpanded },
+      ],
+    )
+    layout.render(80)
+
+    expect(layout.handleInput('\x1b[<0;3;3M')).toBe(true)
+    expect(firstExpanded).toBe(false)
+    expect(secondExpanded).toBe(true)
+  })
+
   test('chat viewport pages through history and pauses following until returning to latest', () => {
     let chatLines = Array.from({ length: 12 }, (_, index) => `chat ${index}`)
     const header: Component = { render: () => ['header'] }
@@ -205,7 +225,7 @@ describe('tui modules', () => {
     let lines = layout.render(80)
     expect(lines.some((line) => line.includes('chat 11'))).toBe(true)
     expect(lines.some((line) => line.includes('↕ Scroll: mouse wheel · PgUp/PgDn'))).toBe(true)
-    expect(layout.handleScrollInput('\x1b[5~')).toBe(true)
+    expect(layout.handleInput('\x1b[5~')).toBe(true)
     lines = layout.render(80)
     expect(lines.some((line) => line.includes('Return to bottom'))).toBe(true)
     expect(lines.some((line) => line.includes('chat 4'))).toBe(true)
@@ -215,12 +235,12 @@ describe('tui modules', () => {
     expect(lines.some((line) => line.includes('chat 4'))).toBe(true)
     expect(lines.some((line) => line.includes('chat 13'))).toBe(false)
 
-    expect(layout.handleScrollInput('\x1b[6~')).toBe(true)
-    expect(layout.handleScrollInput('\x1b[6~')).toBe(true)
+    expect(layout.handleInput('\x1b[6~')).toBe(true)
+    expect(layout.handleInput('\x1b[6~')).toBe(true)
     lines = layout.render(80)
     expect(lines.some((line) => line.includes('chat 13'))).toBe(true)
     expect(lines.some((line) => line.includes('↕ Scroll: mouse wheel · PgUp/PgDn'))).toBe(true)
-    expect(layout.handleScrollInput('\x1b[5~', true)).toBe(false)
+    expect(layout.handleInput('\x1b[5~', true)).toBe(false)
   })
 
   test('chat viewport scrolls with the mouse wheel and returns to latest from its button', () => {
@@ -234,24 +254,24 @@ describe('tui modules', () => {
     layout.render(80)
 
     // Wheel-up/down moves by a few lines, not a full page.
-    expect(layout.handleScrollInput('\x1b[<64;40;4M')).toBe(true)
+    expect(layout.handleInput('\x1b[<64;40;4M')).toBe(true)
     expect(layout.render(80).some((line) => line.includes('chat 5'))).toBe(true)
 
     // Clicks outside the return button remain ignored.
-    expect(layout.handleScrollInput('\x1b[<0;80;3M')).toBe(false)
+    expect(layout.handleInput('\x1b[<0;80;3M')).toBe(false)
     expect(layout.render(80).some((line) => line.includes('chat 5'))).toBe(true)
 
     // The button is rendered on row 6; clicking it returns to the newest output.
-    expect(layout.handleScrollInput('\x1b[<0;10;6M')).toBe(true)
+    expect(layout.handleInput('\x1b[<0;10;6M')).toBe(true)
     const latestLines = layout.render(80)
     expect(latestLines.some((line) => line.includes('chat 11'))).toBe(true)
     expect(latestLines.some((line) => line.includes('Return to bottom'))).toBe(false)
 
-    expect(layout.handleScrollInput('\x1b[<64;40;4M')).toBe(true)
-    expect(layout.handleScrollInput('\x1b[<65;40;4M')).toBe(true)
+    expect(layout.handleInput('\x1b[<64;40;4M')).toBe(true)
+    expect(layout.handleInput('\x1b[<65;40;4M')).toBe(true)
     expect(layout.render(80).some((line) => line.includes('chat 11'))).toBe(true)
-    expect(layout.handleScrollInput('\x1b[<0;80;6m')).toBe(false)
-    expect(layout.handleScrollInput('\x1b[<64;40;4M', true)).toBe(false)
+    expect(layout.handleInput('\x1b[<0;80;6m')).toBe(false)
+    expect(layout.handleInput('\x1b[<64;40;4M', true)).toBe(false)
   })
 
   test('autocomplete uses available terminal height up to the list limit', () => {

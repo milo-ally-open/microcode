@@ -1,5 +1,4 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
 import {
   renderChangeSummary,
@@ -16,12 +15,16 @@ interface FileEditDetails {
   replacements?: number
   additions?: number
   removals?: number
+  diff?: string[]
+  diffTruncated?: boolean
+  previewNotice?: string
   phase?: 'preparing' | 'writing' | 'complete'
 }
 
 export class FileEditToolUI extends Container {
   private args: any
   private executionStarted = false
+  private expanded = false
   private elapsedMs = 0
   private result?: ToolResult
   private details?: FileEditDetails
@@ -35,8 +38,17 @@ export class FileEditToolUI extends Container {
     this.rebuild()
   }
 
-  setExpanded(_expanded: boolean): void {
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded
     this.rebuild()
+  }
+
+  toggleExpanded(): void {
+    this.setExpanded(!this.expanded)
+  }
+
+  hasToggleButton(): boolean {
+    return Boolean(this.details && (this.details.diff || this.details.previewNotice || this.details.diffTruncated))
   }
 
   markExecutionStarted(): void {
@@ -90,6 +102,7 @@ export class FileEditToolUI extends Container {
         this.contentBox.addChild(
           new Text(`${header} ${theme.dim('preparing')}\n  ${summary || theme.dim('calculating changes')}`),
         )
+        this.appendDiffPreview()
       } else {
         this.contentBox.addChild(new Text(`${header} ${theme.dim(formatRunningStatus(this.elapsedMs))}`))
       }
@@ -107,10 +120,35 @@ export class FileEditToolUI extends Container {
         `  ${summary || theme.dim('no line changes')} ${theme.dim(`· ${replacementText}`)}`,
       ]
       this.contentBox.addChild(new Text(lines.join('\n')))
+      this.appendDiffPreview()
     } else {
       const output = this.getOutputPreview()
       this.contentBox.addChild(new Text(`${header} ${theme.dim(formatCompletedStatus(this.elapsedMs))}\n  ${theme.fg('muted', output || 'completed with no output')}`))
     }
+  }
+
+  private appendDiffPreview(): void {
+    if (!this.details || (!this.details.diff && !this.details.previewNotice && !this.details.diffTruncated)) return
+
+    const allDiffLines = this.details.diff ?? []
+    const visibleDiffLines = this.expanded ? allDiffLines : allDiffLines.slice(0, 12)
+    this.contentBox.addChild(new Text(theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')))
+    const diff = visibleDiffLines.map((line) => {
+      if (line.startsWith('+')) return theme.fg('success', line)
+      if (line.startsWith('-')) return theme.fg('error', line)
+      if (line.startsWith('@@')) return theme.fg('accent', line)
+      return theme.fg('muted', line)
+    })
+    if (this.details.previewNotice) {
+      diff.push(theme.dim(this.details.previewNotice))
+    } else if (this.details.diffTruncated) {
+      diff.push(theme.dim('Diff unavailable for files over 1 MB'))
+    } else if (allDiffLines.length > visibleDiffLines.length) {
+      diff.push(theme.dim(`… ${allDiffLines.length - visibleDiffLines.length} more diff lines`))
+    } else if (diff.length === 0) {
+      diff.push(theme.dim('No line changes'))
+    }
+    this.contentBox.addChild(new Text(diff.join('\n')))
   }
 
   private getOutputPreview(): string {

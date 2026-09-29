@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createBashTool } from '../../src/tools/BashTool/BashTool.ts'
+import { createFileEditTool, previewFileEdit } from '../../src/tools/FileEditTool/FileEditTool.ts'
 import { createVisionTool } from '../../src/tools/VisionTool/VisionTool.ts'
 import { createWebFetchTool } from '../../src/tools/WebFetchTool/WebFetchTool.ts'
 import { createWebSearchTool } from '../../src/tools/WebSearchTool/WebSearchTool.ts'
@@ -14,6 +15,46 @@ afterEach(() => {
 })
 
 describe('runtime tools', () => {
+  test('FileEdit includes the exact unified diff in its details', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'microcode-edit-'))
+    try {
+      const filePath = join(cwd, 'source.ts')
+      await writeFile(filePath, 'const count = 1\n')
+      const preview = await previewFileEdit(cwd, {
+        file_path: 'source.ts',
+        old_string: 'const count = 1',
+        new_string: 'const count = 2',
+      })
+      expect(preview.diff).toContain('-const count = 1')
+      expect(preview.diff).toContain('+const count = 2')
+      expect(await readFile(filePath, 'utf8')).toBe('const count = 1\n')
+
+      const result = await createFileEditTool(cwd).execute('edit', {
+        file_path: 'source.ts',
+        old_string: 'const count = 1',
+        new_string: 'const count = 2',
+      })
+
+      expect(result.details?.diff).toContain('-const count = 1')
+      expect(result.details?.diff).toContain('+const count = 2')
+      expect(result.details?.additions).toBe(1)
+      expect(result.details?.removals).toBe(1)
+
+      const oldContent = Array.from({ length: 160 }, (_, i) => `old line ${i + 1}`).join('\n')
+      const newContent = Array.from({ length: 160 }, (_, i) => `new line ${i + 1}`).join('\n')
+      await writeFile(filePath, oldContent)
+      const largeResult = await createFileEditTool(cwd).execute('edit', {
+        file_path: 'source.ts',
+        old_string: oldContent,
+        new_string: newContent,
+      })
+      expect(largeResult.details?.diff?.length).toBeGreaterThan(300)
+      expect(largeResult.details?.diff).toContain('+new line 160')
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
   test('Bash tool executes, normalizes output, rejects missing cwd, and handles timeout', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'microcode-bash-'))
     try {

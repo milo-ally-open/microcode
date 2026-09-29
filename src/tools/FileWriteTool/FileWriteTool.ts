@@ -143,7 +143,7 @@ export function createFileWriteTool(
         ? { additions: countContentLines(params.content), removals: 0 }
         : countLineChanges(initial.content, params.content)
       const bytesWritten = Buffer.byteLength(params.content, 'utf8')
-      const preview = isNewFile ? params.content.slice(0, 4000) : undefined
+      const preview = params.content
 
       onUpdate?.({
         content: [{ type: 'text', text: `Writing ${filePath}` }],

@@ -52,7 +52,7 @@ import type { PluginScope, PluginSnapshot } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
 import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.ts'
 import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
-import { TOOL_NAME as EDIT_TOOL_NAME } from '../tools/FileEditTool/FileEditTool.ts'
+import { previewFileEdit, TOOL_NAME as EDIT_TOOL_NAME, type FileEditToolInput } from '../tools/FileEditTool/FileEditTool.ts'
 import { SessionManager } from '../session/SessionManager.ts'
 import { exportSessionJsonl } from '../session/exportSession.ts'
 import { DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES, loadProjectInstructions } from '../instructions/projectInstructions.ts'
@@ -196,9 +196,9 @@ export class App {
   private pendingTools = new Map<string, ToolUIComponent>()
   private pendingToolStartedAt = new Map<string, number>()
   private streamingToolLastRenderAt = new Map<string, number>()
+  private toolCallMetadata = new Map<string, { name: string; args: Record<string, unknown> }>()
   private toolRows = new Map<string, ToolUIComponent>()
   private activeTurnTimeline?: TurnTimeline
-  private toolDetailsExpanded = false
   private turnFinalized = false
   private toolElapsedTimer?: ReturnType<typeof setInterval>
   private agentWorking = false
@@ -501,17 +501,12 @@ export class App {
     this.editor.onCtrlD = () => {
       this.exit()
     }
-    this.editor.onCtrlO = () => {
-      this.toolDetailsExpanded = !this.toolDetailsExpanded
-      for (const row of this.toolRows.values()) row.setExpanded(this.toolDetailsExpanded)
-      this.ui.requestRender()
-    }
     this.editor.onPasteImage = () => {
       void this.pasteClipboardImage()
     }
 
     this.ui.addInputListener((data) => {
-      if (this.appLayout.handleScrollInput(data, this.editor.isShowingAutocomplete())) {
+      if (this.appLayout.handleInput(data, this.editor.isShowingAutocomplete())) {
         this.ui.requestRender()
         return { consume: true }
       }
@@ -526,12 +521,15 @@ export class App {
       this.chatContainer,
       [this.statusContainer, this.editorContainer, this.workingContainer, this.footer],
       () => this.ui.terminal.rows,
+      () => [...this.toolRows.values()]
+        .filter((row) => row.hasToggleButton?.() && row.toggleExpanded !== undefined)
+        .map((row) => () => row.toggleExpanded?.()),
     )
     this.ui.addChild(this.appLayout)
 
     this.ui.setFocus(this.editor)
     this.ui.start()
-    // 仅启用滚轮所需的 SGR 鼠标报告，不处理鼠标点击或拖动。
+    // Enable SGR mouse reporting for scrolling and per-tool preview buttons.
     this.ui.terminal.write('\x1b[?1000h\x1b[?1006h')
     this.mouseTrackingEnabled = true
     this.isInitialized = true
@@ -3439,16 +3437,48 @@ export class App {
    * Prompt user for tool permission at the end of the active turn timeline.
    * Returns true if approved, false if denied.
    */
+  private async updatePermissionEditPreview(input: Record<string, unknown>): Promise<void> {
+    const serializedInput = JSON.stringify(input)
+    const matchingCall = [...this.toolCallMetadata.entries()].reverse().find(([, call]) =>
+      call.name === EDIT_TOOL_NAME && JSON.stringify(call.args) === serializedInput,
+    )
+    if (!matchingCall) return
+
+    const [toolCallId] = matchingCall
+    const component = this.pendingTools.get(toolCallId) ?? this.toolRows.get(toolCallId)
+    if (!component?.updateDetails) return
+
+    const filePath = typeof input.file_path === 'string' ? input.file_path : ''
+    const oldString = typeof input.old_string === 'string' ? input.old_string : ''
+    const newString = typeof input.new_string === 'string' ? input.new_string : ''
+    try {
+      const details = await previewFileEdit(this.agent.getSnapshot().cwd, input as FileEditToolInput)
+      component.updateDetails({ ...details, phase: 'preparing' })
+    } catch (error) {
+      component.updateDetails({
+        path: filePath,
+        replacements: input.replace_all === true ? 0 : 1,
+        additions: countStreamingLines(newString),
+        removals: countStreamingLines(oldString),
+        diff: [],
+        previewNotice: `Preview unavailable: ${error instanceof Error ? error.message : 'unable to read file'}`,
+        phase: 'preparing',
+      })
+    }
+    this.ui.requestRender()
+  }
+
   async promptPermission(
     toolName: string,
     input: Record<string, unknown>,
     description: string,
   ): Promise<boolean> {
+    this.pauseToolElapsedTimer()
+    this.hideWorking()
+    this.permissionPromptActive = true
+    if (toolName === EDIT_TOOL_NAME) await this.updatePermissionEditPreview(input)
+
     return new Promise<boolean>((resolve) => {
-      // Permission waiting is not tool execution time.
-      this.pauseToolElapsedTimer()
-      this.hideWorking()
-      this.permissionPromptActive = true
 
       // Extract content for session rule matching
       const ruleContent = this.extractRuleContent(toolName, input)
@@ -3703,7 +3733,6 @@ export class App {
     const component: ToolUIComponent = UIConstructor
       ? new UIConstructor(toolCallId, args)
       : new ToolExecutionComponent(toolName, toolCallId, args)
-    component.setExpanded(this.toolDetailsExpanded)
     this.toolRows.set(toolCallId, component)
     return component
   }
@@ -3783,8 +3812,7 @@ export class App {
           const component: ToolUIComponent = existing ?? this.toolRows.get(event.toolCallId)
             ?? this.createToolRow(event.toolCallId, event.toolName, event.args)
           component.updateArgs?.(event.args)
-          component.setExpanded(this.toolDetailsExpanded)
-          component.markExecutionStarted()
+                component.markExecutionStarted()
           if (!alreadyVisible) {
             this.appendTurnEntry(component, 'tool')
           }
@@ -3831,6 +3859,7 @@ export class App {
             this.footer.invalidate()
           }
           this.pendingTools.delete(event.toolCallId)
+          this.toolCallMetadata.delete(event.toolCallId)
           this.pendingToolStartedAt.delete(event.toolCallId)
           this.streamingToolLastRenderAt.delete(event.toolCallId)
           this.stopToolElapsedTimerIfIdle()
@@ -3958,6 +3987,7 @@ export class App {
     const toolCalls = message.content.filter((block) => block.type === 'toolCall')
     for (const toolCall of toolCalls) {
       const args = toolCall.arguments ?? {}
+      this.toolCallMetadata.set(toolCall.id, { name: toolCall.name, args })
       let component = this.pendingTools.get(toolCall.id) ?? this.toolRows.get(toolCall.id)
 
       if (!component) {
@@ -3985,6 +4015,7 @@ export class App {
           additions: countStreamingLines(content),
           removals: 0,
           isNewFile,
+          preview: content,
           phase: 'preparing',
         })
       } else if (toolCall.name === EDIT_TOOL_NAME && component.updateDetails) {
@@ -4127,6 +4158,7 @@ export class App {
 
   private clearPendingToolState(): void {
     this.pendingTools.clear()
+    this.toolCallMetadata.clear()
     this.pendingToolStartedAt.clear()
     this.streamingToolLastRenderAt.clear()
     if (this.toolElapsedTimer) {

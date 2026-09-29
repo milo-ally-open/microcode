@@ -2,6 +2,8 @@ import { matchesKey, type Component, visibleWidth } from '@earendil-works/pi-tui
 import { theme } from '../theme.ts'
 
 const RETURN_TO_BOTTOM_LABEL = 'Return to bottom'
+const EXPAND_PREVIEW_LABEL = '[Expand preview]'
+const COLLAPSE_PREVIEW_LABEL = '[Collapse preview]'
 
 /** Keeps the prompt/footer fixed while the conversation uses the remaining rows. */
 export class AppLayout implements Component {
@@ -11,12 +13,14 @@ export class AppLayout implements Component {
   private returnButtonRow = 0
   private returnButtonStartColumn = 0
   private returnButtonEndColumn = 0
+  private toolToggleButtons: Array<{ row: number; startColumn: number; endColumn: number; index: number }> = []
 
   constructor(
     private readonly header: Component,
     private readonly chat: Component,
     private readonly bottom: Component[],
     private readonly getHeight: () => number,
+    private readonly getToolToggleActions: () => Array<() => void> = () => [],
   ) {}
 
   /** Scroll continuously by rendered chat rows; positive values move toward newer content. */
@@ -29,7 +33,7 @@ export class AppLayout implements Component {
     return true
   }
 
-  handleScrollInput(data: string, autocompleteVisible = false): boolean {
+  handleInput(data: string, autocompleteVisible = false): boolean {
     if (autocompleteVisible) return false
     if (matchesKey(data, 'pageUp')) return this.scrollBy(-this.lastViewportHeight)
     if (matchesKey(data, 'pageDown')) return this.scrollBy(this.lastViewportHeight)
@@ -40,17 +44,24 @@ export class AppLayout implements Component {
     const column = Number(mouse[2])
     const row = Number(mouse[3])
 
-    // 仅响应历史视图底部按钮上的鼠标左键按下；其余点击仍忽略。
-    if (
-      button === 0 && mouse[4] === 'M' && this.scrollTop !== undefined &&
-      row === this.returnButtonRow &&
-      column >= this.returnButtonStartColumn && column <= this.returnButtonEndColumn
-    ) {
-      this.followLatest()
-      return true
+    if (button === 0 && mouse[4] === 'M') {
+      const toggle = this.toolToggleButtons.find((item) =>
+        item.row === row && column >= item.startColumn && column <= item.endColumn,
+      )
+      if (toggle) {
+        this.getToolToggleActions()[toggle.index]?.()
+        return true
+      }
+
+      if (
+        this.scrollTop !== undefined && row === this.returnButtonRow &&
+        column >= this.returnButtonStartColumn && column <= this.returnButtonEndColumn
+      ) {
+        this.followLatest()
+        return true
+      }
     }
 
-    // SGR mouse wheel: bit 64 identifies the wheel, bit 0 distinguishes down from up.
     if ((button & 64) !== 0) return this.scrollBy((button & 1) === 0 ? -3 : 3)
     return false
   }
@@ -73,6 +84,28 @@ export class AppLayout implements Component {
     const top = this.scrollTop === undefined ? maxTop : Math.min(this.scrollTop, maxTop)
     if (maxTop === 0) this.scrollTop = undefined
     const visibleChat = chatLines.slice(top, top + this.lastViewportHeight)
+    this.toolToggleButtons = []
+    let buttonIndex = 0
+    for (let chatIndex = 0; chatIndex < chatLines.length; chatIndex++) {
+      const line = chatLines[chatIndex] ?? ''
+      const label = line.includes(EXPAND_PREVIEW_LABEL)
+        ? EXPAND_PREVIEW_LABEL
+        : line.includes(COLLAPSE_PREVIEW_LABEL)
+          ? COLLAPSE_PREVIEW_LABEL
+          : undefined
+      if (!label) continue
+      if (chatIndex >= top && chatIndex < top + visibleChat.length) {
+        const start = line.indexOf(label)
+        const startColumn = visibleWidth(line.slice(0, start)) + 1
+        this.toolToggleButtons.push({
+          row: headerLines.length + chatIndex - top + 1,
+          startColumn,
+          endColumn: startColumn + visibleWidth(label) - 1,
+          index: buttonIndex,
+        })
+      }
+      buttonIndex++
+    }
     const controlLine = showReturnButton
       ? theme.fg('accent', `  [ ${RETURN_TO_BOTTOM_LABEL} ]`)
       : showScrollHint

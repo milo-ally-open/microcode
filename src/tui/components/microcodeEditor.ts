@@ -25,7 +25,6 @@ export class MicrocodeEditor extends Editor {
   public onEscape?: () => void
   public onCtrlC?: () => void
   public onCtrlD?: () => void
-  public onCtrlO?: () => void
   public onPasteImage?: () => void
 
   constructor(tui: TUI, theme: EditorTheme, options?: EditorOptions) {
@@ -128,11 +127,6 @@ export class MicrocodeEditor extends Editor {
       // Fall through to Editor for delete-char-forward when not empty
     }
 
-    // Ctrl+O toggles the current transcript between compact and detailed tool traces.
-    if (data === '\x0f') {
-      this.onCtrlO?.()
-      return true
-    }
     return false
   }
 }

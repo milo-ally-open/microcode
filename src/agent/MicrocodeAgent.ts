@@ -309,15 +309,17 @@ export class MicrocodeAgent {
 
   prompt(message: AgentMessage | AgentMessage[]): Promise<void>
   prompt(input: string, images?: ImageContent[]): Promise<void>
-  prompt(
+  async prompt(
     input: string | AgentMessage | AgentMessage[],
     images?: ImageContent[],
   ): Promise<void> {
     this.refreshSkillCatalog()
     if (typeof input === 'string') {
-      return this.core.prompt(input, images)
+      await this.core.prompt(input, images)
+    } else {
+      await this.core.prompt(input)
     }
-    return this.core.prompt(input)
+    await this.compactAfterPrompt()
   }
 
   async promptReadOnly(input: string): Promise<void> {
@@ -333,6 +335,7 @@ export class MicrocodeAgent {
       this.core.state.tools = this.toolManager.getTools()
       this.emitStateChangedDetached('tools_changed')
     }
+    await this.compactAfterPrompt()
   }
 
   abort(): void {
@@ -556,9 +559,17 @@ export class MicrocodeAgent {
       )
       await this.commitCompaction(result, true)
       return result.messages
-    } catch {
-      return microcompacted
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Automatic context compaction failed: ${message}`, { cause: error })
     }
+  }
+
+  private async compactAfterPrompt(): Promise<void> {
+    // A failed pre-request compaction already ended the core run with a visible error.
+    // Do not immediately retry the same failing summary request after that run settles.
+    if (this.core.state.errorMessage?.startsWith('Automatic context compaction failed:')) return
+    await this.compactIfNeeded()
   }
 
   private async prepareModelContext(

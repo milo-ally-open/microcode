@@ -32,7 +32,9 @@ describe('file and search tools', () => {
       }, undefined, (update) => updates.push(update))
       expect(writeResult.details?.written).toBe(true)
       expect(writeResult.details?.isNewFile).toBe(true)
+      expect(writeResult.details?.preview).toBe('one\ntwo\n')
       expect(updates.map((update) => update.details.phase)).toEqual(['preparing', 'writing'])
+      expect(updates[1].details.preview).toBe('one\ntwo\n')
 
       const readResult = await read.execute('read', {
         file_path: 'notes/todo.txt',

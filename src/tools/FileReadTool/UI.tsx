@@ -1,5 +1,4 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 
@@ -18,6 +17,7 @@ interface FileReadDetails {
 export class FileReadToolUI extends Container {
   private args: any
   private executionStarted = false
+  private expanded = false
   private elapsedMs = 0
   private result?: ToolResult
   private details?: FileReadDetails
@@ -31,8 +31,17 @@ export class FileReadToolUI extends Container {
     this.rebuild()
   }
 
-  setExpanded(_expanded: boolean): void {
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded
     this.rebuild()
+  }
+
+  toggleExpanded(): void {
+    this.setExpanded(!this.expanded)
+  }
+
+  hasToggleButton(): boolean {
+    return Boolean(this.result && !this.result.isError)
   }
 
   markExecutionStarted(): void {
@@ -94,6 +103,20 @@ export class FileReadToolUI extends Container {
         .map((c) => (c.text ?? '').slice(0, 200).replace(/\n/g, ' '))
         .join(' ') ?? ''
       this.contentBox.addChild(new Text(`${header} ${theme.dim(formatCompletedStatus(this.elapsedMs))}\n  ${theme.fg('muted', output || 'completed with no output')}`))
+    }
+
+    const output = this.result.content
+      .filter((item) => item.type === 'text')
+      .map((item) => item.text ?? '')
+      .join('\n')
+    const lines = output.split('\n')
+    const visibleLines = lines.slice(0, this.expanded ? lines.length : 12)
+    this.contentBox.addChild(new Text(theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')))
+    if (lines.length > visibleLines.length) {
+      visibleLines.push(theme.dim(`… ${lines.length - visibleLines.length} more lines`))
+    }
+    if (visibleLines.length > 0) {
+      this.contentBox.addChild(new Text(visibleLines.join('\n')))
     }
   }
 }

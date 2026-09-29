@@ -31,7 +31,7 @@ interface FileWriteDetails {
   written?: boolean
 }
 
-const NEW_FILE_PREVIEW_LINES = 8
+const CONTENT_PREVIEW_LINES = 12
 
 export class FileWriteToolUI extends Container {
   private args: any
@@ -53,6 +53,14 @@ export class FileWriteToolUI extends Container {
   setExpanded(expanded: boolean): void {
     this.expanded = expanded
     this.rebuild()
+  }
+
+  toggleExpanded(): void {
+    this.setExpanded(!this.expanded)
+  }
+
+  hasToggleButton(): boolean {
+    return Boolean(this.args?.content || this.details?.preview)
   }
 
   markExecutionStarted(): void {
@@ -114,11 +122,13 @@ export class FileWriteToolUI extends Container {
         const summary = this.details.isNewFile
           ? renderChangeSummary(additions, 0)
           : theme.fg('muted', `${additions} generated line${additions === 1 ? '' : 's'}`)
-        this.contentBox.addChild(
-          new Text(`${header} ${theme.dim('preparing')}\n  ${summary} ${theme.dim(`· ${formatBytes(bytes)}`)}`),
-        )
+        const lines = [`${header} ${theme.dim('preparing')}`, `  ${summary} ${theme.dim(`· ${formatBytes(bytes)}`)}`]
+        this.appendContentPreview(lines, this.details.preview ?? this.args?.content ?? '')
+        this.contentBox.addChild(new Text(lines.join('\n')))
       } else {
-        this.contentBox.addChild(new Text(`${header} ${theme.dim(formatRunningStatus(this.elapsedMs))}`))
+        const lines = [`${header} ${theme.dim(formatRunningStatus(this.elapsedMs))}`]
+        this.appendContentPreview(lines, this.args?.content ?? '')
+        this.contentBox.addChild(new Text(lines.join('\n')))
       }
       return
     }
@@ -133,10 +143,11 @@ export class FileWriteToolUI extends Container {
         `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}`,
         `  ${summary || theme.dim('no changes')}${theme.dim(byteInfo)}`,
       ]
+      this.appendContentPreview(lines, this.details.preview ?? this.args?.content ?? '')
       this.contentBox.addChild(new Text(lines.join('\n')))
     } else if (this.details?.isNewFile) {
       // New file — show syntax preview
-      const content = this.details.preview ?? ''
+      const content = this.details.preview ?? this.args?.content ?? ''
       const lineCount = this.details.additions ?? countContentLines(content)
       const bytes = this.details.bytesWritten ?? Buffer.byteLength(content, 'utf8')
       const summary = renderChangeSummary(lineCount, 0)
@@ -145,17 +156,22 @@ export class FileWriteToolUI extends Container {
         `  ${summary} ${theme.dim(`· ${formatBytes(bytes)} · new file`)}`,
       ]
 
-      const previewLines = renderNewFilePreview(content, this.expanded ? 50 : NEW_FILE_PREVIEW_LINES)
-      for (const line of previewLines) {
-        lines.push(`  ${line}`)
-      }
-
+      this.appendContentPreview(lines, content)
       this.contentBox.addChild(new Text(lines.join('\n')))
     } else {
       // Fallback
       const output = this.getOutputPreview()
       this.contentBox.addChild(new Text(`${header} ${theme.dim(formatCompletedStatus(this.elapsedMs))}\n  ${theme.fg('muted', output || 'completed with no output')}`))
     }
+  }
+
+  private appendContentPreview(lines: string[], content: string): void {
+    if (!content) return
+    const lineCount = content.split('\n').length
+    const maxLines = this.expanded ? lineCount : CONTENT_PREVIEW_LINES
+    const previewLines = renderNewFilePreview(content, maxLines)
+    lines.push(`  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`)
+    lines.push(...previewLines.map((line) => `  ${line}`))
   }
 
   private getOutputPreview(): string {

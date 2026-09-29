@@ -13,6 +13,8 @@ interface BashDetails {
 }
 
 const COLLAPSED_OUTPUT_LINES = 12
+const EXPANDED_OUTPUT_LINES = 40
+const EXPANDED_OUTPUT_CHARS = 4_000
 const COMMAND_PREVIEW_LEN = 80
 
 export class BashToolUI extends Container implements ToolUIComponent {
@@ -97,8 +99,14 @@ export class BashToolUI extends Container implements ToolUIComponent {
       return
     }
 
-    const output = this.getOutput()
-    const lines = output.split('\n')
+    let output = this.getOutput()
+    if (this.expanded && output.length > EXPANDED_OUTPUT_CHARS) {
+      const headChars = Math.floor(EXPANDED_OUTPUT_CHARS / 4)
+      const tailChars = EXPANDED_OUTPUT_CHARS - headChars
+      const omittedChars = output.length - EXPANDED_OUTPUT_CHARS
+      output = `${output.slice(0, headChars)}\n\n... ${omittedChars} characters omitted ...\n\n${output.slice(-tailChars)}`
+    }
+    let lines = output.split('\n')
 
     if (lines.length === 0 || (lines.length === 1 && !lines[0])) {
       const exitLine = this.renderExitCode()
@@ -109,7 +117,21 @@ export class BashToolUI extends Container implements ToolUIComponent {
 
     const needsCollapse = lines.length > COLLAPSED_OUTPUT_LINES && !this.expanded
     let displayLines = lines
-    if (needsCollapse && this.executionStarted) {
+    if (this.expanded && lines.length > EXPANDED_OUTPUT_LINES && this.executionStarted) {
+      // Keep live output near the end so progress remains visible without growing the transcript.
+      displayLines = [
+        theme.dim(`... ${lines.length - EXPANDED_OUTPUT_LINES} earlier lines omitted ...`),
+        ...lines.slice(-EXPANDED_OUTPUT_LINES + 1),
+      ]
+    } else if (this.expanded && lines.length > EXPANDED_OUTPUT_LINES) {
+      const headCount = Math.floor(EXPANDED_OUTPUT_LINES / 4)
+      const tailCount = EXPANDED_OUTPUT_LINES - headCount - 1
+      displayLines = [
+        ...lines.slice(0, headCount),
+        theme.dim(`... ${lines.length - EXPANDED_OUTPUT_LINES} lines omitted ...`),
+        ...lines.slice(-tailCount),
+      ]
+    } else if (needsCollapse && this.executionStarted) {
       // Live output should follow the command, not remain stuck on its first lines.
       displayLines = lines.slice(-COLLAPSED_OUTPUT_LINES)
     } else if (needsCollapse) {

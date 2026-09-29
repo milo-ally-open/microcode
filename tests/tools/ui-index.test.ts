@@ -78,6 +78,63 @@ describe('tool UI and registration modules', () => {
     }
   })
 
+  test('read and edit UIs show previews by default and toggle all available lines', () => {
+    const read = new FileReadToolUI('read', { file_path: '/tmp/a.txt' })
+    read.updateDetails({ path: '/tmp/a.txt', totalLines: 20, returnedLines: 20 })
+    read.updateResult(complete(Array.from({ length: 20 }, (_, i) => `${i + 1} | read line ${i + 1}`).join('\n')), false)
+    expect(renderText(read)).toContain('read line 1')
+    expect(renderText(read)).toContain('[Expand preview]')
+    expect(renderText(read)).not.toContain('read line 20')
+    read.setExpanded(true)
+    expect(renderText(read)).toContain('read line 20')
+    read.setExpanded(false)
+    expect(renderText(read)).not.toContain('read line 20')
+
+    const edit = new FileEditToolUI('edit', { file_path: '/tmp/a.txt' })
+    const diff = ['@@ -1,1 +1,1 @@', '-old content', '+new content', ...Array.from({ length: 12 }, (_, i) => ` context ${i + 1}`)]
+    edit.updateDetails({
+      path: '/tmp/a.txt',
+      replacements: 1,
+      additions: 1,
+      removals: 1,
+      diff,
+      phase: 'preparing',
+    })
+    expect(renderText(edit)).toContain('old content')
+    expect(renderText(edit)).toContain('[Expand preview]')
+    edit.updateResult(complete(), false)
+    expect(renderText(edit)).toContain('old content')
+    expect(renderText(edit)).not.toContain('context 12')
+    edit.setExpanded(true)
+    expect(renderText(edit)).toContain('context 12')
+    edit.setExpanded(false)
+    expect(renderText(edit)).not.toContain('context 12')
+  })
+
+  test('write UI streams a preview and expands to the complete content', () => {
+    const write = new FileWriteToolUI('write', { file_path: '/tmp/a.txt', content: 'print(1)' })
+    write.updateArgs({ file_path: '/tmp/a.txt', content: 'print(1)' })
+    expect(renderText(write)).toContain('print(1)')
+
+    const content = Array.from({ length: 20 }, (_, i) => `print(${i + 1})`).join('\n')
+    write.updateArgs({ file_path: '/tmp/a.txt', content })
+    write.updateDetails({
+      path: '/tmp/a.txt',
+      bytesWritten: Buffer.byteLength(content),
+      additions: 20,
+      removals: 0,
+      isNewFile: true,
+      preview: content,
+      phase: 'preparing',
+    })
+    expect(renderText(write)).toContain('print(1)')
+    expect(renderText(write)).not.toContain('print(20)')
+    write.setExpanded(true)
+    expect(renderText(write)).toContain('print(20)')
+    write.setExpanded(false)
+    expect(renderText(write)).not.toContain('print(20)')
+  })
+
   test('Ask and Task UIs render special structured states', () => {
     const ask = new AskUserQuestionToolUI('ask', {
       questions: [{

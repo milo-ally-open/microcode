@@ -32,6 +32,43 @@ export interface BashToolDetails {
   exitCode: number | null
 }
 
+const MAX_CAPTURED_OUTPUT_CHARS = 20_000
+const CAPTURED_OUTPUT_HEAD_CHARS = 5_000
+const CAPTURED_OUTPUT_TAIL_CHARS = MAX_CAPTURED_OUTPUT_CHARS - CAPTURED_OUTPUT_HEAD_CHARS
+
+interface OutputCapture {
+  head: string
+  tail: string
+  totalChars: number
+  truncated: boolean
+}
+
+function appendOutput(capture: OutputCapture, chunk: string): void {
+  capture.totalChars += chunk.length
+  if (!capture.truncated) {
+    const combined = capture.head + chunk
+    if (combined.length <= MAX_CAPTURED_OUTPUT_CHARS) {
+      capture.head = combined
+      return
+    }
+    capture.truncated = true
+    capture.head = combined.slice(0, CAPTURED_OUTPUT_HEAD_CHARS)
+    capture.tail = combined.slice(-CAPTURED_OUTPUT_TAIL_CHARS)
+    return
+  }
+  capture.tail = (capture.tail + chunk).slice(-CAPTURED_OUTPUT_TAIL_CHARS)
+}
+
+function readOutput(capture: OutputCapture): string {
+  if (!capture.truncated) return capture.head
+  const omittedChars = capture.totalChars - capture.head.length - capture.tail.length
+  return `${capture.head}\n\n... [${omittedChars} characters omitted] ...\n\n${capture.tail}`
+}
+
+function createOutputCapture(): OutputCapture {
+  return { head: '', tail: '', totalChars: 0, truncated: false }
+}
+
 function normalizeTerminalOutput(value: string): string {
   const withoutAnsi = stripVTControlCharacters(value)
     .replace(/\r\n/g, '\n')
@@ -79,16 +116,16 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
       }
 
       const { shell, args } = getShellConfig()
-      let stdout = ''
-      let stderr = ''
-      let output = ''
+      const stdoutCapture = createOutputCapture()
+      const stderrCapture = createOutputCapture()
+      const outputCapture = createOutputCapture()
       let updateTimer: ReturnType<typeof setTimeout> | undefined
 
       const emitUpdate = () => {
         updateTimer = undefined
-        const cleanStdout = normalizeTerminalOutput(stdout)
-        const cleanStderr = normalizeTerminalOutput(stderr)
-        const cleanOutput = normalizeTerminalOutput(output)
+        const cleanStdout = normalizeTerminalOutput(readOutput(stdoutCapture))
+        const cleanStderr = normalizeTerminalOutput(readOutput(stderrCapture))
+        const cleanOutput = normalizeTerminalOutput(readOutput(outputCapture))
         onUpdate?.({
           content: [{ type: 'text', text: cleanOutput }],
           details: {
@@ -129,15 +166,15 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
 
         child.stdout?.on('data', (data: Buffer) => {
           const text = data.toString()
-          stdout += text
-          output += text
+          appendOutput(stdoutCapture, text)
+          appendOutput(outputCapture, text)
           scheduleUpdate()
         })
 
         child.stderr?.on('data', (data: Buffer) => {
           const text = data.toString()
-          stderr += text
-          output += text
+          appendOutput(stderrCapture, text)
+          appendOutput(outputCapture, text)
           scheduleUpdate()
         })
 
@@ -173,16 +210,12 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
         })
       })
 
-      stdout = normalizeTerminalOutput(stdout)
-      stderr = normalizeTerminalOutput(stderr)
-      output = normalizeTerminalOutput(output)
-      const truncated =
-        output.length > 100000
-          ? output.slice(0, 50000) + '\n\n... [output truncated] ...\n\n' + output.slice(-50000)
-          : output
+      const stdout = normalizeTerminalOutput(readOutput(stdoutCapture))
+      const stderr = normalizeTerminalOutput(readOutput(stderrCapture))
+      const output = normalizeTerminalOutput(readOutput(outputCapture))
 
       return {
-        content: [{ type: 'text', text: truncated || '(no output)' }],
+        content: [{ type: 'text', text: output || '(no output)' }],
         details: { stdout, stderr, output, exitCode },
       }
     },

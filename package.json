@@ -2,14 +2,10 @@
   "name": "microcode",
   "version": "0.1.0",
   "private": true,
-  "description": "An AI-powered coding assistant CLI, inspired by Microcode.",
+  "description": "A terminal-native AI coding assistant for understanding and changing code.",
   "license": "MIT",
   "type": "module",
   "packageManager": "bun@1.3.14",
-  "repository": {
-    "type": "git",
-    "url": ""
-  },
   "engines": {
     "node": ">=22.19.0",
     "bun": ">=1.3.14"
