@@ -1,92 +1,126 @@
 # Microcode
 
-A Light AI-powered coding assistant.
+Microcode is a terminal-native AI coding assistant. It brings model conversations, coding tools, project guidance, Skills, MCP servers, and session history into one keyboard-friendly TUI.
 
-## Prerequisites
+## What it does
 
-- [Bun](https://bun.sh) >= 1.3.5
+- Streams assistant responses and presents tool activity in the conversation.
+- Reads, searches, edits, and writes project files; runs shell commands with configurable permissions.
+- Supports built-in and custom models, provider sign-in, and per-request thinking levels.
+- Loads project instructions, Skills, MCP servers, and Microcode plugins.
+- Saves conversations locally so they can be resumed later.
+- Includes interactive Git workflows for status, diffs, branches, staging, commits, remotes, and stashes.
 
-## Install
+## Requirements
+
+- [Bun](https://bun.sh) 1.3.14 or later to develop and build from source.
+- A terminal with Unicode support. Some TUI interactions, including mouse-wheel scrolling, depend on terminal mouse-reporting support.
+
+## Build and install
+
+From a checkout of this repository:
 
 ```bash
 bun install
 bun run build
 ```
 
-This compiles a standalone `microcode` executable (zero runtime dependencies) and installs it to:
+The build creates a standalone executable and installs it to:
 
-| Platform | Install path | Available immediately? |
-|---|---|---|
-| Linux / macOS | `~/.local/bin/microcode` | Yes (`~/.local/bin` is in PATH by default) |
-| Windows | `%LOCALAPPDATA%\microcode\microcode.exe` | Depends — if not in PATH, restart your terminal after build |
+| Platform | Install path |
+|---|---|
+| Linux / macOS | `~/.local/bin/microcode` |
+| Windows | `%LOCALAPPDATA%\microcode\bin\microcode.exe` |
 
-## Usage
+On Windows, add `%LOCALAPPDATA%\microcode\bin` to `PATH` if the build reports that the command is not available in your current shell. The executable has no Bun runtime dependency.
+
+To run directly from source while developing:
 
 ```bash
-# Start a new session
-microcode
+bun run dev
+```
 
-# Resume the last session for this directory
-microcode --resume
+Run tests with `bun test ./tests`.
 
-# Resume a specific session by ID
-microcode --resume abc12345
+## Start using Microcode
 
-# Show version
-microcode --version
-
-# Show help
+```bash
+microcode                         # Start in the current directory
+microcode --resume                # Resume the latest session for this directory
+microcode --resume abc12345       # Resume a session by ID prefix
+microcode --model openai-codex/gpt-5.6-luna
+microcode --permission plan
+microcode --thinking high
 microcode --help
 ```
 
-### Development
+Other non-interactive commands:
 
 ```bash
-bun run dev        # Start in dev mode (bun source)
+microcode model list
+microcode mcp list                 # List configured servers
+microcode mcp list --scope project # Filter by scope: user, project, or all
+microcode --version
 ```
 
-## Release Packages
+## TUI input
 
-Release packaging lives in `packaging/`, separate from `src/` and `tests/`.
-
-```bash
-bun run package:cli  # Build a downloadable CLI/TUI package
-```
-
-Outputs are written to `packaging/out/`:
-
-| Package | Output |
+| Input | Action |
 |---|---|
-| CLI / TUI | `microcode-cli-v<version>-<platform>-<arch>.tar.gz` on Linux/macOS, `.zip` on Windows |
+| `/` | Browse slash commands; choose actions from the on-screen list |
+| `$` | Find a Skill as soon as the character is typed; `$skill-name` includes its instructions in the request |
+| `@` | Search for and attach workspace files to a request |
+| `#` | Find an enabled plugin and include its description and invocable Skill guidance |
+| `! command` | Run a shell command and show its output in the conversation |
+| `!! command` | Run a shell command without adding its output to the Agent context |
+| `Ctrl+V` / `Shift+Insert` | Attach an image from the clipboard when supported by the terminal and model |
 
-The CLI package contains a standalone `bin/microcode` binary plus install
-helpers. Build the package on each target operating system to produce native
-Linux, Windows, and macOS downloads. See `packaging/README.md` for details.
+Autocomplete menus appear above the input. While viewing older conversation history, use the mouse wheel or PageUp/PageDown to scroll continuously; select **Return to bottom** to follow the latest output again. The input and footer stay anchored while chat output grows.
 
-## Configuration
+## Slash commands
 
-### API Keys & Model Selection
+| Command | Description |
+|---|---|
+| `/help` | Show commands and keyboard shortcuts |
+| `/clear` | Clear the current conversation view and Agent context |
+| `/new` | Start a new conversation session |
+| `/session` | Browse and load saved sessions |
+| `/compact [instructions]` | Compress conversation context |
+| `/export` | Export the current conversation as JSONL into `.microcode/` |
+| `/status` | Show context usage, token statistics, and model details |
+| `/model [provider/model]` | Browse, select, or switch models |
+| `/thinking [level]` | Show or set thinking depth |
+| `/permission [mode]` | Show or set the permission mode |
+| `/login [provider]` | Sign in to a provider using the available authentication options |
+| `/logout [provider]` | Sign out of a provider |
+| `/auth` | Show provider authentication status |
+| `/mcp` | Show MCP server status |
+| `/skills` | Browse and manage Skills |
+| `/plugins` | Browse plugins and enable or disable them by scope |
+| `/git [action]` | Open the Git action menu or run a supported Git action |
+| `/tasks` | Browse task lists and prioritize unfinished work in this session |
+| `/instructions [reload]` | Show loaded project instructions or reload them |
+| `/init` | Analyze the project and propose a `MICRO.md` project guide for review |
+| `/exit` | Exit Microcode |
 
-Set the env var for your model's protocol. The model's API protocol determines which key is used:
+`/git` supports status, diffs, branches, add/stage, unstage, discard, commit, log, fetch, pull, push, and stash workflows. The interactive menus guide selection; remote and destructive actions require confirmation.
 
-| Protocol             | API Key            | Base URL           | Model           |
-|----------------------|--------------------|--------------------|-----------------|
-| openai-completions   | `OPENAI_API_KEY`   | `OPENAI_BASE_URL`  | `OPENAI_MODEL`  |
-| anthropic-messages   | `ANTHROPIC_API_KEY`| `ANTHROPIC_BASE_URL`| `ANTHROPIC_MODEL`|
-| google-generative-ai | `GEMINI_API_KEY`   | `GEMINI_BASE_URL`  | `GEMINI_MODEL`  |
-| any (fallback)       | `API_KEY`          | `BASE_URL`         | `MODEL`         |
+## Models and authentication
 
-Built-in models, context-window limits, and provider authentication come from the pinned Pi packages. Run `microcode model list` to see the models available in the installed version. See [docs/specs/model_integration_spec.md](docs/specs/model_integration_spec.md) for the unified model-catalog, OAuth/API authentication, and upstream-update policy.
+The model's API protocol determines the environment variables used for its API key, base URL, and optional model override:
 
-Switch models at runtime with the `/model` slash command, or use the `--model` CLI flag:
+| Protocol | API key | Base URL | Model override |
+|---|---|---|---|
+| OpenAI-compatible completions | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `OPENAI_MODEL` |
+| Anthropic Messages | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `ANTHROPIC_MODEL` |
+| Google Generative AI | `GEMINI_API_KEY` | `GEMINI_BASE_URL` | `GEMINI_MODEL` |
+| Fallback | `API_KEY` | `BASE_URL` | `MODEL` |
 
-```bash
-microcode --model gemini-2.5-flash
-```
+Provider sign-in is also available through `/login`; use `/auth` to inspect authentication status. Built-in models and authentication methods are sourced from the pinned Pi packages. To see the catalog available in your build, run `microcode model list`.
 
-### Custom Models
+### Custom models
 
-Define your own models in `~/.microcode/config.json` (user-level) or `.microcode/config.json` (project-level). Project overrides user for models with the same ID.
+Add models to `~/.microcode/config.json` for your user account or `.microcode/config.json` for the current project. Project definitions take precedence over user definitions with the same ID.
 
 ```json
 {
@@ -106,32 +140,59 @@ Define your own models in `~/.microcode/config.json` (user-level) or `.microcode
 }
 ```
 
-**Fields:**
+Supported `api` values are `openai-completions`, `anthropic-messages`, and `google-generative-ai`. Optional fields include `apiKeyEnv`, `reasoning`, `thinkingFormat`, `input` (for example, `["text", "image"]`), `headers`, and display-only `cost`. Custom models are available in `/model` and `microcode model list`.
 
-| Field | Required | Type | Description |
-|---|---|---|---|
-| `id` | yes | string | Unique identifier. `/model <id>` to switch. Same ID as a built-in model overrides it. |
-| `name` | yes | string | Display name shown in `/model` list |
-| `api` | yes | string | Protocol: `openai-completions`, `anthropic-messages`, `google-generative-ai` |
-| `baseUrl` | yes | string | API endpoint URL (not affected by env var overrides) |
-| `contextWindow` | yes | number | Context window size in tokens |
-| `maxTokens` | yes | number | Maximum output tokens |
-| `apiKeyEnv` | no | string | Env var holding the API key. Falls back to protocol default if unset. |
-| `reasoning` | no | boolean | Whether the model supports reasoning/thinking (default: `false`) |
-| `thinkingFormat` | no | string | When `reasoning: true`: `openai`, `deepseek`, `openrouter`, `together`, `zai`, `qwen`, `qwen-chat-template` |
-| `input` | no | string[] | Input modalities: `["text"]` or `["text", "image"]` (default: `["text"]`) |
-| `headers` | no | object | Custom HTTP headers added to each request |
-| `cost` | no | object | `{ "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }` for display only |
+See [the model integration spec](docs/specs/model_integration_spec.md) for the model catalog, authentication, and update policy.
 
-Custom models appear in the `/model` list alongside built-in ones. You can also list all models from the command line:
+## Skills, plugins, and project instructions
 
-```bash
-microcode model list
+### Skills
+
+Skills are directories containing a `SKILL.md` file. Microcode discovers:
+
+- User Skills in `~/.microcode/skills/`
+- Project Skills in `.microcode/skills/`
+- Built-in Skills managed by Microcode
+
+Project Skills take precedence over user Skills with the same name; built-in names are reserved. Type `$` to browse available Skills, then select one. Plugin Skills use the namespaced form `$plugin-name:skill-name`. A Skill adds instructions to that request; it does not grant additional tool permissions.
+
+### Plugins
+
+Microcode plugins are packages that can bundle Skills and MCP server definitions. They are discovered from:
+
+- User: `~/.microcode/plugins/<plugin-name>/`
+- Project: `.microcode/plugins/<plugin-name>/`
+
+A package has a `plugin.json` manifest and may include a `skills/` directory and/or an `mcp.json` file. For example:
+
+```text
+my-plugin/
+├── plugin.json
+├── mcp.json          # optional
+└── skills/           # optional
+    └── review/
+        └── SKILL.md
 ```
 
-### MCP Servers
+The required manifest fields are `name` (lowercase kebab-case), `version` (semantic version), and `description`:
 
-Add MCP servers to `~/.microcode/config.json` (user-level) or `.microcode/config.json` (project-level):
+```json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "A short description of this package"
+}
+```
+
+Use `/plugins` to inspect the list and choose which plugins are enabled in each scope. Packages are disabled unless enabled in Microcode. Only the documented package components are loaded; plugin manifests do not run arbitrary hooks or commands. Plugin Skills and MCP servers are namespaced, and plugin-provided MCP servers are connected when their plugin is enabled.
+
+### Project instructions
+
+Microcode loads `AGENTS.md`, `CLAUDE.md`, and `MICRO.md` files from the project root down to the current working directory, subject to a combined size limit. `/instructions` shows the loaded files; `/instructions reload` discovers them again. `/init` proposes a `MICRO.md` guide and asks before applying it.
+
+## MCP servers
+
+Standalone MCP configuration can live in `~/.microcode/config.json` or `.microcode/config.json`:
 
 ```json
 {
@@ -144,20 +205,30 @@ Add MCP servers to `~/.microcode/config.json` (user-level) or `.microcode/config
 }
 ```
 
-## Slash Commands
+Directory packages are also supported: put an `mcp.json` containing an `mcpServers` object under `~/.microcode/mcp/<package>/` or `.microcode/mcp/<package>/`. Supported transports include local stdio and secure remote MCP endpoints. Microcode discovers and connects configured servers at startup; `/mcp` shows runtime status and `microcode mcp list` lists discovered configuration. MCP tools still follow Microcode's permission policy. MCP `env` and `headers` values are stored as configuration strings: keep credentials in local, untracked configuration and do not commit them.
 
-- `/clear` — Clear conversation history
-- `/compact` — Compress conversation context
-- `/model` — Show or switch model
-- `/thinking` — Show or set thinking depth
-- `/permission` — Show or switch permission mode
-- `/skills` — List available skills
-- `/help` — Show available commands
+## Permissions
 
-## Skills
+The default `interactive` mode allows reads and asks before write, edit, and shell operations. Set a mode at launch with `--permission` (or `--permission-mode`) or change it with `/permission`:
 
-Skills are loaded from `SKILL.md` files in `~/.microcode/skills/` or `.microcode/skills/`. Invoke a skill with `/<skill-name>` to load its instructions into the system prompt.
+| Mode | Behavior |
+|---|---|
+| `interactive` | Ask before write/edit/shell operations |
+| `auto-approve` | Run tools without interactive approval prompts |
+| `plan` | Read-only; block write, edit, and shell operations |
+
+Review tool requests and permission prompts before approving them, especially when using external MCP servers.
 
 ## Sessions
 
-Sessions are saved to `~/.microcode/sessions/`. Use `microcode --resume` to continue where you left off.
+Sessions are stored locally under `~/.microcode/sessions/`. `microcode --resume` opens the latest session for the current working directory; `microcode --resume <id-prefix>` opens a matching session. Resumed messages are rendered in the conversation immediately and can be browsed with the mouse wheel or PageUp/PageDown. Use `/session` to choose from saved sessions or `/new` to begin another conversation.
+
+## Release packages
+
+The CLI/TUI package scripts are in `packaging/`:
+
+```bash
+bun run package:cli
+```
+
+Artifacts are written to `packaging/out/` as platform-specific `.tar.gz` (Linux/macOS) or `.zip` (Windows) packages. Build on each target operating system for a native executable. See [packaging/README.md](packaging/README.md) for install details.
