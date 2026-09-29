@@ -1,24 +1,54 @@
-# Microcode
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/microcode-logo-dark.png">
+    <img src="assets/microcode-logo-light.png" alt="Microcode logo" width="128">
+  </picture>
+</p>
 
-Microcode is a terminal-native AI coding assistant. It brings model conversations, coding tools, project guidance, Skills, MCP servers, and session history into one keyboard-friendly TUI.
+<h1 align="center">Microcode</h1>
 
-## What it does
+<p align="center">
+  A terminal-native AI coding assistant for understanding and changing code—built around a focused, keyboard-friendly TUI.
+</p>
 
-- Streams assistant responses and presents tool activity in the conversation.
-- Reads, searches, edits, and writes project files; runs shell commands with configurable permissions.
-- Supports built-in and custom models, provider sign-in, and per-request thinking levels.
-- Loads project instructions, Skills, MCP servers, and Microcode plugins.
-- Saves conversations locally so they can be resumed later.
-- Includes interactive Git workflows for status, diffs, branches, staging, commits, remotes, and stashes.
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#tui-input">TUI guide</a> ·
+  <a href="#models-and-authentication">Models</a> ·
+  <a href="#skills-plugins-and-project-instructions">Extensibility</a>
+</p>
+
+## Features
+
+- **Work in the terminal:** stream assistant responses alongside tool activity in a persistent conversation.
+- **Understand and change code:** search and read project files, make edits, and run shell commands through configurable permission modes.
+- **Choose your model:** use supported built-in providers or define custom models; adjust thinking depth per request.
+- **Extend the workflow:** load repository guidance, Skills, MCP servers, and Microcode plugins.
+- **Pick up where you left off:** save sessions locally, resume them with rendered conversation history, and scroll through long runs.
+- **Handle Git interactively:** inspect changes, manage branches and staging, commit, fetch, pull, push, and work with stashes.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [TUI input](#tui-input)
+- [Slash commands](#slash-commands)
+- [Models and authentication](#models-and-authentication)
+- [Skills, plugins, and project instructions](#skills-plugins-and-project-instructions)
+- [MCP servers](#mcp-servers)
+- [Permissions](#permissions)
+- [Sessions](#sessions)
+- [Release packages](#release-packages)
 
 ## Requirements
 
 - [Bun](https://bun.sh) 1.3.14 or later to develop and build from source.
 - A terminal with Unicode support. Some TUI interactions, including mouse-wheel scrolling, depend on terminal mouse-reporting support.
 
-## Build and install
+## Quick start
 
-From a checkout of this repository:
+Build and install from a repository checkout:
 
 ```bash
 bun install
@@ -42,7 +72,7 @@ bun run dev
 
 Run tests with `bun test ./tests`.
 
-## Start using Microcode
+Then launch Microcode in the project you want to work on:
 
 ```bash
 microcode                         # Start in the current directory
