@@ -12,9 +12,6 @@ interface BashDetails {
   exitCode: number | null
 }
 
-const COLLAPSED_OUTPUT_LINES = 12
-const EXPANDED_OUTPUT_LINES = 40
-const EXPANDED_OUTPUT_CHARS = 4_000
 const COMMAND_PREVIEW_LEN = 80
 
 export class BashToolUI extends Container implements ToolUIComponent {
@@ -37,6 +34,16 @@ export class BashToolUI extends Container implements ToolUIComponent {
   setExpanded(expanded: boolean): void {
     this.expanded = expanded
     this.rebuild()
+  }
+
+  toggleExpanded(): void {
+    this.setExpanded(!this.expanded)
+  }
+
+  hasToggleButton(): boolean {
+    if (!this.result) return false
+    const output = this.getOutput()
+    return output.length > 0
   }
 
   markExecutionStarted(): void {
@@ -99,14 +106,8 @@ export class BashToolUI extends Container implements ToolUIComponent {
       return
     }
 
-    let output = this.getOutput()
-    if (this.expanded && output.length > EXPANDED_OUTPUT_CHARS) {
-      const headChars = Math.floor(EXPANDED_OUTPUT_CHARS / 4)
-      const tailChars = EXPANDED_OUTPUT_CHARS - headChars
-      const omittedChars = output.length - EXPANDED_OUTPUT_CHARS
-      output = `${output.slice(0, headChars)}\n\n... ${omittedChars} characters omitted ...\n\n${output.slice(-tailChars)}`
-    }
-    let lines = output.split('\n')
+    const output = this.getOutput()
+    const lines = this.getOutputLines(output)
 
     if (lines.length === 0 || (lines.length === 1 && !lines[0])) {
       const exitLine = this.renderExitCode()
@@ -115,44 +116,16 @@ export class BashToolUI extends Container implements ToolUIComponent {
       return
     }
 
-    const needsCollapse = lines.length > COLLAPSED_OUTPUT_LINES && !this.expanded
-    let displayLines = lines
-    if (this.expanded && lines.length > EXPANDED_OUTPUT_LINES && this.executionStarted) {
-      // Keep live output near the end so progress remains visible without growing the transcript.
-      displayLines = [
-        theme.dim(`... ${lines.length - EXPANDED_OUTPUT_LINES} earlier lines omitted ...`),
-        ...lines.slice(-EXPANDED_OUTPUT_LINES + 1),
-      ]
-    } else if (this.expanded && lines.length > EXPANDED_OUTPUT_LINES) {
-      const headCount = Math.floor(EXPANDED_OUTPUT_LINES / 4)
-      const tailCount = EXPANDED_OUTPUT_LINES - headCount - 1
-      displayLines = [
-        ...lines.slice(0, headCount),
-        theme.dim(`... ${lines.length - EXPANDED_OUTPUT_LINES} lines omitted ...`),
-        ...lines.slice(-tailCount),
-      ]
-    } else if (needsCollapse && this.executionStarted) {
-      // Live output should follow the command, not remain stuck on its first lines.
-      displayLines = lines.slice(-COLLAPSED_OUTPUT_LINES)
-    } else if (needsCollapse) {
-      const headCount = Math.ceil(COLLAPSED_OUTPUT_LINES / 2)
-      const tailCount = COLLAPSED_OUTPUT_LINES - headCount
-      displayLines = [
-        ...lines.slice(0, headCount),
-        theme.dim(`... ${lines.length - COLLAPSED_OUTPUT_LINES} lines omitted ...`),
-        ...lines.slice(-tailCount),
-      ]
-    }
+    const hasMoreOutput = lines.length > 0
+    const displayLines = this.expanded ? lines : []
     const outputText = displayLines.join('\n')
 
     const exitLine = this.renderExitCode()
-    const toggleHint = lines.length > COLLAPSED_OUTPUT_LINES
-      ? theme.dim(
+    const toggleHint = hasMoreOutput
+      ? theme.fg('accent',
           this.expanded
-            ? ' [collapse]'
-            : this.executionStarted
-              ? ` [latest ${COLLAPSED_OUTPUT_LINES}/${lines.length} lines]`
-              : ` [expand, ${lines.length} lines]`,
+            ? '[Collapse preview]'
+            : '[Expand preview]',
         )
       : ''
 
@@ -162,8 +135,8 @@ export class BashToolUI extends Container implements ToolUIComponent {
         ? formatRunningStatus(this.elapsedMs)
         : formatCompletedStatus(this.elapsedMs),
     )}`
-    if (toggleHint) content += toggleHint
-    content += `\n${outputText}`
+    if (toggleHint) content += `  ${toggleHint}`
+    if (outputText) content += `\n${outputText.split('\n').map((line, index) => `${String(index + 1).padStart(String(lines.length).length)} │ ${line}`).join('\n')}`
     if (exitLine) content += `\n${exitLine}`
 
     this.contentBox.addChild(new Text(content))
@@ -190,5 +163,9 @@ export class BashToolUI extends Container implements ToolUIComponent {
       .map((c) => c.text ?? '')
       .join('')
       .trimEnd()
+  }
+
+  private getOutputLines(output = this.getOutput()): string[] {
+    return output ? output.split('\n') : []
   }
 }

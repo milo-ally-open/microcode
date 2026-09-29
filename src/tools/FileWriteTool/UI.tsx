@@ -1,10 +1,6 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
-import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
-import {
-  renderChangeSummary,
-  renderNewFilePreview,
-} from '../../utils/diffUtils.ts'
+import { numberDiffLines, renderChangeSummary, renderTerminalDiffLine } from '../../utils/diffUtils.ts'
 import {
   countContentLines,
   formatBytes,
@@ -26,12 +22,15 @@ interface FileWriteDetails {
   removals?: number
   isNewFile?: boolean
   preview?: string
-  phase?: 'preparing' | 'writing' | 'complete'
+  diff?: string[]
+  diffTruncated?: boolean
+  previewNotice?: string
+  phase?: 'preparing' | 'approval' | 'writing' | 'complete'
   warning?: string
   written?: boolean
 }
 
-const CONTENT_PREVIEW_LINES = 12
+const CONTENT_PREVIEW_LINES = 0
 
 export class FileWriteToolUI extends Container {
   private args: any
@@ -60,7 +59,17 @@ export class FileWriteToolUI extends Container {
   }
 
   hasToggleButton(): boolean {
-    return Boolean(this.args?.content || this.details?.preview)
+    const isApprovalPreview = this.details?.phase === 'approval'
+    if (!isApprovalPreview && (!this.result || this.executionStarted)) return false
+    if (this.result && !this.details) return false
+    if (this.details?.written === false && this.details.warning) return false
+    const content = this.details?.preview ?? this.args?.content
+    const previewLineCount = Array.isArray(this.details?.diff) && !this.details.diffTruncated
+      ? this.details.diff.length
+      : typeof content === 'string'
+        ? countContentLines(content)
+        : 0
+    return previewLineCount > 0
   }
 
   markExecutionStarted(): void {
@@ -115,21 +124,33 @@ export class FileWriteToolUI extends Container {
       return
     }
 
-    if (!this.result) {
-      if (this.details?.phase === 'preparing') {
-        const additions = this.details.additions ?? 0
-        const bytes = this.details.bytesWritten ?? 0
-        const summary = this.details.isNewFile
-          ? renderChangeSummary(additions, 0)
-          : theme.fg('muted', `${additions} generated line${additions === 1 ? '' : 's'}`)
-        const lines = [`${header} ${theme.dim('preparing')}`, `  ${summary} ${theme.dim(`· ${formatBytes(bytes)}`)}`]
-        this.appendContentPreview(lines, this.details.preview ?? this.args?.content ?? '')
-        this.contentBox.addChild(new Text(lines.join('\n')))
-      } else {
-        const lines = [`${header} ${theme.dim(formatRunningStatus(this.elapsedMs))}`]
-        this.appendContentPreview(lines, this.args?.content ?? '')
-        this.contentBox.addChild(new Text(lines.join('\n')))
-      }
+    // 审批前展示待写内容供用户检查；参数流入和实际写入期间只显示行数，避免刷屏。
+    if (this.details?.phase === 'approval') {
+      const content = this.details.preview ?? this.args?.content ?? ''
+      const additions = this.details.additions ?? countContentLines(content)
+      const bytes = this.details.bytesWritten ?? Buffer.byteLength(content, 'utf8')
+      const summary = renderChangeSummary(additions, 0) || theme.dim('0 added lines')
+      const lines = [
+        `${header} ${theme.dim('awaiting approval')}${this.previewToggle()}`,
+        `  ${summary} ${theme.dim(`· ${formatBytes(bytes)}`)}`,
+      ]
+      this.appendDiffPreview(lines, content)
+      this.contentBox.addChild(new Text(lines.join('\n')))
+      return
+    }
+
+    if (!this.result || this.executionStarted) {
+      const additions = this.details?.additions
+        ?? (typeof this.args?.content === 'string' ? countContentLines(this.args.content) : 0)
+      const status = this.details?.phase === 'preparing'
+        ? 'preparing'
+        : this.details?.phase === 'writing'
+          ? 'writing'
+          : formatRunningStatus(this.elapsedMs)
+      const summary = renderChangeSummary(additions, 0) || theme.dim('0 added lines')
+      this.contentBox.addChild(new Text(
+        `${header} ${theme.dim(status)}\n  ${summary}`,
+      ))
       return
     }
 
@@ -140,10 +161,10 @@ export class FileWriteToolUI extends Container {
       const bytes = this.details?.bytesWritten
       const byteInfo = bytes === undefined ? '' : ` · ${formatBytes(bytes)}`
       const lines: string[] = [
-        `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}`,
+        `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}${this.previewToggle()}`,
         `  ${summary || theme.dim('no changes')}${theme.dim(byteInfo)}`,
       ]
-      this.appendContentPreview(lines, this.details.preview ?? this.args?.content ?? '')
+      this.appendDiffPreview(lines, this.details.preview ?? this.args?.content ?? '')
       this.contentBox.addChild(new Text(lines.join('\n')))
     } else if (this.details?.isNewFile) {
       // New file — show syntax preview
@@ -152,11 +173,11 @@ export class FileWriteToolUI extends Container {
       const bytes = this.details.bytesWritten ?? Buffer.byteLength(content, 'utf8')
       const summary = renderChangeSummary(lineCount, 0)
       const lines: string[] = [
-        `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}`,
+        `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}${this.previewToggle()}`,
         `  ${summary} ${theme.dim(`· ${formatBytes(bytes)} · new file`)}`,
       ]
 
-      this.appendContentPreview(lines, content)
+      this.appendDiffPreview(lines, content)
       this.contentBox.addChild(new Text(lines.join('\n')))
     } else {
       // Fallback
@@ -165,13 +186,32 @@ export class FileWriteToolUI extends Container {
     }
   }
 
-  private appendContentPreview(lines: string[], content: string): void {
-    if (!content) return
-    const lineCount = content.split('\n').length
-    const maxLines = this.expanded ? lineCount : CONTENT_PREVIEW_LINES
-    const previewLines = renderNewFilePreview(content, maxLines)
-    lines.push(`  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`)
-    lines.push(...previewLines.map((line) => `  ${line}`))
+  private appendDiffPreview(lines: string[], content: string): void {
+    const hasDiff = Array.isArray(this.details?.diff) && !this.details.diffTruncated
+    const contentLines = content.split('\n')
+    if (content.endsWith('\n')) contentLines.pop()
+    const allDiffLines = hasDiff
+      ? this.details?.diff ?? []
+      : contentLines.map((line) => `+${line}`)
+    const visibleDiffLines = this.expanded
+      ? allDiffLines
+      : allDiffLines.slice(0, CONTENT_PREVIEW_LINES)
+    if (visibleDiffLines.length > 0) {
+      lines.push(...numberDiffLines(visibleDiffLines).map(({ line, gutter }) => `  ${theme.dim(gutter)}${renderTerminalDiffLine(line)}`))
+    }
+    if (this.details?.previewNotice) {
+      lines.push(`  ${theme.fg('warning', this.details.previewNotice)}`)
+    } else if (this.details?.diffTruncated) {
+      lines.push(`  ${theme.fg('warning', 'Diff unavailable for files over 1 MB; proposed content shown as additions')}`)
+    } else if (allDiffLines.length === 0) {
+      lines.push(`  ${theme.dim('No line changes')}`)
+    }
+  }
+
+  private previewToggle(): string {
+    return this.hasToggleButton()
+      ? `  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`
+      : ''
   }
 
   private getOutputPreview(): string {

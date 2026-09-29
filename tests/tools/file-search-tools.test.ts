@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { createFileEditTool } from '../../src/tools/FileEditTool/FileEditTool.ts'
 import { createFileReadTool } from '../../src/tools/FileReadTool/FileReadTool.ts'
-import { createFileWriteTool } from '../../src/tools/FileWriteTool/FileWriteTool.ts'
+import { createFileWriteTool, previewFileWrite } from '../../src/tools/FileWriteTool/FileWriteTool.ts'
 import { createGlobTool } from '../../src/tools/GlobTool/GlobTool.ts'
 import { createGrepTool } from '../../src/tools/GrepTool/GrepTool.ts'
 import { globSearch, grepSearch } from '../../src/utils/searchUtils.ts'
@@ -33,8 +33,25 @@ describe('file and search tools', () => {
       expect(writeResult.details?.written).toBe(true)
       expect(writeResult.details?.isNewFile).toBe(true)
       expect(writeResult.details?.preview).toBe('one\ntwo\n')
+      expect(writeResult.details?.diff).toContain('+one')
+      expect(writeResult.details?.diff).toContain('+two')
       expect(updates.map((update) => update.details.phase)).toEqual(['preparing', 'writing'])
       expect(updates[1].details.preview).toBe('one\ntwo\n')
+
+      await writeFile(join(cwd, 'notes', 'existing.txt'), 'old line\nkeep line\n')
+      const overwritePreview = await previewFileWrite(cwd, {
+        file_path: 'notes/existing.txt',
+        content: 'new line\nkeep line\n',
+      })
+      expect(overwritePreview.diff).toContain('-old line')
+      expect(overwritePreview.diff).toContain('+new line')
+
+      const overwriteResult = await write.execute('overwrite', {
+        file_path: 'notes/existing.txt',
+        content: 'new line\nkeep line\n',
+      })
+      expect(overwriteResult.details?.diff).toContain('-old line')
+      expect(overwriteResult.details?.diff).toContain('+new line')
 
       const readResult = await read.execute('read', {
         file_path: 'notes/todo.txt',

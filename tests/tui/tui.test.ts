@@ -200,7 +200,7 @@ describe('tui modules', () => {
     let secondExpanded = false
     const layout = new AppLayout(
       { render: () => ['header'] },
-      { render: () => ['  [Expand preview]', '  [Collapse preview]'] },
+      { render: () => ['read one [Expand preview]', 'read two [Collapse preview]'] },
       [{ render: () => ['editor', 'footer'] }],
       () => 8,
       () => [
@@ -210,7 +210,7 @@ describe('tui modules', () => {
     )
     layout.render(80)
 
-    expect(layout.handleInput('\x1b[<0;3;3M')).toBe(true)
+    expect(layout.handleInput('\x1b[<0;17;3M')).toBe(true)
     expect(firstExpanded).toBe(false)
     expect(secondExpanded).toBe(true)
   })

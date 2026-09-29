@@ -39,6 +39,18 @@ export class TurnTimeline extends Container {
     this.activity.setText(label)
   }
 
+  getToolToggleActions(): Array<() => void> {
+    return this.entries.flatMap(({ component, kind }) => {
+      if (kind !== 'tool') return []
+      const tool = component as Component & {
+        hasToggleButton?: () => boolean
+        toggleExpanded?: () => void
+      }
+      if (!tool.hasToggleButton?.() || !tool.toggleExpanded) return []
+      return [() => tool.toggleExpanded?.()]
+    })
+  }
+
   render(width: number): string[] {
     if (this.entries.length === 0) return []
 

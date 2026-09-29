@@ -1,7 +1,9 @@
 import { Box, Container, Text } from '@earendil-works/pi-tui'
 import { theme } from '../../tui/theme.ts'
 import {
+  numberDiffLines,
   renderChangeSummary,
+  renderTerminalDiffLine,
 } from '../../utils/diffUtils.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 
@@ -48,7 +50,7 @@ export class FileEditToolUI extends Container {
   }
 
   hasToggleButton(): boolean {
-    return Boolean(this.details && (this.details.diff || this.details.previewNotice || this.details.diffTruncated))
+    return Boolean(this.details?.diff?.length)
   }
 
   markExecutionStarted(): void {
@@ -99,9 +101,10 @@ export class FileEditToolUI extends Container {
         const additions = this.details.additions ?? 0
         const removals = this.details.removals ?? 0
         const summary = renderChangeSummary(additions, removals)
-        this.contentBox.addChild(
-          new Text(`${header} ${theme.dim('preparing')}\n  ${summary || theme.dim('calculating changes')}`),
-        )
+        const toggle = this.previewToggle()
+        this.contentBox.addChild(new Text(
+          `${header} ${theme.dim('preparing')}${toggle}\n  ${summary || theme.dim('calculating changes')}`,
+        ))
         this.appendDiffPreview()
       } else {
         this.contentBox.addChild(new Text(`${header} ${theme.dim(formatRunningStatus(this.elapsedMs))}`))
@@ -116,7 +119,7 @@ export class FileEditToolUI extends Container {
       const replacementCount = this.details?.replacements ?? 0
       const replacementText = `${replacementCount} replacement${replacementCount === 1 ? '' : 's'}`
       const lines: string[] = [
-        `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}`,
+        `${header} ${theme.dim(this.executionStarted ? 'writing' : formatCompletedStatus(this.elapsedMs))}${this.previewToggle()}`,
         `  ${summary || theme.dim('no line changes')} ${theme.dim(`· ${replacementText}`)}`,
       ]
       this.contentBox.addChild(new Text(lines.join('\n')))
@@ -131,24 +134,22 @@ export class FileEditToolUI extends Container {
     if (!this.details || (!this.details.diff && !this.details.previewNotice && !this.details.diffTruncated)) return
 
     const allDiffLines = this.details.diff ?? []
-    const visibleDiffLines = this.expanded ? allDiffLines : allDiffLines.slice(0, 12)
-    this.contentBox.addChild(new Text(theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')))
-    const diff = visibleDiffLines.map((line) => {
-      if (line.startsWith('+')) return theme.fg('success', line)
-      if (line.startsWith('-')) return theme.fg('error', line)
-      if (line.startsWith('@@')) return theme.fg('accent', line)
-      return theme.fg('muted', line)
-    })
+    const visibleDiffLines = this.expanded ? allDiffLines : allDiffLines.slice(0, 0)
+    const diff = numberDiffLines(visibleDiffLines).map(({ line, gutter }) => `${theme.dim(gutter)}${renderTerminalDiffLine(line)}`)
     if (this.details.previewNotice) {
       diff.push(theme.dim(this.details.previewNotice))
     } else if (this.details.diffTruncated) {
       diff.push(theme.dim('Diff unavailable for files over 1 MB'))
-    } else if (allDiffLines.length > visibleDiffLines.length) {
-      diff.push(theme.dim(`… ${allDiffLines.length - visibleDiffLines.length} more diff lines`))
-    } else if (diff.length === 0) {
+    } else if (allDiffLines.length === 0) {
       diff.push(theme.dim('No line changes'))
     }
-    this.contentBox.addChild(new Text(diff.join('\n')))
+    if (diff.length > 0) this.contentBox.addChild(new Text(diff.join('\n')))
+  }
+
+  private previewToggle(): string {
+    return this.hasToggleButton()
+      ? `  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`
+      : ''
   }
 
   private getOutputPreview(): string {

@@ -28,6 +28,10 @@ function renderText(ui: any): string {
   return ui.render(120, 40).join('\n')
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
 function complete(content = 'done', isError = false) {
   return { content: [{ type: 'text', text: content }], isError }
 }
@@ -78,17 +82,26 @@ describe('tool UI and registration modules', () => {
     }
   })
 
-  test('read and edit UIs show previews by default and toggle all available lines', () => {
+  test('read UI hides file contents by default and expands on request; edit UI previews diffs', () => {
     const read = new FileReadToolUI('read', { file_path: '/tmp/a.txt' })
     read.updateDetails({ path: '/tmp/a.txt', totalLines: 20, returnedLines: 20 })
     read.updateResult(complete(Array.from({ length: 20 }, (_, i) => `${i + 1} | read line ${i + 1}`).join('\n')), false)
-    expect(renderText(read)).toContain('read line 1')
-    expect(renderText(read)).toContain('[Expand preview]')
+    expect(renderText(read)).not.toContain('read line 1')
     expect(renderText(read)).not.toContain('read line 20')
+    expect(renderText(read)).toContain('[Expand preview]')
+    expect(stripAnsi(renderText(read))).toMatch(/read .*\[Expand preview\]/)
     read.setExpanded(true)
+    expect(renderText(read)).toContain('read line 1')
     expect(renderText(read)).toContain('read line 20')
     read.setExpanded(false)
     expect(renderText(read)).not.toContain('read line 20')
+
+    const readWithoutDetails = new FileReadToolUI('read-no-details', { file_path: '/tmp/b.txt' })
+    readWithoutDetails.updateResult(complete('sensitive file content'), false)
+    expect(renderText(readWithoutDetails)).not.toContain('sensitive file content')
+    expect(renderText(readWithoutDetails)).toContain('[Expand preview]')
+    readWithoutDetails.setExpanded(true)
+    expect(renderText(readWithoutDetails)).toContain('sensitive file content')
 
     const edit = new FileEditToolUI('edit', { file_path: '/tmp/a.txt' })
     const diff = ['@@ -1,1 +1,1 @@', '-old content', '+new content', ...Array.from({ length: 12 }, (_, i) => ` context ${i + 1}`)]
@@ -100,23 +113,25 @@ describe('tool UI and registration modules', () => {
       diff,
       phase: 'preparing',
     })
-    expect(renderText(edit)).toContain('old content')
+    expect(renderText(edit)).not.toContain('old content')
+    expect(renderText(edit)).not.toContain('new content')
     expect(renderText(edit)).toContain('[Expand preview]')
+    expect(stripAnsi(renderText(edit))).toMatch(/edit .*\[Expand preview\]/)
     edit.updateResult(complete(), false)
-    expect(renderText(edit)).toContain('old content')
+    expect(renderText(edit)).not.toContain('old content')
     expect(renderText(edit)).not.toContain('context 12')
     edit.setExpanded(true)
     expect(renderText(edit)).toContain('context 12')
+    expect(renderText(edit)).toContain('old content')
+    expect(renderText(edit)).toContain('new content')
     edit.setExpanded(false)
     expect(renderText(edit)).not.toContain('context 12')
   })
 
-  test('write UI streams a preview and expands to the complete content', () => {
+  test('write UI previews content for approval and after completion, but not while streaming or writing', () => {
     const write = new FileWriteToolUI('write', { file_path: '/tmp/a.txt', content: 'print(1)' })
-    write.updateArgs({ file_path: '/tmp/a.txt', content: 'print(1)' })
-    expect(renderText(write)).toContain('print(1)')
-
     const content = Array.from({ length: 20 }, (_, i) => `print(${i + 1})`).join('\n')
+    write.markExecutionStarted()
     write.updateArgs({ file_path: '/tmp/a.txt', content })
     write.updateDetails({
       path: '/tmp/a.txt',
@@ -127,12 +142,67 @@ describe('tool UI and registration modules', () => {
       preview: content,
       phase: 'preparing',
     })
-    expect(renderText(write)).toContain('print(1)')
+    write.updateResult(complete('partial'), true)
+    expect(renderText(write)).toContain('+20 lines')
+    expect(renderText(write)).not.toContain('print(1)')
     expect(renderText(write)).not.toContain('print(20)')
+    expect(write.hasToggleButton()).toBe(false)
+
+    write.updateDetails({
+      path: '/tmp/a.txt',
+      bytesWritten: Buffer.byteLength(content),
+      additions: 20,
+      removals: 0,
+      isNewFile: true,
+      preview: content,
+      phase: 'approval',
+    })
+    expect(renderText(write)).toContain('awaiting approval')
+    expect(renderText(write)).not.toContain('print(1)')
+    expect(renderText(write)).toContain('[Expand preview]')
+    expect(stripAnsi(renderText(write))).toMatch(/write .*\[Expand preview\]/)
+    expect(renderText(write)).not.toContain('print(20)')
+    expect(write.hasToggleButton()).toBe(true)
+    write.setExpanded(true)
+    expect(renderText(write)).toContain('print(20)')
+    write.setExpanded(false)
+
+    write.updateDetails({
+      path: '/tmp/a.txt',
+      additions: 20,
+      isNewFile: true,
+      preview: content,
+      phase: 'writing',
+    })
+    expect(renderText(write)).toContain('+20 lines')
+    expect(renderText(write)).not.toContain('print(1)')
+    expect(write.hasToggleButton()).toBe(false)
+
+    write.updateResult(complete('done'), false)
+    expect(renderText(write)).not.toContain('print(1)')
+    expect(renderText(write)).not.toContain('print(20)')
+    expect(write.hasToggleButton()).toBe(true)
     write.setExpanded(true)
     expect(renderText(write)).toContain('print(20)')
     write.setExpanded(false)
     expect(renderText(write)).not.toContain('print(20)')
+
+    const overwrite = new FileWriteToolUI('overwrite', { file_path: '/tmp/old.txt' })
+    overwrite.updateDetails({
+      path: '/tmp/old.txt',
+      additions: 1,
+      removals: 1,
+      isNewFile: false,
+      preview: 'new line\n',
+      diff: ['@@ -1,1 +1,1 @@', '-old line', '+new line'],
+      phase: 'approval',
+    })
+    expect(renderText(overwrite)).not.toContain('-old line')
+    expect(renderText(overwrite)).toContain('[Expand preview]')
+    overwrite.setExpanded(true)
+    expect(renderText(overwrite)).toContain('-old line')
+    expect(renderText(overwrite)).toContain('+new line')
+    expect(stripAnsi(renderText(overwrite))).toMatch(/1\s+│ -old line/)
   })
 
   test('Ask and Task UIs render special structured states', () => {

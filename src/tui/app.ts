@@ -51,7 +51,7 @@ import type { PluginManager } from '../plugins/PluginManager.ts'
 import type { PluginScope, PluginSnapshot } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
 import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.ts'
-import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
+import { previewFileWrite, TOOL_NAME as WRITE_TOOL_NAME, type FileWriteToolInput } from '../tools/FileWriteTool/FileWriteTool.ts'
 import { previewFileEdit, TOOL_NAME as EDIT_TOOL_NAME, type FileEditToolInput } from '../tools/FileEditTool/FileEditTool.ts'
 import { SessionManager } from '../session/SessionManager.ts'
 import { exportSessionJsonl } from '../session/exportSession.ts'
@@ -521,16 +521,19 @@ export class App {
       this.chatContainer,
       [this.statusContainer, this.editorContainer, this.workingContainer, this.footer],
       () => this.ui.terminal.rows,
-      () => [...this.toolRows.values()]
-        .filter((row) => row.hasToggleButton?.() && row.toggleExpanded !== undefined)
-        .map((row) => () => row.toggleExpanded?.()),
+      () => this.chatContainer.children.flatMap((component) => {
+        if (component instanceof TurnTimeline) return component.getToolToggleActions()
+        const row = component as ToolUIComponent
+        if (!row.hasToggleButton?.() || !row.toggleExpanded) return []
+        return [() => row.toggleExpanded?.()]
+      }),
     )
     this.ui.addChild(this.appLayout)
 
     this.ui.setFocus(this.editor)
     this.ui.start()
-    // Enable SGR mouse reporting for scrolling and per-tool preview buttons.
-    this.ui.terminal.write('\x1b[?1000h\x1b[?1006h')
+    // Enable SGR mouse reporting with button-drag events for the conversation scrollbar.
+    this.ui.terminal.write('\x1b[?1002h\x1b[?1006h')
     this.mouseTrackingEnabled = true
     this.isInitialized = true
   }
@@ -3437,6 +3440,40 @@ export class App {
    * Prompt user for tool permission at the end of the active turn timeline.
    * Returns true if approved, false if denied.
    */
+  private async updatePermissionWritePreview(input: Record<string, unknown>): Promise<void> {
+    const serializedInput = JSON.stringify(input)
+    const matchingCall = [...this.toolCallMetadata.entries()].reverse().find(([, call]) =>
+      call.name === WRITE_TOOL_NAME && JSON.stringify(call.args) === serializedInput,
+    )
+    if (!matchingCall) return
+
+    const [toolCallId] = matchingCall
+    const component = this.pendingTools.get(toolCallId) ?? this.toolRows.get(toolCallId)
+    if (!component?.updateDetails) return
+
+    const filePath = typeof input.file_path === 'string' ? input.file_path : ''
+    const content = typeof input.content === 'string' ? input.content : ''
+    const resolvedPath = filePath
+      ? (isAbsolute(filePath) ? filePath : resolve(this.agent.getSnapshot().cwd, filePath))
+      : ''
+    try {
+      const details = await previewFileWrite(this.agent.getSnapshot().cwd, input as FileWriteToolInput)
+      component.updateDetails({ ...details, phase: 'approval' })
+    } catch (error) {
+      component.updateDetails({
+        path: resolvedPath || filePath,
+        bytesWritten: Buffer.byteLength(content, 'utf8'),
+        additions: countStreamingLines(content),
+        removals: 0,
+        isNewFile: resolvedPath ? !existsSync(resolvedPath) : false,
+        preview: content,
+        previewNotice: `Diff unavailable: ${error instanceof Error ? error.message : 'unable to read file'}`,
+        phase: 'approval',
+      })
+    }
+    this.ui.requestRender()
+  }
+
   private async updatePermissionEditPreview(input: Record<string, unknown>): Promise<void> {
     const serializedInput = JSON.stringify(input)
     const matchingCall = [...this.toolCallMetadata.entries()].reverse().find(([, call]) =>
@@ -3477,6 +3514,7 @@ export class App {
     this.hideWorking()
     this.permissionPromptActive = true
     if (toolName === EDIT_TOOL_NAME) await this.updatePermissionEditPreview(input)
+    if (toolName === WRITE_TOOL_NAME) await this.updatePermissionWritePreview(input)
 
     return new Promise<boolean>((resolve) => {
 
@@ -4201,7 +4239,7 @@ export class App {
       this.workingText = null
     }
     if (this.mouseTrackingEnabled) {
-      this.ui.terminal.write('\x1b[?1000l\x1b[?1006l')
+      this.ui.terminal.write('\x1b[?1002l\x1b[?1006l')
       this.mouseTrackingEnabled = false
     }
     this.ui.stop()

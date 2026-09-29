@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve } from 'path'
 import { Type, type Static } from 'typebox'
 import type { PermissionBehavior } from '../../permissions/types.ts'
 import { countContentLines } from '../../tui/toolPresentation.ts'
-import { countLineChanges } from '../../utils/diffUtils.ts'
+import { countLineChanges, generateDiff } from '../../utils/diffUtils.ts'
 
 export const TOOL_NAME = 'write'
 export const TOOL_DEFAULT_PERMISSION: PermissionBehavior = 'ask'
@@ -31,6 +31,8 @@ export interface FileWriteToolDetails {
   removals: number
   isNewFile: boolean
   preview?: string
+  diff?: string[]
+  diffTruncated?: boolean
   phase?: 'preparing' | 'writing' | 'complete'
   warning?: string
   written?: boolean
@@ -102,6 +104,41 @@ function conflictResult(
   }
 }
 
+function getWriteChanges(oldContent: string, newContent: string, filePath: string) {
+  if (oldContent.length + newContent.length > 1_000_000) {
+    return {
+      ...countLineChanges(oldContent, newContent),
+      diff: [],
+      diffTruncated: true,
+    }
+  }
+
+  const { patch, additions, removals } = generateDiff(oldContent, newContent, filePath)
+  const diff = patch.hunks.flatMap((hunk) => [
+    `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+    ...hunk.lines,
+  ])
+  return { additions, removals, diff, diffTruncated: false }
+}
+
+export async function previewFileWrite(
+  cwd: string,
+  params: FileWriteToolInput,
+): Promise<FileWriteToolDetails> {
+  const filePath = isAbsolute(params.file_path)
+    ? params.file_path
+    : resolve(cwd, params.file_path)
+  const current = await snapshotFile(filePath)
+  return {
+    path: filePath,
+    bytesWritten: Buffer.byteLength(params.content, 'utf8'),
+    ...getWriteChanges(current.content ?? '', params.content, filePath),
+    isNewFile: !current.exists,
+    preview: params.content,
+    phase: 'preparing',
+  }
+}
+
 export function createFileWriteTool(
   cwd: string,
 ): AgentTool<typeof writeSchema, FileWriteToolDetails> {
@@ -139,9 +176,7 @@ export function createFileWriteTool(
       await mkdir(dirname(filePath), { recursive: true })
 
       const isNewFile = !initial.exists
-      const changes = initial.content === undefined
-        ? { additions: countContentLines(params.content), removals: 0 }
-        : countLineChanges(initial.content, params.content)
+      const changes = getWriteChanges(initial.content ?? '', params.content, filePath)
       const bytesWritten = Buffer.byteLength(params.content, 'utf8')
       const preview = params.content
 

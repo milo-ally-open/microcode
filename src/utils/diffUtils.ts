@@ -15,6 +15,47 @@ export interface ChangeCounts {
   removals: number
 }
 
+/** Render unified-diff rows with bright, high-contrast add/remove colors. */
+export function renderTerminalDiffLine(line: string): string {
+  if (line.startsWith('+')) return chalk.bgHex('#173b29').hex('#7ee787').bold(line)
+  if (line.startsWith('-')) return chalk.bgHex('#482225').hex('#ff7b72').bold(line)
+  if (line.startsWith('@@')) return chalk.hex('#79c0ff').bold(line)
+  return chalk.hex('#a5adb8')(line)
+}
+
+/** Add old/new file line numbers to unified diff rows for terminal previews. */
+export function numberDiffLines(lines: readonly string[]): Array<{ line: string; gutter: string }> {
+  let oldLine = 0
+  let newLine = 0
+  const numbered = lines.map((line) => {
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+    if (hunk) {
+      oldLine = Number(hunk[1])
+      newLine = Number(hunk[2])
+      return { line, oldNumber: '', newNumber: '' }
+    }
+
+    if (line.startsWith('-')) {
+      return { line, oldNumber: String(oldLine++), newNumber: '' }
+    }
+    if (line.startsWith('+')) {
+      if (newLine === 0) newLine = 1
+      return { line, oldNumber: '', newNumber: String(newLine++) }
+    }
+    if (line.startsWith(' ')) {
+      return { line, oldNumber: String(oldLine++), newNumber: String(newLine++) }
+    }
+    return { line, oldNumber: '', newNumber: '' }
+  })
+
+  const oldWidth = Math.max(1, ...numbered.map(({ oldNumber }) => oldNumber.length))
+  const newWidth = Math.max(1, ...numbered.map(({ newNumber }) => newNumber.length))
+  return numbered.map(({ line, oldNumber, newNumber }) => ({
+    line,
+    gutter: `${oldNumber.padStart(oldWidth)} ${newNumber.padStart(newWidth)} │ `,
+  }))
+}
+
 const MAX_EXACT_DIFF_CHARS = 1_000_000
 
 function countLines(content: string): number {
@@ -159,6 +200,7 @@ export function renderFullDiff(patch: ParsedDiff, width: number): string[] {
  */
 export function renderNewFilePreview(content: string, maxLines = 10): string[] {
   const lines = content.split('\n')
+  if (content.endsWith('\n')) lines.pop()
   const truncated = lines.length > maxLines
   const showLines = lines.slice(0, maxLines)
   const padding = String(showLines.length).length

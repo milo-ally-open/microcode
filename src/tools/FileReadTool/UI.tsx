@@ -2,6 +2,8 @@ import { Box, Container, Text } from '@earendil-works/pi-tui'
 import { theme } from '../../tui/theme.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
 
+const PREVIEW_LINES = 0
+
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
   isError: boolean
@@ -41,7 +43,7 @@ export class FileReadToolUI extends Container {
   }
 
   hasToggleButton(): boolean {
-    return Boolean(this.result && !this.result.isError)
+    return Boolean(this.result && this.getOutputLines().length > PREVIEW_LINES)
   }
 
   markExecutionStarted(): void {
@@ -96,27 +98,39 @@ export class FileReadToolUI extends Container {
         ? `${returnedLines}/${totalLines} lines ${theme.dim('(truncated)')}`
         : `${returnedLines} lines`
       const summary = theme.fg('muted', lineInfo)
-      this.contentBox.addChild(new Text(`${header}  ${summary} ${theme.dim(`· ${formatCompletedStatus(this.elapsedMs)}`)}`))
+      const toggle = this.hasToggleButton()
+        ? `  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`
+        : ''
+      this.contentBox.addChild(new Text(`${header}  ${summary} ${theme.dim(`· ${formatCompletedStatus(this.elapsedMs)}`)}${toggle}`))
     } else {
-      const output = this.result.content
-        ?.filter((c) => c.type === 'text')
-        .map((c) => (c.text ?? '').slice(0, 200).replace(/\n/g, ' '))
-        .join(' ') ?? ''
-      this.contentBox.addChild(new Text(`${header} ${theme.dim(formatCompletedStatus(this.elapsedMs))}\n  ${theme.fg('muted', output || 'completed with no output')}`))
+      const lineCount = this.getOutputLines().length
+      const lineInfo = lineCount === 1 ? '1 line' : `${lineCount} lines`
+      const toggle = this.hasToggleButton()
+        ? `  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`
+        : ''
+      this.contentBox.addChild(new Text(
+        `${header} ${theme.dim(formatCompletedStatus(this.elapsedMs))} ${theme.fg('muted', `· ${lineInfo}`)}${toggle}`,
+      ))
     }
 
+    const lines = this.getOutputLines()
+    const visibleLines = lines.slice(0, this.expanded ? lines.length : PREVIEW_LINES)
+    if (lines.length > visibleLines.length) {
+      if (PREVIEW_LINES > 0) visibleLines.push(theme.dim(`… ${lines.length - visibleLines.length} more lines`))
+    }
+    if (visibleLines.length > 0) {
+      this.contentBox.addChild(new Text(visibleLines.join('\n')))
+    }
+  }
+
+  private getOutputLines(): string[] {
+    if (!this.result) return []
     const output = this.result.content
       .filter((item) => item.type === 'text')
       .map((item) => item.text ?? '')
       .join('\n')
     const lines = output.split('\n')
-    const visibleLines = lines.slice(0, this.expanded ? lines.length : 12)
-    this.contentBox.addChild(new Text(theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')))
-    if (lines.length > visibleLines.length) {
-      visibleLines.push(theme.dim(`… ${lines.length - visibleLines.length} more lines`))
-    }
-    if (visibleLines.length > 0) {
-      this.contentBox.addChild(new Text(visibleLines.join('\n')))
-    }
+    if (output.endsWith('\n')) lines.pop()
+    return output ? lines : []
   }
 }
