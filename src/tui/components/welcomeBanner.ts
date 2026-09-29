@@ -7,7 +7,7 @@ export class WelcomeBanner implements Component {
   render(width: number): string[] {
     const terminalWidth = Math.max(20, Math.floor(width))
     const contentWidth = terminalWidth - 4
-    const logo = contentWidth >= 63
+    const logo = contentWidth >= 72
       ? LOGO_LINES
       : contentWidth >= 54
         ? COMPACT_LOGO_LINES

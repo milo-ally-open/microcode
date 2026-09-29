@@ -18,9 +18,9 @@ import { WelcomeBanner } from '../../src/tui/components/welcomeBanner.ts'
 
 describe('tui modules', () => {
   test('startup logo is a compact Unicode pixel wordmark', () => {
-    expect(LOGO_LINES).toHaveLength(8)
+    expect(LOGO_LINES).toHaveLength(5)
     expect(LOGO_LINES.some((line) => line.includes('█'))).toBe(true)
-    expect(LOGO_LINES.every((line) => line.length === 62)).toBe(true)
+    expect(LOGO_LINES.every((line) => line.length === 71)).toBe(true)
     expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(true)
   })
 
