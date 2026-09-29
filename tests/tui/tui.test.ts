@@ -17,7 +17,7 @@ import { LOGO_LINES } from '../../src/tui/logo.ts'
 
 describe('tui modules', () => {
   test('startup logo is a compact Unicode pixel wordmark', () => {
-    expect(LOGO_LINES).toHaveLength(5)
+    expect(LOGO_LINES).toHaveLength(7)
     expect(LOGO_LINES.every((line) => line.includes('█'))).toBe(true)
     expect(LOGO_LINES.every((line) => line.length === 53)).toBe(true)
   })

@@ -394,19 +394,19 @@ export class App {
     if (this.isInitialized) return
 
     // Header: logo + compact keybinding hints (matching pi-coding-agent style)
-    const logo = theme.bold(theme.fg('accent', APP_NAME)) + theme.dim(` v${MACRO.VERSION}`)
     const compactInstructions = [
-      theme.dim('escape') + theme.dim(' interrupt'),
-      theme.dim('ctrl+c/ctrl+d') + theme.dim(' exit'),
-      theme.dim('ctrl+o') + theme.dim(' tool details'),
-      theme.dim('/') + theme.dim(' commands'),
-      theme.dim('!') + theme.dim(' shell'),
-    ].join(theme.dim(' · '))
+      `v${MACRO.VERSION}`,
+      'Esc interrupt',
+      'Ctrl+C/D exit',
+      'Ctrl+O tools',
+      '/ commands',
+      '! shell',
+    ].map((hint) => theme.dim(hint)).join(theme.dim(' · '))
     // 用 Unicode 方块像素字标呈现 Logo，替换占空间的介绍语。
     for (const line of LOGO_LINES) {
       this.headerContainer.addChild(new Text(theme.bold(theme.fg('accent', line)), 1, 0))
     }
-    this.headerContainer.addChild(new Text(`${logo}  ${compactInstructions}`, 1, 0))
+    this.headerContainer.addChild(new Text(compactInstructions, 1, 0))
 
     // Editor with border
     this.editor = new MicrocodeEditor(this.ui, getEditorTheme(), { paddingX: 1 })
