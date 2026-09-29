@@ -21,7 +21,9 @@ import { getProviderAuthChoices } from '../models/authChoices.ts'
 import { theme, getEditorTheme, getMarkdownTheme, getBashModeBorderColor } from './theme.ts'
 import { MicrocodeEditor } from './components/microcodeEditor.ts'
 import { FooterComponent } from './components/footer.ts'
+import { AppLayout } from './components/appLayout.ts'
 import { AssistantMessageComponent } from './components/assistantMessage.ts'
+import { shouldShowRespondingActivity } from './agentActivity.ts'
 import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
 import { parseBashInput } from './bashInput.ts'
@@ -186,6 +188,7 @@ export class App {
   private agent: MicrocodeAgent
   private editor!: MicrocodeEditor
   private footer: FooterComponent
+  private appLayout!: AppLayout
   private isInitialized = false
   private streamingComponent?: AssistantMessageComponent
   private streamingMessage?: AssistantMessage
@@ -228,6 +231,7 @@ export class App {
   private agentActivityLabel = 'Working…'
   private workingFrameIndex = 0
   private workingTimer: ReturnType<typeof setInterval> | undefined
+  private mouseTrackingEnabled = false
   onExit?: () => void | Promise<void>
 
   constructor(
@@ -270,6 +274,7 @@ export class App {
   async run(): Promise<void> {
     this.init()
     this.setupAgentSubscription()
+    this.restoreInitialSessionHistory()
 
     // Show existing session title in footer (e.g., from --resume)
     const currentId = this.sessionManager.getSessionId()
@@ -521,21 +526,29 @@ export class App {
     }
 
     this.ui.addInputListener((data) => {
+      if (this.appLayout.handleScrollInput(data, this.editor.isShowingAutocomplete())) {
+        this.ui.requestRender()
+        return { consume: true }
+      }
       return undefined
     })
 
     this.editorContainer.addChild(this.editor)
 
-    // Assemble UI layout (matching pi-coding-agent order)
-    this.ui.addChild(this.headerContainer)
-    this.ui.addChild(this.chatContainer)
-    this.ui.addChild(this.statusContainer)
-    this.ui.addChild(this.editorContainer)
-    this.ui.addChild(this.workingContainer)
-    this.ui.addChild(this.footer)
+    // 输入区固定在终端底部；对话内容只使用它上方的剩余空间。
+    this.appLayout = new AppLayout(
+      this.headerContainer,
+      this.chatContainer,
+      [this.statusContainer, this.editorContainer, this.workingContainer, this.footer],
+      () => this.ui.terminal.rows,
+    )
+    this.ui.addChild(this.appLayout)
 
     this.ui.setFocus(this.editor)
     this.ui.start()
+    // 仅启用滚轮所需的 SGR 鼠标报告，不处理鼠标点击或拖动。
+    this.ui.terminal.write('\x1b[?1000h\x1b[?1006h')
+    this.mouseTrackingEnabled = true
     this.isInitialized = true
   }
 
@@ -1954,6 +1967,18 @@ export class App {
     this.agent.refreshSystemPrompt()
   }
 
+  /** Render messages loaded by `--resume` before the first input prompt appears. */
+  private restoreInitialSessionHistory(): void {
+    const messages = this.agent.getMessages()
+    if (messages.length === 0) return
+
+    // 复用内部 session 切换的历史渲染路径，保证启动恢复与手动切换表现一致。
+    this.rerenderChat([...messages])
+    this.appLayout.followLatest()
+    this.updateContextUsage()
+    this.ui.requestRender()
+  }
+
   /**
    * Clear the chat container and re-render all messages from history.
    */
@@ -1989,6 +2014,8 @@ export class App {
         }
         const component = new AssistantMessageComponent(getMarkdownTheme())
         component.updateContent(msg as any)
+        // 恢复的消息已经结束，避免旧 thinking 状态继续显示“Analyzing…”。
+        component.finish()
         this.activeTurnTimeline.addEntry(component, 'assistant')
 
         for (const block of msg.content) {
@@ -3625,6 +3652,7 @@ export class App {
   }
 
   private handleEditorSubmit(text: string): void {
+    this.appLayout.followLatest()
     this.editor.addToHistory(text)
 
     // Agent is busy — no one is listening for input yet. Handle slash commands
@@ -3728,6 +3756,14 @@ export class App {
           if (this.streamingComponent && event.message.role === 'assistant') {
             this.streamingMessage = event.message
             this.streamingComponent.updateContent(this.streamingMessage)
+            if (shouldShowRespondingActivity(
+              event.assistantMessageEvent.type === 'text_delta',
+              this.pendingTools.size,
+              this.agentActivityLabel,
+            )) {
+              // 正文开始流出后切换状态，避免回答已经可见时仍显示 Thinking。
+              this.showWorking('Responding…')
+            }
             if (
               event.assistantMessageEvent.type === 'toolcall_start' ||
               event.assistantMessageEvent.type === 'toolcall_delta'
@@ -3745,6 +3781,8 @@ export class App {
           if (event.message.role === 'assistant') {
             if (this.streamingComponent && this.streamingMessage) {
               this.streamingComponent.updateContent(this.streamingMessage)
+              // 即使本轮只有 thinking 或工具调用，也要在 message_end 收起进行中状态。
+              this.streamingComponent.finish()
               this.streamingComponent = undefined
               this.streamingMessage = undefined
             }
@@ -4144,6 +4182,10 @@ export class App {
     if (this.workingText) {
       this.workingContainer.removeChild(this.workingText)
       this.workingText = null
+    }
+    if (this.mouseTrackingEnabled) {
+      this.ui.terminal.write('\x1b[?1000l\x1b[?1006l')
+      this.mouseTrackingEnabled = false
     }
     this.ui.stop()
   }

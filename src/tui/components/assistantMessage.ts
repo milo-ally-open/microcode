@@ -80,6 +80,13 @@ export class AssistantMessageComponent extends Container {
     }
   }
 
+  finish(): void {
+    // 消息结束是独立的生命周期信号；不能要求模型必须先输出普通文本。
+    for (const blockComponent of this.blockComponents) {
+      if (blockComponent.type === 'thinking') blockComponent.component.update(true)
+    }
+  }
+
   getText(): string {
     return this.lastText
   }

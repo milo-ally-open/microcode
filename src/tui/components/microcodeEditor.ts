@@ -10,6 +10,11 @@ const MENTION_COLORS = {
   file: '#00d7ff',
 } as const
 
+export function autocompleteMaxVisibleForHeight(height: number): number {
+  // 为标题、输入框、footer 和至少一行对话留空间，其余空间交给候选列表（上限沿用 pi-tui 的 20 项）。
+  return Math.max(3, Math.min(20, Math.floor(height) - 14))
+}
+
 /**
  * Editor subclass that adds app-level key handlers for Microcode.
  * Handles Escape, Ctrl+C, Ctrl+D before the base Editor processes them,
@@ -24,12 +29,33 @@ export class MicrocodeEditor extends Editor {
   public onPasteImage?: () => void
 
   constructor(tui: TUI, theme: EditorTheme, options?: EditorOptions) {
-    super(tui, theme, options)
+    super(tui, theme, {
+      ...options,
+      autocompleteMaxVisible: autocompleteMaxVisibleForHeight(tui.terminal.rows),
+    })
   }
 
   render(width: number): string[] {
+    const maxVisible = autocompleteMaxVisibleForHeight(this.tui.terminal.rows)
+    if (this.getAutocompleteMaxVisible() !== maxVisible) this.setAutocompleteMaxVisible(maxVisible)
+
     const lines = super.render(width)
-    if (this.isShowingAutocomplete()) return lines
+    if (this.isShowingAutocomplete()) {
+      // pi-tui appends autocomplete rows after the editor. Move those rows ahead
+      // of the input frame so suggestions don't consume space below the prompt.
+      const editor = this as unknown as {
+        autocompleteList?: { render: (width: number) => string[] }
+      }
+      const autocompleteList = editor.autocompleteList
+      if (autocompleteList) {
+        const paddingX = Math.min(this.getPaddingX(), Math.max(0, Math.floor((width - 1) / 2)))
+        const contentWidth = Math.max(1, width - paddingX * 2)
+        const autocompleteLineCount = autocompleteList.render(contentWidth).length
+        const splitIndex = Math.max(0, lines.length - autocompleteLineCount)
+        return [...lines.slice(splitIndex), ...lines.slice(0, splitIndex)]
+      }
+      return lines
+    }
     return lines.map((line) => highlightWorkspaceFileMentions(
       highlightPluginMentions(
         highlightSkillMentions(line, (mention) => chalk.hex(MENTION_COLORS.skill).bold(mention)),
