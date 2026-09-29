@@ -22,8 +22,8 @@ export function extractContentForMatching(
   input: Record<string, unknown>,
 ): string | undefined {
   const def = getToolDefinition(toolName)
-  if (def?.extractMatchContent) {
-    return def.extractMatchContent(input)
+  if (def?.agent.extractMatchContent) {
+    return def.agent.extractMatchContent(input)
   }
   // For MCP and unknown tools, try common fields
   for (const key of ['command', 'path', 'input', 'query', 'content']) {

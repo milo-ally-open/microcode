@@ -204,8 +204,8 @@ describe('tui modules', () => {
       [{ render: () => ['editor', 'footer'] }],
       () => 8,
       () => [
-        () => { firstExpanded = !firstExpanded },
-        () => { secondExpanded = !secondExpanded },
+        { action: 'toggle-preview', rowOffset: 0, startColumn: 10, endColumn: 30, activate: () => { firstExpanded = !firstExpanded } },
+        { action: 'toggle-preview', rowOffset: 1, startColumn: 10, endColumn: 30, activate: () => { secondExpanded = !secondExpanded } },
       ],
     )
     layout.render(80)
@@ -258,7 +258,7 @@ describe('tui modules', () => {
     expect(layout.render(80).some((line) => line.includes('chat 5'))).toBe(true)
 
     // Clicks outside the return button remain ignored.
-    expect(layout.handleInput('\x1b[<0;80;3M')).toBe(false)
+    expect(layout.handleInput('\x1b[<0;79;3M')).toBe(false)
     expect(layout.render(80).some((line) => line.includes('chat 5'))).toBe(true)
 
     // The button is rendered on row 6; clicking it returns to the newest output.

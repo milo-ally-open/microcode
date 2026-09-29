@@ -79,19 +79,17 @@ export function createCodingTools(options: CreateCodingToolsOptions): AgentTool<
     if (def.name === TOOL_SEARCH_TOOL_NAME) continue
     // Skip vision tool if model doesn't support images
     if (def.name === VISION_TOOL_NAME && !modelSupportsImages) continue
-    tools.push(def.createTool(cwd, toolContext))
+    tools.push(def.agent.create(cwd, toolContext))
   }
 
   // SkillTool needs getSkills at creation time
   if (getSkills) {
     registerTool({
       name: SKILL_TOOL_NAME,
-      defaultPermission: skillDefault,
-      createTool: () => createSkillToolWithAgent({ getSkills }),
-      display: {
-        status: ({ input }) =>
-          typeof input.skill === 'string' ? `Loading: ${input.skill}` : 'Loading skill...',
-        summary: (context) => {
+      policy: { defaultPermission: skillDefault },
+      agent: {
+        create: () => createSkillToolWithAgent({ getSkills }),
+        summarizeResult: (context) => {
           const details = context.details ?? {}
           return `[skill] ${statusPrefix(context)}${joinSummaryParts([
             text(details.skillName),
@@ -99,11 +97,15 @@ export function createCodingTools(options: CreateCodingToolsOptions): AgentTool<
             producedText(context),
           ])}`
         },
+        formatDescription: (input) =>
+          typeof input.skill === 'string' ? `skill ${input.skill}` : '(unknown skill)',
+        extractMatchContent: (input) =>
+          typeof input.skill === 'string' ? input.skill : undefined,
       },
-      formatDescription: (input) =>
-        typeof input.skill === 'string' ? `skill ${input.skill}` : '(unknown skill)',
-      extractMatchContent: (input) =>
-        typeof input.skill === 'string' ? input.skill : undefined,
+      presentation: {
+        status: ({ input }) =>
+          typeof input.skill === 'string' ? `Loading: ${input.skill}` : 'Loading skill...',
+      },
     })
     tools.push(createSkillToolWithAgent({ getSkills }))
   }

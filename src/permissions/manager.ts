@@ -247,8 +247,8 @@ export class PermissionManager {
     input: Record<string, unknown>,
   ): string {
     const def = getToolDefinition(toolName)
-    if (def?.formatDescription) {
-      return def.formatDescription(input)
+    if (def?.agent.formatDescription) {
+      return def.agent.formatDescription(input)
     }
     return `${toolName}(${JSON.stringify(input).slice(0, 100)})`
   }

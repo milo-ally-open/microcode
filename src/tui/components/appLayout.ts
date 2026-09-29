@@ -1,9 +1,8 @@
 import { matchesKey, type Component, visibleWidth } from '@earendil-works/pi-tui'
 import { theme } from '../theme.ts'
+import type { ToolInteractionTarget } from '../../tools/registry.ts'
 
 const RETURN_TO_BOTTOM_LABEL = 'Return to bottom'
-const EXPAND_PREVIEW_LABEL = '[Expand preview]'
-const COLLAPSE_PREVIEW_LABEL = '[Collapse preview]'
 
 /** Keeps the prompt/footer fixed while the conversation uses the remaining rows. */
 export class AppLayout implements Component {
@@ -20,7 +19,7 @@ export class AppLayout implements Component {
   private returnButtonRow = 0
   private returnButtonStartColumn = 0
   private returnButtonEndColumn = 0
-  private toolToggleButtons: Array<{ row: number; startColumn: number; endColumn: number; index: number }> = []
+  private toolToggleButtons: Array<ToolInteractionTarget & { row: number }> = []
   private lastTogglePress?: { row: number; at: number }
 
   constructor(
@@ -28,7 +27,7 @@ export class AppLayout implements Component {
     private readonly chat: Component,
     private readonly bottom: Component[],
     private readonly getHeight: () => number,
-    private readonly getToolToggleActions: () => Array<() => void> = () => [],
+    private readonly getToolInteractionTargets: (width: number) => ToolInteractionTarget[] = () => [],
   ) {}
 
   /** Scroll continuously by rendered chat rows; positive values move toward newer content. */
@@ -92,9 +91,7 @@ export class AppLayout implements Component {
           if (releasedQuickly) return true
         }
 
-        const action = this.getToolToggleActions()[toggle.index]
-        if (!action) return false
-        action()
+        toggle.activate()
         this.lastTogglePress = pressed ? { row, at: Date.now() } : undefined
         return true
       }
@@ -177,26 +174,12 @@ export class AppLayout implements Component {
     this.scrollbarThumbStart = movableTrack > 0
       ? Math.round((top / maxTop) * movableTrack)
       : 0
-    this.toolToggleButtons = []
-    let buttonIndex = 0
-    for (let chatIndex = 0; chatIndex < chatLines.length; chatIndex++) {
-      const line = chatLines[chatIndex] ?? ''
-      const plainLine = line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-      const toggleMatch = plainLine.match(/\[(?:Expand|Collapse) preview\]\s*$/)
-      const label = toggleMatch?.[0].trimEnd()
-      if (label !== EXPAND_PREVIEW_LABEL && label !== COLLAPSE_PREVIEW_LABEL) continue
-      if (chatIndex >= top && chatIndex < top + visibleChat.length) {
-        const labelIndex = toggleMatch!.index!
-        const startColumn = visibleWidth(plainLine.slice(0, labelIndex)) + 1
-        this.toolToggleButtons.push({
-          row: headerLines.length + chatIndex - top + 1,
-          startColumn,
-          endColumn: startColumn + visibleWidth(label) - 1,
-          index: buttonIndex,
-        })
-      }
-      buttonIndex++
-    }
+    this.toolToggleButtons = this.getToolInteractionTargets(chatWidth)
+      .filter((target) => target.rowOffset >= top && target.rowOffset < top + visibleChat.length)
+      .map((target) => ({
+        ...target,
+        row: headerLines.length + target.rowOffset - top + 1,
+      }))
     const controlLine = showReturnButton
       ? theme.fg('accent', `  [ ${RETURN_TO_BOTTOM_LABEL} ]`)
       : showScrollHint

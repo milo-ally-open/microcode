@@ -72,7 +72,7 @@ function searchTools(
 
   const scored = deferredTools.map(tool => {
     const parsed = parseToolName(tool.name)
-    const descLower = (tool.description ?? '').toLowerCase()
+    const descLower = (tool.agent.description ?? '').toLowerCase()
 
     let score = 0
     for (const term of queryTerms) {
@@ -109,17 +109,17 @@ function searchTools(
 /** Format a tool definition as a readable schema string for the model. */
 function formatToolSchema(def: ToolDefinition): string {
   const lines: string[] = [`## ${def.name}`]
-  if (def.description) {
-    lines.push(def.description)
+  if (def.agent.description) {
+    lines.push(def.agent.description)
   }
-  if (def.schema) {
-    lines.push(`Parameters: ${def.schema}`)
+  if (def.agent.schema) {
+    lines.push(`Parameters: ${def.agent.schema}`)
     return lines.join('\n')
   }
   // Try to extract parameter schema from createTool's output
   // We create a temporary tool instance to read its schema
   try {
-    const tempTool = def.createTool('__schema_probe__')
+    const tempTool = def.agent.create('__schema_probe__')
     if (tempTool.parameters) {
       lines.push(`Parameters: ${JSON.stringify(tempTool.parameters, null, 2)}`)
     }

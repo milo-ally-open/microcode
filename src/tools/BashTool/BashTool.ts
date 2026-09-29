@@ -29,34 +29,40 @@ export interface BashToolDetails {
   stdout: string
   stderr: string
   output: string
+  displayOutput: string
+  displayTruncated: boolean
   exitCode: number | null
 }
 
 const MAX_CAPTURED_OUTPUT_CHARS = 20_000
 const CAPTURED_OUTPUT_HEAD_CHARS = 5_000
-const CAPTURED_OUTPUT_TAIL_CHARS = MAX_CAPTURED_OUTPUT_CHARS - CAPTURED_OUTPUT_HEAD_CHARS
+// UI 可展开的输出单独限幅；不能让 Agent 的上下文截断策略限制用户预览。
+const MAX_DISPLAY_OUTPUT_CHARS = 80_000
+const DISPLAY_OUTPUT_HEAD_CHARS = 20_000
 
 interface OutputCapture {
   head: string
   tail: string
   totalChars: number
   truncated: boolean
+  maxChars: number
+  headChars: number
 }
 
 function appendOutput(capture: OutputCapture, chunk: string): void {
   capture.totalChars += chunk.length
   if (!capture.truncated) {
     const combined = capture.head + chunk
-    if (combined.length <= MAX_CAPTURED_OUTPUT_CHARS) {
+    if (combined.length <= capture.maxChars) {
       capture.head = combined
       return
     }
     capture.truncated = true
-    capture.head = combined.slice(0, CAPTURED_OUTPUT_HEAD_CHARS)
-    capture.tail = combined.slice(-CAPTURED_OUTPUT_TAIL_CHARS)
+    capture.head = combined.slice(0, capture.headChars)
+    capture.tail = combined.slice(-(capture.maxChars - capture.headChars))
     return
   }
-  capture.tail = (capture.tail + chunk).slice(-CAPTURED_OUTPUT_TAIL_CHARS)
+  capture.tail = (capture.tail + chunk).slice(-(capture.maxChars - capture.headChars))
 }
 
 function readOutput(capture: OutputCapture): string {
@@ -65,8 +71,11 @@ function readOutput(capture: OutputCapture): string {
   return `${capture.head}\n\n... [${omittedChars} characters omitted] ...\n\n${capture.tail}`
 }
 
-function createOutputCapture(): OutputCapture {
-  return { head: '', tail: '', totalChars: 0, truncated: false }
+function createOutputCapture(
+  maxChars = MAX_CAPTURED_OUTPUT_CHARS,
+  headChars = CAPTURED_OUTPUT_HEAD_CHARS,
+): OutputCapture {
+  return { head: '', tail: '', totalChars: 0, truncated: false, maxChars, headChars }
 }
 
 function normalizeTerminalOutput(value: string): string {
@@ -119,6 +128,7 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
       const stdoutCapture = createOutputCapture()
       const stderrCapture = createOutputCapture()
       const outputCapture = createOutputCapture()
+      const displayCapture = createOutputCapture(MAX_DISPLAY_OUTPUT_CHARS, DISPLAY_OUTPUT_HEAD_CHARS)
       let updateTimer: ReturnType<typeof setTimeout> | undefined
 
       const emitUpdate = () => {
@@ -126,12 +136,15 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
         const cleanStdout = normalizeTerminalOutput(readOutput(stdoutCapture))
         const cleanStderr = normalizeTerminalOutput(readOutput(stderrCapture))
         const cleanOutput = normalizeTerminalOutput(readOutput(outputCapture))
+        const displayOutput = normalizeTerminalOutput(readOutput(displayCapture))
         onUpdate?.({
           content: [{ type: 'text', text: cleanOutput }],
           details: {
             stdout: cleanStdout,
             stderr: cleanStderr,
             output: cleanOutput,
+            displayOutput,
+            displayTruncated: displayCapture.truncated,
             exitCode: null,
           },
         })
@@ -168,6 +181,7 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
           const text = data.toString()
           appendOutput(stdoutCapture, text)
           appendOutput(outputCapture, text)
+          appendOutput(displayCapture, text)
           scheduleUpdate()
         })
 
@@ -175,6 +189,7 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
           const text = data.toString()
           appendOutput(stderrCapture, text)
           appendOutput(outputCapture, text)
+          appendOutput(displayCapture, text)
           scheduleUpdate()
         })
 
@@ -213,10 +228,11 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
       const stdout = normalizeTerminalOutput(readOutput(stdoutCapture))
       const stderr = normalizeTerminalOutput(readOutput(stderrCapture))
       const output = normalizeTerminalOutput(readOutput(outputCapture))
+      const displayOutput = normalizeTerminalOutput(readOutput(displayCapture))
 
       return {
         content: [{ type: 'text', text: output || '(no output)' }],
-        details: { stdout, stderr, output, exitCode },
+        details: { stdout, stderr, output, displayOutput, displayTruncated: displayCapture.truncated, exitCode },
       }
     },
   }

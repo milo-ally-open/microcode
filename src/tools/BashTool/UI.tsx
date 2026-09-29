@@ -2,6 +2,7 @@ import { Box, Container, Text } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { theme } from '../../tui/theme.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { ToolPreviewController } from '../previewController.ts'
 
 import type { ToolUIComponent, ToolResult } from '../registry.ts'
 
@@ -9,6 +10,8 @@ interface BashDetails {
   stdout: string
   stderr: string
   output?: string
+  displayOutput?: string
+  displayTruncated?: boolean
   exitCode: number | null
 }
 
@@ -16,7 +19,7 @@ const COMMAND_PREVIEW_LEN = 80
 
 export class BashToolUI extends Container implements ToolUIComponent {
   private args: any
-  private expanded = false
+  private preview = new ToolPreviewController()
   private executionStarted = false
   private elapsedMs = 0
   private result?: ToolResult
@@ -32,18 +35,25 @@ export class BashToolUI extends Container implements ToolUIComponent {
   }
 
   setExpanded(expanded: boolean): void {
-    this.expanded = expanded
+    this.preview.setExpanded(expanded)
     this.rebuild()
   }
 
   toggleExpanded(): void {
-    this.setExpanded(!this.expanded)
+    this.preview.toggle()
+    this.rebuild()
   }
 
   hasToggleButton(): boolean {
     if (!this.result) return false
     const output = this.getOutput()
     return output.length > 0
+  }
+
+  getInteractionTargets(width: number) {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      : []
   }
 
   markExecutionStarted(): void {
@@ -74,6 +84,8 @@ export class BashToolUI extends Container implements ToolUIComponent {
       stdout: typeof details.stdout === 'string' ? details.stdout : '',
       stderr: typeof details.stderr === 'string' ? details.stderr : '',
       output: typeof details.output === 'string' ? details.output : undefined,
+      displayOutput: typeof details.displayOutput === 'string' ? details.displayOutput : undefined,
+      displayTruncated: details.displayTruncated === true,
       exitCode: typeof details.exitCode === 'number' || details.exitCode === null
         ? details.exitCode
         : null,
@@ -117,15 +129,13 @@ export class BashToolUI extends Container implements ToolUIComponent {
     }
 
     const hasMoreOutput = lines.length > 0
-    const displayLines = this.expanded ? lines : []
+    const displayLines = lines.slice(0, this.preview.visibleRows(lines.length))
     const outputText = displayLines.join('\n')
 
     const exitLine = this.renderExitCode()
     const toggleHint = hasMoreOutput
       ? theme.fg('accent',
-          this.expanded
-            ? '[Collapse preview]'
-            : '[Expand preview]',
+          this.preview.toggleLabel(),
         )
       : ''
 
@@ -136,7 +146,7 @@ export class BashToolUI extends Container implements ToolUIComponent {
         : formatCompletedStatus(this.elapsedMs),
     )}`
     if (toggleHint) content += `  ${toggleHint}`
-    if (outputText) content += `\n${outputText.split('\n').map((line, index) => `${String(index + 1).padStart(String(lines.length).length)} │ ${line}`).join('\n')}`
+    if (outputText) content += `\n${outputText}`
     if (exitLine) content += `\n${exitLine}`
 
     this.contentBox.addChild(new Text(content))
@@ -154,7 +164,11 @@ export class BashToolUI extends Container implements ToolUIComponent {
 
   private getOutput(): string {
     if (this.details) {
-      const { stdout, stderr, output } = this.details
+      const { stdout, stderr, output, displayOutput, displayTruncated } = this.details
+      if (typeof displayOutput === 'string') {
+        const suffix = displayTruncated ? '\n… UI preview capped at 80,000 characters' : ''
+        return `${displayOutput}${suffix}`.trimEnd()
+      }
       return (typeof output === 'string' ? output : `${stdout}${stderr}`).trimEnd()
     }
     if (!this.result?.content) return ''

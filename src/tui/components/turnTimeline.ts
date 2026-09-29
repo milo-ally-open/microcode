@@ -1,5 +1,6 @@
 import { Container, Text, type Component } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
+import type { ToolInteractionTarget, ToolUIComponent } from '../../tools/registry.ts'
 
 type EntryKind = 'user' | 'assistant' | 'tool' | 'status'
 
@@ -39,16 +40,30 @@ export class TurnTimeline extends Container {
     this.activity.setText(label)
   }
 
-  getToolToggleActions(): Array<() => void> {
-    return this.entries.flatMap(({ component, kind }) => {
-      if (kind !== 'tool') return []
-      const tool = component as Component & {
-        hasToggleButton?: () => boolean
-        toggleExpanded?: () => void
+  getToolInteractionTargets(width: number): ToolInteractionTarget[] {
+    const connected = this.entries.some((entry) => entry.kind === 'tool')
+    const railWidth = connected ? 3 : 0
+    const entryWidth = Math.max(1, width - railWidth)
+    const targets: ToolInteractionTarget[] = []
+    let rowOffset = 0
+
+    this.entries.forEach(({ component, kind }, entryIndex) => {
+      const renderedWidth = entryIndex === 0 ? width : entryWidth
+      if (kind === 'tool') {
+        const tool = component as ToolUIComponent
+        for (const target of tool.getInteractionTargets?.(renderedWidth) ?? []) {
+          targets.push({
+            ...target,
+            rowOffset: rowOffset + target.rowOffset,
+            startColumn: target.startColumn + (entryIndex > 0 ? railWidth : 0),
+            endColumn: target.endColumn + (entryIndex > 0 ? railWidth : 0),
+          })
+        }
       }
-      if (!tool.hasToggleButton?.() || !tool.toggleExpanded) return []
-      return [() => tool.toggleExpanded?.()]
+      rowOffset += component.render(renderedWidth).length
     })
+
+    return targets
   }
 
   render(width: number): string[] {

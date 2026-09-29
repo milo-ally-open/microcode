@@ -28,7 +28,7 @@ import { shouldShowRespondingActivity } from './agentActivity.ts'
 import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
 import { parseBashInput } from './bashInput.ts'
-import { getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
+import { dispatchToolLifecycle, getToolDefinition, getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
 import { UserMessage } from './components/userMessage.ts'
 import { TurnTimeline } from './components/turnTimeline.ts'
 import { InlineSelectPrompt } from './components/inlineSelectPrompt.ts'
@@ -42,8 +42,7 @@ import {
   type CachedImage,
 } from '../utils/imageUtils.ts'
 import { readClipboardImage } from '../utils/clipboardImage.ts'
-import { existsSync } from 'fs'
-import { isAbsolute, resolve } from 'path'
+import { resolve } from 'path'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { McpServerState } from '../mcp/types.ts'
 import { discoverMcpCapabilities, type McpCapabilitiesResult } from '../mcp/capabilities.ts'
@@ -51,8 +50,8 @@ import type { PluginManager } from '../plugins/PluginManager.ts'
 import type { PluginScope, PluginSnapshot } from '../plugins/types.ts'
 import { TOOL_NAME as BASH_TOOL_NAME } from '../tools/BashTool/BashTool.ts'
 import { TOOL_NAME as READ_TOOL_NAME } from '../tools/FileReadTool/FileReadTool.ts'
-import { previewFileWrite, TOOL_NAME as WRITE_TOOL_NAME, type FileWriteToolInput } from '../tools/FileWriteTool/FileWriteTool.ts'
-import { previewFileEdit, TOOL_NAME as EDIT_TOOL_NAME, type FileEditToolInput } from '../tools/FileEditTool/FileEditTool.ts'
+import { TOOL_NAME as WRITE_TOOL_NAME } from '../tools/FileWriteTool/FileWriteTool.ts'
+import { TOOL_NAME as EDIT_TOOL_NAME } from '../tools/FileEditTool/FileEditTool.ts'
 import { SessionManager } from '../session/SessionManager.ts'
 import { exportSessionJsonl } from '../session/exportSession.ts'
 import { DEFAULT_PROJECT_INSTRUCTIONS_MAX_BYTES, loadProjectInstructions } from '../instructions/projectInstructions.ts'
@@ -85,15 +84,6 @@ const APP_NAME = 'Microcode'
 const INTERACTIVE_SHELL_COMMANDS = new Set(['node', 'codex', 'claude', 'microcode'])
 const NON_INTERACTIVE_FLAGS = new Set(['--help', '-h', '--version', '-v'])
 const MICROCODE_NON_INTERACTIVE_SUBCOMMANDS = new Set(['mcp', 'model'])
-
-function countStreamingLines(content: string): number {
-  if (!content) return 0
-  let lines = 1
-  for (let i = 0; i < content.length; i++) {
-    if (content.charCodeAt(i) === 10) lines++
-  }
-  return content.endsWith('\n') ? lines - 1 : lines
-}
 
 function splitShellWords(command: string): string[] {
   const words: string[] = []
@@ -521,11 +511,10 @@ export class App {
       this.chatContainer,
       [this.statusContainer, this.editorContainer, this.workingContainer, this.footer],
       () => this.ui.terminal.rows,
-      () => this.chatContainer.children.flatMap((component) => {
-        if (component instanceof TurnTimeline) return component.getToolToggleActions()
+      (width) => this.chatContainer.children.flatMap((component) => {
+        if (component instanceof TurnTimeline) return component.getToolInteractionTargets(width)
         const row = component as ToolUIComponent
-        if (!row.hasToggleButton?.() || !row.toggleExpanded) return []
-        return [() => row.toggleExpanded?.()]
+        return row.getInteractionTargets?.(width) ?? []
       }),
     )
     this.ui.addChild(this.appLayout)
@@ -2007,7 +1996,7 @@ export class App {
         for (const block of msg.content) {
           if (block.type !== 'toolCall') continue
           const row = this.createToolRow(block.id, block.name, block.arguments ?? {})
-          row.markExecutionStarted()
+          dispatchToolLifecycle(row, { phase: 'running' })
           this.activeTurnTimeline.addEntry(row, 'tool')
         }
 
@@ -2025,13 +2014,17 @@ export class App {
         let row = this.toolRows.get(toolResult.toolCallId)
         if (!row) {
           row = this.createToolRow(toolResult.toolCallId, toolResult.toolName, {})
-          row.markExecutionStarted()
+          dispatchToolLifecycle(row, { phase: 'running' })
           this.appendTurnEntry(row, 'tool')
         }
-        row.updateResult({ content: toolResult.content ?? [], isError: toolResult.isError === true })
-        if (row.updateDetails && toolResult.details && typeof toolResult.details === 'object') {
-          row.updateDetails(toolResult.details)
-        }
+        dispatchToolLifecycle(row, {
+          phase: toolResult.isError === true ? 'failed' : 'completed',
+          result: {
+            content: toolResult.content ?? [],
+            isError: toolResult.isError === true,
+            ...(toolResult.details && typeof toolResult.details === 'object' ? { details: toolResult.details } : {}),
+          },
+        })
       }
     }
 
@@ -3440,10 +3433,15 @@ export class App {
    * Prompt user for tool permission at the end of the active turn timeline.
    * Returns true if approved, false if denied.
    */
-  private async updatePermissionWritePreview(input: Record<string, unknown>): Promise<void> {
+  private async prepareApprovalPresentation(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<void> {
+    const prepare = getToolDefinition(toolName)?.presentation.prepareApproval
+    if (!prepare) return
     const serializedInput = JSON.stringify(input)
     const matchingCall = [...this.toolCallMetadata.entries()].reverse().find(([, call]) =>
-      call.name === WRITE_TOOL_NAME && JSON.stringify(call.args) === serializedInput,
+      call.name === toolName && JSON.stringify(call.args) === serializedInput,
     )
     if (!matchingCall) return
 
@@ -3451,55 +3449,13 @@ export class App {
     const component = this.pendingTools.get(toolCallId) ?? this.toolRows.get(toolCallId)
     if (!component?.updateDetails) return
 
-    const filePath = typeof input.file_path === 'string' ? input.file_path : ''
-    const content = typeof input.content === 'string' ? input.content : ''
-    const resolvedPath = filePath
-      ? (isAbsolute(filePath) ? filePath : resolve(this.agent.getSnapshot().cwd, filePath))
-      : ''
     try {
-      const details = await previewFileWrite(this.agent.getSnapshot().cwd, input as FileWriteToolInput)
-      component.updateDetails({ ...details, phase: 'approval' })
+      const details = await prepare(this.agent.getSnapshot().cwd, input)
+      if (details) dispatchToolLifecycle(component, { phase: 'presentation', details })
     } catch (error) {
-      component.updateDetails({
-        path: resolvedPath || filePath,
-        bytesWritten: Buffer.byteLength(content, 'utf8'),
-        additions: countStreamingLines(content),
-        removals: 0,
-        isNewFile: resolvedPath ? !existsSync(resolvedPath) : false,
-        preview: content,
-        previewNotice: `Diff unavailable: ${error instanceof Error ? error.message : 'unable to read file'}`,
-        phase: 'approval',
-      })
-    }
-    this.ui.requestRender()
-  }
-
-  private async updatePermissionEditPreview(input: Record<string, unknown>): Promise<void> {
-    const serializedInput = JSON.stringify(input)
-    const matchingCall = [...this.toolCallMetadata.entries()].reverse().find(([, call]) =>
-      call.name === EDIT_TOOL_NAME && JSON.stringify(call.args) === serializedInput,
-    )
-    if (!matchingCall) return
-
-    const [toolCallId] = matchingCall
-    const component = this.pendingTools.get(toolCallId) ?? this.toolRows.get(toolCallId)
-    if (!component?.updateDetails) return
-
-    const filePath = typeof input.file_path === 'string' ? input.file_path : ''
-    const oldString = typeof input.old_string === 'string' ? input.old_string : ''
-    const newString = typeof input.new_string === 'string' ? input.new_string : ''
-    try {
-      const details = await previewFileEdit(this.agent.getSnapshot().cwd, input as FileEditToolInput)
-      component.updateDetails({ ...details, phase: 'preparing' })
-    } catch (error) {
-      component.updateDetails({
-        path: filePath,
-        replacements: input.replace_all === true ? 0 : 1,
-        additions: countStreamingLines(newString),
-        removals: countStreamingLines(oldString),
-        diff: [],
-        previewNotice: `Preview unavailable: ${error instanceof Error ? error.message : 'unable to read file'}`,
-        phase: 'preparing',
+      dispatchToolLifecycle(component, {
+        phase: 'presentation',
+        details: { phase: 'approval', previewNotice: `Preview unavailable: ${error instanceof Error ? error.message : 'unknown error'}` },
       })
     }
     this.ui.requestRender()
@@ -3513,8 +3469,14 @@ export class App {
     this.pauseToolElapsedTimer()
     this.hideWorking()
     this.permissionPromptActive = true
-    if (toolName === EDIT_TOOL_NAME) await this.updatePermissionEditPreview(input)
-    if (toolName === WRITE_TOOL_NAME) await this.updatePermissionWritePreview(input)
+    const matchingCall = [...this.toolCallMetadata.entries()].reverse().find(([, call]) =>
+      call.name === toolName && JSON.stringify(call.args) === JSON.stringify(input),
+    )
+    const pendingComponent = matchingCall
+      ? this.pendingTools.get(matchingCall[0]) ?? this.toolRows.get(matchingCall[0])
+      : undefined
+    if (pendingComponent) dispatchToolLifecycle(pendingComponent, { phase: 'awaiting-approval' })
+    await this.prepareApprovalPresentation(toolName, input)
 
     return new Promise<boolean>((resolve) => {
 
@@ -3849,8 +3811,8 @@ export class App {
           const alreadyVisible = this.toolRows.has(event.toolCallId)
           const component: ToolUIComponent = existing ?? this.toolRows.get(event.toolCallId)
             ?? this.createToolRow(event.toolCallId, event.toolName, event.args)
-          component.updateArgs?.(event.args)
-                component.markExecutionStarted()
+          dispatchToolLifecycle(component, { phase: 'created', input: event.args })
+          dispatchToolLifecycle(component, { phase: 'running' })
           if (!alreadyVisible) {
             this.appendTurnEntry(component, 'tool')
           }
@@ -3866,13 +3828,10 @@ export class App {
         case 'tool_execution_update': {
           const component = this.pendingTools.get(event.toolCallId)
           if (component) {
-            if (component.updateDetails && event.partialResult.details) {
-              component.updateDetails(event.partialResult.details)
-            }
-            component.updateResult(
-              { ...event.partialResult, isError: false },
-              true,
-            )
+            dispatchToolLifecycle(component, {
+              phase: 'partial',
+              result: { ...event.partialResult, isError: false },
+            })
             this.commitToolFrame()
           }
           break
@@ -3885,14 +3844,10 @@ export class App {
             if (startedAt !== undefined) {
               component.updateElapsed?.(performance.now() - startedAt)
             }
-            component.updateResult({
-              ...event.result,
-              isError: event.isError,
+            dispatchToolLifecycle(component, {
+              phase: event.isError ? 'failed' : 'completed',
+              result: { ...event.result, isError: event.isError },
             })
-            // Pass details to per-tool UI for diff rendering
-            if (component.updateDetails && event.result.details) {
-              component.updateDetails(event.result.details)
-            }
             this.updateContextUsage()
             this.footer.invalidate()
           }
@@ -4030,43 +3985,20 @@ export class App {
 
       if (!component) {
         component = this.createToolRow(toolCall.id, toolCall.name, args)
-        component.markExecutionStarted()
+        dispatchToolLifecycle(component, { phase: 'created', input: args })
+        dispatchToolLifecycle(component, { phase: 'running' })
         this.appendTurnEntry(component, 'tool')
         this.pendingTools.set(toolCall.id, component)
         // The tool is pending as soon as its call starts streaming. Waiting for
         // tool_execution_start creates a visible gap where Working disappears.
         this.showWorking('Preparing tool calls…')
       } else {
-        component.updateArgs?.(args)
+        dispatchToolLifecycle(component, { phase: 'input', input: args })
       }
 
-      if (toolCall.name === WRITE_TOOL_NAME && component.updateDetails) {
-        const filePath = typeof args.file_path === 'string' ? args.file_path : ''
-        const content = typeof args.content === 'string' ? args.content : ''
-        const resolvedPath = filePath
-          ? (isAbsolute(filePath) ? filePath : resolve(process.cwd(), filePath))
-          : ''
-        const isNewFile = resolvedPath ? !existsSync(resolvedPath) : false
-        component.updateDetails({
-          path: resolvedPath || filePath,
-          bytesWritten: Buffer.byteLength(content, 'utf8'),
-          additions: countStreamingLines(content),
-          removals: 0,
-          isNewFile,
-          preview: content,
-          phase: 'preparing',
-        })
-      } else if (toolCall.name === EDIT_TOOL_NAME && component.updateDetails) {
-        const oldString = typeof args.old_string === 'string' ? args.old_string : ''
-        const newString = typeof args.new_string === 'string' ? args.new_string : ''
-        component.updateDetails({
-          path: typeof args.file_path === 'string' ? args.file_path : '',
-          additions: countStreamingLines(newString),
-          removals: countStreamingLines(oldString),
-          replacements: args.replace_all === true ? 0 : 1,
-          phase: 'preparing',
-        })
-      }
+      const projectInput = getToolDefinition(toolCall.name)?.presentation.projectInput
+      const projected = projectInput?.(this.agent.getSnapshot().cwd, args)
+      if (projected) dispatchToolLifecycle(component, { phase: 'presentation', details: projected })
 
       const now = performance.now()
       const lastRenderAt = this.streamingToolLastRenderAt.get(toolCall.id) ?? 0

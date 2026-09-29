@@ -58,8 +58,11 @@ describe('file and search tools', () => {
         offset: 2,
         limit: 1,
       })
-      expect(readResult.content[0]?.text).toContain('2\ttwo')
+      expect(readResult.content[0]?.text).toContain('two')
+      expect(readResult.content[0]?.text).not.toContain('2\ttwo')
       expect(readResult.details?.returnedLines).toBe(1)
+      expect(readResult.details?.previewLines).toEqual(['two'])
+      expect(readResult.details?.previewStartLine).toBe(2)
 
       const editUpdates: any[] = []
       const editResult = await edit.execute('edit', {

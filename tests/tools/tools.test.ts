@@ -3,13 +3,15 @@ import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type } from 'typebox'
 import { createMcpTool, formatMcpInputSchema, registerMcpToolsAsDeferred } from '../../src/tools/MCPTool/MCPTool.ts'
 import { createCodingTools } from '../../src/tools/index.ts'
-import { formatToolActivity, formatToolDetail, formatToolStatus, formatToolSummary, getAllDeferredToolDefinitions, registerDynamicDeferredTool, registerTool, unregisterDynamicDeferredTool } from '../../src/tools/registry.ts'
-import { boolTag, count, joinSummaryParts, previewList, producedText, statusPrefix, text } from '../../src/tools/summary.ts'
+import { formatToolActivity, formatToolDetail, formatToolStatus, formatToolSummary, getAllDeferredToolDefinitions, getAllToolDefinitions, registerDynamicDeferredTool, registerTool, unregisterDynamicDeferredTool } from '../../src/tools/registry.ts'
+import { boolTag, count, countLines, joinSummaryParts, previewList, producedText, statusPrefix, text } from '../../src/tools/summary.ts'
 
 describe('tools modules', () => {
   test('summary helpers compact optional values', () => {
     const context = { result: { isError: false, content: [] }, textStats: { chars: 1234, lines: 2 } } as any
     expect(count(3, 'files')).toBe('3 files')
+    expect(countLines('first\nsecond\n')).toBe(2)
+    expect(countLines('')).toBe(0)
     expect(text('hello')).toBe('hello')
     expect(boolTag(true, 'enabled')).toBe('enabled')
     expect(statusPrefix({ ...context, result: { isError: true } })).toBe('failed · ')
@@ -21,13 +23,15 @@ describe('tools modules', () => {
   test('registry display formatters override default MCP summaries', () => {
     registerTool({
       name: 'custom_summary_tool',
-      defaultPermission: 'allow',
-      createTool: () => ({ name: 'custom_summary_tool', label: 'Custom', description: 'Custom', parameters: Type.Object({}), execute: async () => ({ content: [] }) } as AgentTool),
-      display: {
+      policy: { defaultPermission: 'allow' },
+      agent: {
+        create: () => ({ name: 'custom_summary_tool', label: 'Custom', description: 'Custom', parameters: Type.Object({}), execute: async () => ({ content: [] }) } as AgentTool),
+        summarizeResult: () => 'custom summary',
+      },
+      presentation: {
         activity: () => 'Doing custom work',
         detail: () => 'custom detail',
         status: () => 'custom status',
-        summary: () => 'custom summary',
       },
     })
 
@@ -105,11 +109,25 @@ describe('tools modules', () => {
 
     registerDynamicDeferredTool({
       name: 'DynamicTestTool',
-      defaultPermission: 'allow',
-      shouldDefer: true,
-      createTool: () => ({ name: 'DynamicTestTool', label: 'Dynamic', description: 'Dynamic', parameters: Type.Object({}), execute: async () => ({ content: [] }) } as any),
+      policy: { defaultPermission: 'allow' },
+      agent: {
+        shouldDefer: true,
+        create: () => ({ name: 'DynamicTestTool', label: 'Dynamic', description: 'Dynamic', parameters: Type.Object({}), execute: async () => ({ content: [] }) } as any),
+      },
+      presentation: {},
     })
     expect(getAllDeferredToolDefinitions().map((definition) => definition.name)).toContain('DynamicTestTool')
     unregisterDynamicDeferredTool('DynamicTestTool')
+  })
+
+  test('every registered tool separates Agent, policy, and presentation contracts', () => {
+    createCodingTools({ cwd: process.cwd() })
+    const definitions = getAllToolDefinitions()
+    expect(definitions.length).toBeGreaterThan(0)
+    for (const definition of definitions) {
+      expect(typeof definition.agent.create).toBe('function')
+      expect(definition.policy.defaultPermission).toBeDefined()
+      expect(definition.presentation).toBeDefined()
+    }
   })
 })

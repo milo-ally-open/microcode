@@ -1,15 +1,55 @@
 import { registerTool } from '../registry.ts'
-import { createFileEditTool, TOOL_NAME, TOOL_DEFAULT_PERMISSION } from './FileEditTool.ts'
+import { createFileEditTool, previewFileEdit, TOOL_NAME, TOOL_DEFAULT_PERMISSION, type FileEditToolInput } from './FileEditTool.ts'
 import { FileEditToolUI } from './UI.tsx'
 import { basename } from '../../utils/displayUtils.ts'
-import { count, joinSummaryParts, statusPrefix, text } from '../summary.ts'
+import { count, countLines, joinSummaryParts, statusPrefix, text } from '../summary.ts'
 
 registerTool({
   name: TOOL_NAME,
-  defaultPermission: TOOL_DEFAULT_PERMISSION,
-  createTool: createFileEditTool,
-  ui: FileEditToolUI,
-  display: {
+  policy: { defaultPermission: TOOL_DEFAULT_PERMISSION },
+  agent: {
+    create: createFileEditTool,
+    formatDescription: (input) => typeof input.file_path === 'string' ? `edit ${input.file_path}` : '(unknown file)',
+    extractMatchContent: (input) => typeof input.file_path === 'string' ? input.file_path : undefined,
+    summarizeResult: (context) => {
+      const details = context.details ?? {}
+      return `[edit] ${statusPrefix(context)}${joinSummaryParts([
+        text(details.path), count(details.replacements, 'replacements'),
+        count(details.additions, 'additions'), count(details.removals, 'removals'),
+      ])}`
+    },
+  },
+  presentation: {
+    View: FileEditToolUI,
+    projectInput: (_cwd, input) => {
+      const oldString = typeof input.old_string === 'string' ? input.old_string : ''
+      const newString = typeof input.new_string === 'string' ? input.new_string : ''
+      return {
+        path: typeof input.file_path === 'string' ? input.file_path : '',
+        additions: countLines(newString),
+        removals: countLines(oldString),
+        replacements: input.replace_all === true ? 0 : 1,
+        phase: 'preparing',
+      }
+    },
+    prepareApproval: async (cwd, input) => {
+      const filePath = typeof input.file_path === 'string' ? input.file_path : ''
+      const oldString = typeof input.old_string === 'string' ? input.old_string : ''
+      const newString = typeof input.new_string === 'string' ? input.new_string : ''
+      try {
+        return { ...await previewFileEdit(cwd, input as FileEditToolInput), phase: 'preparing' }
+      } catch (error) {
+        return {
+          path: filePath,
+          replacements: input.replace_all === true ? 0 : 1,
+          additions: countLines(newString),
+          removals: countLines(oldString),
+          diff: [],
+          previewNotice: `Preview unavailable: ${error instanceof Error ? error.message : 'unable to read file'}`,
+          phase: 'preparing',
+        }
+      }
+    },
     activity: ({ input }) =>
       typeof input.file_path === 'string'
         ? `Editing ${input.file_path}`
@@ -24,18 +64,5 @@ registerTool({
       const removals = typeof details.removals === 'number' ? details.removals : 0
       return `${additions}+ ${removals}-`
     },
-    summary: (context) => {
-      const details = context.details ?? {}
-      return `[edit] ${statusPrefix(context)}${joinSummaryParts([
-        text(details.path),
-        count(details.replacements, 'replacements'),
-        count(details.additions, 'additions'),
-        count(details.removals, 'removals'),
-      ])}`
-    },
   },
-  formatDescription: (input) =>
-    typeof input.file_path === 'string' ? `edit ${input.file_path}` : '(unknown file)',
-  extractMatchContent: (input) =>
-    typeof input.file_path === 'string' ? input.file_path : undefined,
 })

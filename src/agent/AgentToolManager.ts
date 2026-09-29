@@ -104,11 +104,14 @@ export class AgentToolManager {
       if (this.coreTools.has(tool.name) || this.infrastructureTools.has(tool.name)) continue
       this.deferredDefinitions.set(tool.name, {
         name: tool.name,
-        defaultPermission: 'ask',
-        shouldDefer: true,
-        description: tool.description,
-        schema: mcpToolSchemas.get(tool.name),
-        createTool: () => tool,
+        policy: { defaultPermission: 'ask' },
+        agent: {
+          create: () => tool,
+          shouldDefer: true,
+          description: tool.description,
+          schema: mcpToolSchemas.get(tool.name),
+        },
+        presentation: {},
       })
       this.mcpToolNames.add(tool.name)
     }
@@ -197,7 +200,7 @@ export class AgentToolManager {
       if (this.discoveredTools.has(name) || this.pendingDiscovered.has(name)) continue
       const definition = this.deferredDefinitions.get(name)
       if (definition) {
-        this.pendingDiscovered.set(name, definition.createTool(this.options.cwd))
+        this.pendingDiscovered.set(name, definition.agent.create(this.options.cwd))
       }
     }
   }

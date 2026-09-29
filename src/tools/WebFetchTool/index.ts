@@ -6,13 +6,26 @@ import { boolTag, count, joinSummaryParts, statusPrefix, text } from '../summary
 
 registerTool({
   name: TOOL_NAME,
-  defaultPermission: TOOL_DEFAULT_PERMISSION,
-  createTool: () => createWebFetchTool(),
-  ui: WebFetchToolUI,
-  description:
-    'Fetch a public URL and return readable page content for analysis. Authenticated or private URLs may fail.',
-  shouldDefer: false,
-  display: {
+  policy: { defaultPermission: TOOL_DEFAULT_PERMISSION },
+  agent: {
+    create: () => createWebFetchTool(),
+    description: 'Fetch a public URL and return readable page content for analysis. Authenticated or private URLs may fail.',
+    shouldDefer: false,
+    formatDescription: (input) => typeof input.url === 'string' ? `web fetch ${input.url}` : 'web fetch',
+    extractMatchContent: (input) => typeof input.url === 'string' ? input.url : undefined,
+    summarizeResult: (context) => {
+      const details = context.details ?? {}
+      const status = typeof details.code === 'number'
+        ? `HTTP ${details.code}${typeof details.codeText === 'string' && details.codeText ? ` ${details.codeText}` : ''}`
+        : undefined
+      return `[WebFetch] ${statusPrefix(context)}${joinSummaryParts([
+        text(details.finalUrl) ?? text(details.url), status, count(details.bytes, 'bytes'),
+        text(details.contentType), boolTag(details.truncated, 'truncated'),
+      ])}`
+    },
+  },
+  presentation: {
+    View: WebFetchToolUI,
     activity: ({ input }) =>
       typeof input.url === 'string'
         ? `Fetching ${shortUrl(input.url)}`
@@ -26,22 +39,5 @@ registerTool({
       const size = bytes > 0 ? formatBytes(bytes) : undefined
       return [code, size].filter(Boolean).join(' · ') || undefined
     },
-    summary: (context) => {
-      const details = context.details ?? {}
-      const status = typeof details.code === 'number'
-        ? `HTTP ${details.code}${typeof details.codeText === 'string' && details.codeText ? ` ${details.codeText}` : ''}`
-        : undefined
-      return `[WebFetch] ${statusPrefix(context)}${joinSummaryParts([
-        text(details.finalUrl) ?? text(details.url),
-        status,
-        count(details.bytes, 'bytes'),
-        text(details.contentType),
-        boolTag(details.truncated, 'truncated'),
-      ])}`
-    },
   },
-  formatDescription: (input) =>
-    typeof input.url === 'string' ? `web fetch ${input.url}` : 'web fetch',
-  extractMatchContent: (input) =>
-    typeof input.url === 'string' ? input.url : undefined,
 })

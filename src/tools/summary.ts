@@ -4,6 +4,13 @@ export function count(value: unknown, noun: string): string | undefined {
   return typeof value === 'number' ? `${value.toLocaleString()} ${noun}` : undefined
 }
 
+/** Count logical content lines without inventing a row for a final newline. */
+export function countLines(value: string): number {
+  if (!value) return 0
+  const lines = value.split('\n').length
+  return value.endsWith('\n') ? lines - 1 : lines
+}
+
 export function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }

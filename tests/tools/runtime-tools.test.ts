@@ -84,6 +84,15 @@ describe('runtime tools', () => {
       .rejects.toThrow('Working directory does not exist')
   })
 
+  test('Bash keeps Agent output bounded while retaining a separate bounded UI preview', async () => {
+    const result = await createBashTool(process.cwd()).execute('bash-large-output', {
+      command: "printf '%030000d' 0",
+    })
+    expect(result.content[0]?.text?.length).toBeLessThan(21_000)
+    expect(result.details?.displayOutput.length).toBe(30_000)
+    expect(result.details?.displayTruncated).toBe(false)
+  })
+
   test('Vision tool reads local files, fetches URLs, and rejects invalid sources', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'microcode-vision-'))
     try {

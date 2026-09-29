@@ -9,6 +9,7 @@ import {
   formatToolLabel,
   getProgressFrame,
 } from '../../tui/toolPresentation.ts'
+import { ToolPreviewController } from '../previewController.ts'
 
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
@@ -30,11 +31,9 @@ interface FileWriteDetails {
   written?: boolean
 }
 
-const CONTENT_PREVIEW_LINES = 0
-
 export class FileWriteToolUI extends Container {
   private args: any
-  private expanded = false
+  private preview = new ToolPreviewController()
   private executionStarted = false
   private elapsedMs = 0
   private result?: ToolResult
@@ -50,12 +49,13 @@ export class FileWriteToolUI extends Container {
   }
 
   setExpanded(expanded: boolean): void {
-    this.expanded = expanded
+    this.preview.setExpanded(expanded)
     this.rebuild()
   }
 
   toggleExpanded(): void {
-    this.setExpanded(!this.expanded)
+    this.preview.toggle()
+    this.rebuild()
   }
 
   hasToggleButton(): boolean {
@@ -70,6 +70,12 @@ export class FileWriteToolUI extends Container {
         ? countContentLines(content)
         : 0
     return previewLineCount > 0
+  }
+
+  getInteractionTargets(width: number) {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      : []
   }
 
   markExecutionStarted(): void {
@@ -193,9 +199,7 @@ export class FileWriteToolUI extends Container {
     const allDiffLines = hasDiff
       ? this.details?.diff ?? []
       : contentLines.map((line) => `+${line}`)
-    const visibleDiffLines = this.expanded
-      ? allDiffLines
-      : allDiffLines.slice(0, CONTENT_PREVIEW_LINES)
+    const visibleDiffLines = allDiffLines.slice(0, this.preview.visibleRows(allDiffLines.length))
     if (visibleDiffLines.length > 0) {
       lines.push(...numberDiffLines(visibleDiffLines).map(({ line, gutter }) => `  ${theme.dim(gutter)}${renderTerminalDiffLine(line)}`))
     }
@@ -210,7 +214,7 @@ export class FileWriteToolUI extends Container {
 
   private previewToggle(): string {
     return this.hasToggleButton()
-      ? `  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`
+      ? `  ${theme.fg('accent', this.preview.toggleLabel())}`
       : ''
   }
 

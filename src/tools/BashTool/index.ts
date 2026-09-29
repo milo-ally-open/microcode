@@ -6,10 +6,21 @@ import { joinSummaryParts, producedText, statusPrefix } from '../summary.ts'
 
 registerTool({
   name: TOOL_NAME,
-  defaultPermission: TOOL_DEFAULT_PERMISSION,
-  createTool: createBashTool,
-  ui: BashToolUI,
-  display: {
+  policy: { defaultPermission: TOOL_DEFAULT_PERMISSION },
+  agent: {
+    create: createBashTool,
+    formatDescription: (input) => typeof input.command === 'string' ? input.command : '(unknown command)',
+    extractMatchContent: (input) => typeof input.command === 'string' ? input.command : undefined,
+    summarizeResult: (context) => {
+      const details = context.details ?? {}
+      const exitCode = details.exitCode === null || typeof details.exitCode === 'number'
+        ? `exit=${details.exitCode}`
+        : undefined
+      return `[bash] ${statusPrefix(context)}${joinSummaryParts([exitCode, producedText(context)])}`
+    },
+  },
+  presentation: {
+    View: BashToolUI,
     activity: () => 'Running a command',
     detail: ({ input }) => {
       const command = typeof input.command === 'string' ? input.command : ''
@@ -22,19 +33,5 @@ registerTool({
       const lines = (stdout + stderr).split('\n').filter((line) => line.length > 0).length
       return lines > 0 ? `${lines} lines` : undefined
     },
-    summary: (context) => {
-      const details = context.details ?? {}
-      const exitCode = details.exitCode === null || typeof details.exitCode === 'number'
-        ? `exit=${details.exitCode}`
-        : undefined
-      return `[bash] ${statusPrefix(context)}${joinSummaryParts([
-        exitCode,
-        producedText(context),
-      ])}`
-    },
   },
-  formatDescription: (input) =>
-    typeof input.command === 'string' ? input.command : '(unknown command)',
-  extractMatchContent: (input) =>
-    typeof input.command === 'string' ? input.command : undefined,
 })

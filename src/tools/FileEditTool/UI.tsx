@@ -6,6 +6,7 @@ import {
   renderTerminalDiffLine,
 } from '../../utils/diffUtils.ts'
 import { formatCompletedStatus, formatRunningStatus, formatToolLabel, getProgressFrame } from '../../tui/toolPresentation.ts'
+import { ToolPreviewController } from '../previewController.ts'
 
 interface ToolResult {
   content: Array<{ type: string; text?: string }>
@@ -26,7 +27,7 @@ interface FileEditDetails {
 export class FileEditToolUI extends Container {
   private args: any
   private executionStarted = false
-  private expanded = false
+  private preview = new ToolPreviewController()
   private elapsedMs = 0
   private result?: ToolResult
   private details?: FileEditDetails
@@ -41,16 +42,23 @@ export class FileEditToolUI extends Container {
   }
 
   setExpanded(expanded: boolean): void {
-    this.expanded = expanded
+    this.preview.setExpanded(expanded)
     this.rebuild()
   }
 
   toggleExpanded(): void {
-    this.setExpanded(!this.expanded)
+    this.preview.toggle()
+    this.rebuild()
   }
 
   hasToggleButton(): boolean {
     return Boolean(this.details?.diff?.length)
+  }
+
+  getInteractionTargets(width: number) {
+    return this.hasToggleButton()
+      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      : []
   }
 
   markExecutionStarted(): void {
@@ -134,7 +142,7 @@ export class FileEditToolUI extends Container {
     if (!this.details || (!this.details.diff && !this.details.previewNotice && !this.details.diffTruncated)) return
 
     const allDiffLines = this.details.diff ?? []
-    const visibleDiffLines = this.expanded ? allDiffLines : allDiffLines.slice(0, 0)
+    const visibleDiffLines = allDiffLines.slice(0, this.preview.visibleRows(allDiffLines.length))
     const diff = numberDiffLines(visibleDiffLines).map(({ line, gutter }) => `${theme.dim(gutter)}${renderTerminalDiffLine(line)}`)
     if (this.details.previewNotice) {
       diff.push(theme.dim(this.details.previewNotice))
@@ -148,7 +156,7 @@ export class FileEditToolUI extends Container {
 
   private previewToggle(): string {
     return this.hasToggleButton()
-      ? `  ${theme.fg('accent', this.expanded ? '[Collapse preview]' : '[Expand preview]')}`
+      ? `  ${theme.fg('accent', this.preview.toggleLabel())}`
       : ''
   }
 

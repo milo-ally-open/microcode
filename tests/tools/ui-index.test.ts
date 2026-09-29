@@ -23,6 +23,7 @@ import { VisionToolUI } from '../../src/tools/VisionTool/UI.tsx'
 import { WebFetchToolUI } from '../../src/tools/WebFetchTool/UI.tsx'
 import { WebSearchToolUI } from '../../src/tools/WebSearchTool/UI.tsx'
 import { formatToolActivity, formatToolDetail, formatToolStatus, formatToolSummary, getToolDefinition } from '../../src/tools/registry.ts'
+import { ToolPreviewController } from '../../src/tools/previewController.ts'
 
 function renderText(ui: any): string {
   return ui.render(120, 40).join('\n')
@@ -39,7 +40,7 @@ function complete(content = 'done', isError = false) {
 describe('tool UI and registration modules', () => {
   test('registered tool index modules expose descriptions, formatters, and UI constructors', () => {
     const read = getToolDefinition('read')!
-    expect(read.ui).toBe(FileReadToolUI)
+    expect(read.presentation.View).toBe(FileReadToolUI)
     expect(formatToolActivity('read', { file_path: 'src/a.ts' })).toContain('Reading')
     expect(formatToolDetail('read', { file_path: 'src/a.ts' })).toBe('a.ts')
     expect(formatToolStatus('read', { file_path: 'a' }, { returnedLines: 1, totalLines: 2 })).toBe('1/2 lines')
@@ -49,8 +50,20 @@ describe('tool UI and registration modules', () => {
       details: { path: 'a', returnedLines: 1, totalLines: 2, truncated: true },
     })).toContain('truncated')
 
-    expect(getToolDefinition('WebSearch')?.formatDescription?.({ query: 'hello' })).toContain('hello')
-    expect(getToolDefinition('grep')?.extractMatchContent?.({ pattern: 'abc' })).toBe('abc')
+    expect(getToolDefinition('WebSearch')?.agent.formatDescription?.({ query: 'hello' })).toContain('hello')
+    expect(getToolDefinition('grep')?.agent.extractMatchContent?.({ pattern: 'abc' })).toBe('abc')
+  })
+
+  test('shared preview controller starts collapsed with zero rows and owns toggle state', () => {
+    const preview = new ToolPreviewController()
+    expect(preview.visibleRows(12)).toBe(0)
+    expect(preview.hasToggle(12)).toBe(true)
+    expect(preview.toggleLabel()).toBe('[Expand preview]')
+    preview.toggle()
+    expect(preview.visibleRows(12)).toBe(12)
+    expect(preview.toggleLabel()).toBe('[Collapse preview]')
+    preview.setExpanded(false)
+    expect(preview.visibleRows(12)).toBe(0)
   })
 
   test('basic tool UIs render pending, running, success, error, details, and expanded states', () => {
@@ -95,6 +108,21 @@ describe('tool UI and registration modules', () => {
     expect(renderText(read)).toContain('read line 20')
     read.setExpanded(false)
     expect(renderText(read)).not.toContain('read line 20')
+
+    const projectedRead = new FileReadToolUI('read-projection', { file_path: '/tmp/projected.txt' })
+    projectedRead.updateDetails({
+      path: '/tmp/projected.txt',
+      totalLines: 2,
+      returnedLines: 2,
+      previewLines: ['alpha', 'beta'],
+      previewStartLine: 7,
+    })
+    projectedRead.updateResult(complete('alpha\nbeta'))
+    projectedRead.setExpanded(true)
+    expect(stripAnsi(renderText(projectedRead))).toMatch(/7\s+alpha/)
+    expect(stripAnsi(renderText(projectedRead))).toMatch(/8\s+beta/)
+    // TUI numbering comes from details and never gets added to Agent content.
+    expect(projectedRead['result'].content[0].text).toBe('alpha\nbeta')
 
     const readWithoutDetails = new FileReadToolUI('read-no-details', { file_path: '/tmp/b.txt' })
     readWithoutDetails.updateResult(complete('sensitive file content'), false)

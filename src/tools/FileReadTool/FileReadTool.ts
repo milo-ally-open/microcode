@@ -39,17 +39,11 @@ export interface FileReadToolDetails {
   totalLines: number
   returnedLines: number
   truncated: boolean
-}
-
-function addLineNumbers(lines: readonly string[], startLine: number): string {
-  const maxLineNum = startLine + lines.length - 1
-  const padding = String(Math.max(startLine, maxLineNum)).length
-  return lines
-    .map((line, index) => {
-      const lineNum = String(startLine + index).padStart(padding, ' ')
-      return `${lineNum}\t${line}`
-    })
-    .join('\n')
+  /** 原始预览数据；行号只由 TUI 展示层添加，不进入模型内容。 */
+  previewLines?: string[]
+  previewStartLine?: number
+  warning?: string
+  continuation?: string
 }
 
 function hasTextExtension(filePath: string): boolean {
@@ -240,8 +234,7 @@ export function createFileReadTool(
 
       const sections: string[] = []
       if (warning) sections.push(warning)
-      const numbered = addLineNumbers(selectedLines, offset)
-      if (numbered) sections.push(numbered)
+      if (selectedLines.length > 0) sections.push(selectedLines.join('\n'))
       if (continuation) sections.push(continuation)
 
       return {
@@ -251,6 +244,10 @@ export function createFileReadTool(
           totalLines,
           returnedLines: selectedLines.length,
           truncated,
+          previewLines: selectedLines,
+          previewStartLine: offset,
+          warning,
+          continuation,
         },
       }
     },
