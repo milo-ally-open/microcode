@@ -23,16 +23,16 @@
 
 参考两类 CLI 的共同点：主时间线突出用户消息、最终答复、正在执行的动作和结果；详细轨迹作为按需查看的信息。思维链的 UI 应显示“正在分析/执行”等安全状态或模型明确提供的摘要，不应将 provider 的内部 reasoning 内容当作通用、稳定、可公开的文本格式。
 
-## 2. 当前实现与问题
+## 2. 当前实现与已知边界
 
 当前代码的事实依据：
 
-- `AssistantMessageComponent.updateContent()` 将 assistant 内容拆分为 text 和 thinking blocks，并在流式更新时更新尾部 block（`src/tui/components/assistantMessage.ts`）。
-- 当前 `ThinkingBlock` 不展示 block 正文，只在每个 block 上追加固定的 `Analyzing…` / `Analysis complete`。同一轮多次 assistant 调用会产生重复的完成状态。
-- Provider 的 thinking/reasoning 语义不一致：OpenAI Responses 在底层响应 item 中区分 reasoning `summary` 与原始 `content`，但当前 `pi-ai` 适配器会把两者合并成通用 thinking block。因此不能仅凭通用 `thinking` 类型判定正文适合展示；必须从保留的原始 item 签名中只读取独立 `summary` 字段。
-- `ToolExecutionComponent` 将参数压缩到一行，完成后默认显示结果文本的前 300 个字符；组件支持 expanded 状态，但 `App` 在创建或启动工具时将它设为折叠（`src/tui/components/toolExecution.ts`、`src/tui/app.ts` 的 `tool_execution_start` 与 `updateStreamingToolCall` 分支）。
-- `App.setupAgentSubscription()` 已消费 `agent_start`、assistant `message_start/update/end`、`tool_execution_start/update/end`、`turn_end` 等事件，并以 `toolCallId` 跟踪执行中的工具（`src/tui/app.ts`）。因此，工具状态、流式参数、部分结果、耗时、完成/错误标记可以在 TUI 层组织。
-- 工具组件当前作为独立子项加入聊天容器，没有明确的 turn/work group 容器；assistant 的 reasoning、文字回复和 tool call 视觉上较容易变成一串独立内容块。
+- `AssistantMessageComponent.updateContent()` 只将普通 assistant text block 放入可见 transcript；thinking block 正文不会显示，也不会生成 `Analyzing…` 或 `Analysis complete` 历史行（`src/tui/components/assistantMessage.ts`）。
+- `App.setupAgentSubscription()` 消费 Agent、assistant message、tool lifecycle、turn end 等事件；工具调用按 `toolCallId` 跟踪，活动标签写入当前 turn timeline 的单一活动行（`src/tui/app.ts`、`src/tui/components/turnTimeline.ts`）。
+- `transitionAgentActivity()` 将 provider-neutral 事件折叠为 idle、thinking、preparing-tool、running-tool(s)、responding 状态；状态仅用于 TUI 活动行，耗时由 App 单独呈现（`src/tui/agentActivity.ts`、`src/tui/app.ts`）。
+- 转换会参考当前状态：idle 只接受新一轮的 thinking，不接受迟到的工具/消息事件；工具或回答阶段不会被迟到的 thinking 事件回退。真实的 responding → preparing-tool 工具交接仍然有效。重复的当前状态事件保持幂等。
+- Agent 事件目前没有跨 turn 的 generation/sequence 标识。因此，状态机能拒绝不符合当前阶段的事件并抑制常见重复事件，但无法仅凭事件内容识别一个与新 turn 状态同样合法的、跨 turn 延迟事件；若订阅层未来引入异步/乱序投递，应由事件层补充 turn 标识或序号。
+- 规范后续章节描述的是目标交互和验收方向；它们不应被误读为当前全部已实现。工具详情、工作段归属和详情浏览能力须以对应组件与 App 的实际代码为准。
 
 本规范只要求改造 TUI。若某一模型/供应商不提供安全的进度摘要，界面显示确定性的状态标签即可；不能要求模型额外输出隐藏 reasoning，也不通过修改 Agent prompt 来伪造它。
 

@@ -14,16 +14,29 @@ export type AgentActivityEvent =
   | { type: 'responding'; pendingTools: number }
   | { type: 'work-finished'; pendingTools: number }
 
-/** Maps real Agent lifecycle events to a small provider-neutral activity state machine. */
+/** Maps Agent lifecycle events to a provider-neutral state machine. Invalid or stale
+ * transitions preserve the current state instead of reviving an earlier activity. */
 export function transitionAgentActivity(
-  _current: AgentActivityState,
+  current: AgentActivityState,
   event: AgentActivityEvent,
 ): AgentActivityState {
+  // A new turn is opened explicitly by `thinking`; after work has returned to idle,
+  // delayed per-message/tool events must not bring the previous turn back to life.
+  if (current.phase === 'idle') {
+    if (event.type === 'thinking') return { phase: 'thinking' }
+    return current
+  }
+
+  // `thinking` starts a turn from idle. After tool/answer work has advanced,
+  // repeated message-start events must not roll the activity back.
+  if (event.type === 'thinking' && current.phase !== 'thinking') return current
+
   switch (event.type) {
     case 'thinking':
-      return { phase: 'thinking' }
+      return current
     case 'preparing-tool':
-      return { phase: 'preparing-tool' }
+      if (current.phase === 'running-tool' || current.phase === 'running-tools') return current
+      return current.phase === 'preparing-tool' ? current : { phase: 'preparing-tool' }
     case 'tool-started':
       return { phase: 'running-tool', toolName: event.toolName }
     case 'tool-finished':
@@ -34,7 +47,8 @@ export function transitionAgentActivity(
           ? { phase: 'thinking' }
           : { phase: 'idle' }
     case 'responding':
-      return event.pendingTools > 0 ? { phase: 'running-tools' } : { phase: 'responding' }
+      if (event.pendingTools > 0) return { phase: 'running-tools' }
+      return current.phase === 'responding' ? current : { phase: 'responding' }
   }
 }
 

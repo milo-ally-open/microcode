@@ -378,6 +378,36 @@ describe('tui modules', () => {
     expect(getAgentActivityLabel(state)).toBeUndefined()
   })
 
+  test('agent activity ignores stale and duplicate lifecycle events', () => {
+    const idle: AgentActivityState = { phase: 'idle' }
+    expect(transitionAgentActivity(idle, { type: 'tool-finished', pendingTools: 0 })).toBe(idle)
+    expect(transitionAgentActivity(idle, { type: 'responding', pendingTools: 0 })).toBe(idle)
+    expect(transitionAgentActivity(idle, { type: 'preparing-tool' })).toBe(idle)
+    expect(transitionAgentActivity(idle, { type: 'tool-started', toolName: 'Bash' })).toBe(idle)
+    expect(transitionAgentActivity(idle, { type: 'work-finished', pendingTools: 2 })).toBe(idle)
+
+    const responding: AgentActivityState = { phase: 'responding' }
+    expect(transitionAgentActivity(responding, { type: 'thinking' })).toBe(responding)
+    expect(transitionAgentActivity(responding, { type: 'responding', pendingTools: 0 })).toBe(responding)
+    const running: AgentActivityState = { phase: 'running-tool', toolName: 'Read' }
+    expect(transitionAgentActivity(running, { type: 'thinking' })).toBe(running)
+    expect(transitionAgentActivity(running, { type: 'preparing-tool' })).toBe(running)
+
+    const justFinished: AgentActivityState = { phase: 'idle' }
+    const repeatedFinish = transitionAgentActivity(justFinished, { type: 'work-finished', pendingTools: 0 })
+    expect(repeatedFinish).toBe(justFinished)
+  })
+
+  test('agent activity permits a real response-to-tool handoff', () => {
+    const preparing = transitionAgentActivity(
+      { phase: 'responding' },
+      { type: 'preparing-tool' },
+    )
+    expect(preparing).toEqual({ phase: 'preparing-tool' })
+    expect(transitionAgentActivity(preparing, { type: 'tool-started', toolName: 'Bash' }))
+      .toEqual({ phase: 'running-tool', toolName: 'Bash' })
+  })
+
   test('turn activity updates replace the current row instead of appending history', () => {
     const timeline = new TurnTimeline()
     timeline.setActivity('Thinking…')
