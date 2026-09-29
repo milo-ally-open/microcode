@@ -13,7 +13,7 @@ import { getEditorTheme } from '../../src/tui/theme.ts'
 import { createSessionTitle, firstSentence, normalizeSessionTitle } from '../../src/tui/sessionTitle.ts'
 import { parseBashInput } from '../../src/tui/bashInput.ts'
 import { shouldShowRespondingActivity } from '../../src/tui/agentActivity.ts'
-import { LOGO_LINES } from '../../src/tui/logo.ts'
+import { COMPACT_LOGO_LINES, LOGO_LINES } from '../../src/tui/logo.ts'
 import { WelcomeBanner } from '../../src/tui/components/welcomeBanner.ts'
 
 describe('tui modules', () => {
@@ -22,11 +22,12 @@ describe('tui modules', () => {
     expect(LOGO_LINES.some((line) => line.includes('█'))).toBe(true)
     expect(LOGO_LINES.every((line) => line.length === 71)).toBe(true)
     expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(true)
-    // E 保留干净的横画间隙，阴影仅落在下横的右侧和底边。
+    // E 必须有完整上、下横和明显较短的中横；阴影不能侵入字形。
     expect(LOGO_LINES[1]!.slice(64, 70)).toBe('██    ')
-    expect(LOGO_LINES[2]!.slice(64, 70)).toBe('█████ ')
-    expect(LOGO_LINES[3]!.slice(64, 70)).toBe('████▓▓')
-    expect(LOGO_LINES[4]!.slice(64, 71)).toBe(' ▓▓▓▓  ')
+    expect(LOGO_LINES[2]!.slice(64, 70)).toBe('████  ')
+    expect(LOGO_LINES[3]!.slice(64, 70)).toBe('██████')
+    expect(LOGO_LINES[4]!.slice(64, 71)).toBe(' ▓▓▓▓▓▓')
+    expect(COMPACT_LOGO_LINES[3]!.slice(-5)).toBe('█████')
   })
 
   test('welcome banner frames the logo and adapts to narrower terminals', () => {

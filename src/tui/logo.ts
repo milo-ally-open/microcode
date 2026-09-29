@@ -6,8 +6,8 @@ const GLYPHS: Record<string, readonly string[]> = {
   R: ['█████ ', '██  ██', '█████ ', '██  ██'],
   O: [' ████ ', '██  ██', '██  ██', ' ████ '],
   D: ['█████ ', '██  ██', '██  ██', '█████ '],
-  // 上横最长、中横略短、下横再收一格，确保小尺寸下仍一眼读作 E。
-  E: ['██████', '██    ', '█████ ', '████  '],
+  // 上下横都完整、中横明显收短，保持标准大写 E 的轮廓。
+  E: ['██████', '██    ', '████  ', '██████'],
 }
 
 const COMPACT_GLYPHS: Record<string, readonly string[]> = {
@@ -17,14 +17,14 @@ const COMPACT_GLYPHS: Record<string, readonly string[]> = {
   R: ['████ ', '█   █', '████ ', '█  ██'],
   O: [' ███ ', '█   █', '█   █', ' ███ '],
   D: ['████ ', '█   █', '█   █', '████ '],
-  E: ['█████', '█    ', '████ ', '███  '],
+  E: ['█████', '█    ', '████ ', '█████'],
 }
 
-function extrudeGlyph(glyph: readonly string[], shadowStyle: 'full' | 'legible' = 'full'): string[] {
+function extrudeGlyph(glyph: readonly string[], shadowStyle: 'full' | 'base' = 'full'): string[] {
   return Array.from({ length: 5 }, (_, row) => {
     const cells = Array<string>(7).fill(' ')
-    // E 保留横画间的负空间，只在下横和底边投影，避免阴影把字腔填成色块。
-    const showShadow = row > 0 && (shadowStyle === 'full' || row >= glyph.length - 1)
+    // E 的完整底横负责识别；阴影只落在它下方，避免把横画间的负空间填满。
+    const showShadow = row > 0 && (shadowStyle === 'full' || row === glyph.length)
     if (showShadow) {
       for (let column = 0; column < 6; column++) {
         if (glyph[row - 1]![column] === '█') cells[column + 1] = '▓'
@@ -40,7 +40,7 @@ function extrudeGlyph(glyph: readonly string[], shadowStyle: 'full' | 'legible' 
 }
 
 const WORD_GLYPHS = [...'MICROCODE'].map((letter) =>
-  extrudeGlyph(GLYPHS[letter]!, letter === 'E' ? 'legible' : 'full'),
+  extrudeGlyph(GLYPHS[letter]!, letter === 'E' ? 'base' : 'full'),
 )
 
 export const LOGO_LINES = Array.from({ length: 5 }, (_, row) =>
