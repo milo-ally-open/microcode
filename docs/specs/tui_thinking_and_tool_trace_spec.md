@@ -28,7 +28,8 @@
 当前代码的事实依据：
 
 - `AssistantMessageComponent.updateContent()` 将 assistant 内容拆分为 text 和 thinking blocks，并在流式更新时更新尾部 block（`src/tui/components/assistantMessage.ts`）。
-- `ThinkingBlock` 当前始终展示完整 thinking 文本（`src/tui/components/thinkingBlock.ts`）。长内容会占用大量滚屏空间，也会把不同 provider 返回的 thinking 内容统一误当作适合直接展示的内容。
+- 当前 `ThinkingBlock` 不展示 block 正文，只在每个 block 上追加固定的 `Analyzing…` / `Analysis complete`。同一轮多次 assistant 调用会产生重复的完成状态。
+- Provider 的 thinking/reasoning 语义不一致：OpenAI Responses 在底层响应 item 中区分 reasoning `summary` 与原始 `content`，但当前 `pi-ai` 适配器会把两者合并成通用 thinking block。因此不能仅凭通用 `thinking` 类型判定正文适合展示；必须从保留的原始 item 签名中只读取独立 `summary` 字段。
 - `ToolExecutionComponent` 将参数压缩到一行，完成后默认显示结果文本的前 300 个字符；组件支持 expanded 状态，但 `App` 在创建或启动工具时将它设为折叠（`src/tui/components/toolExecution.ts`、`src/tui/app.ts` 的 `tool_execution_start` 与 `updateStreamingToolCall` 分支）。
 - `App.setupAgentSubscription()` 已消费 `agent_start`、assistant `message_start/update/end`、`tool_execution_start/update/end`、`turn_end` 等事件，并以 `toolCallId` 跟踪执行中的工具（`src/tui/app.ts`）。因此，工具状态、流式参数、部分结果、耗时、完成/错误标记可以在 TUI 层组织。
 - 工具组件当前作为独立子项加入聊天容器，没有明确的 turn/work group 容器；assistant 的 reasoning、文字回复和 tool call 视觉上较容易变成一串独立内容块。
@@ -79,10 +80,12 @@
 
 ### 4.2 思维状态和 thinking block
 
-- 默认将 thinking block 折叠为单行状态，例如 `分析中`、`分析完成`；如果无法可靠判断具体状态，就使用通用标签，不摘录正文。
-- 若 pi-ai/provider 内容类型明确表示安全可展示的 summary，可在展开详情中显示该 summary；不得把通用 `thinking` block 自动当作 summary。
-- 默认不渲染原始 thinking 正文。若保留调试查看入口，必须是用户主动开启的显式模式，并遵循 provider 能力和数据政策；在未实现策略前，原文不出现在普通 TUI transcript 中。
-- 用户可查看该轮产生的最终 assistant 文本以及工具调用链。中断时明确显示 `已中断`，不把未完成的 reasoning block当成最终答复。
+- 所有 provider 统一使用有限状态机，不读取 reasoning/thinking 正文或 provider 专属摘要字段。
+- 状态只由可观察的 Agent/工具事件驱动：`Analyzing…`、`Preparing tool call…`、`Running <tool>…`、`Running tools…`、`Responding…` 和空闲。
+- 工具完成后若模型仍在工作则回到 `Analyzing…`；turn 结束或中断时清除活动行。活动行原位更新并带已处理时长，不进入 transcript 或 session 持久化。
+- assistant transcript 只渲染普通 text block；thinking block 继续留在 Agent/provider 消息上下文中供模型协议处理，但不创建 `Analyzing…` 或 `Analysis complete` 历史行。
+- 工具开始时显示真实工具卡片，并由工具状态更新活动行；工具结束后回到分析状态。最终回答开始时切换为 Responding，turn 结束时清理活动行。
+- 中断时明确显示 `已中断`，不将未完成的 reasoning block 当成最终答复。
 
 ### 4.3 工具调用行和详情
 
@@ -113,9 +116,9 @@
 ```ts
 type TurnPresentation = {
   turnId: string
+  activity?: { source: string; phase: 'thinking' | 'responding'; text?: string }
   items: Array<
     | { kind: 'assistant-text'; messageId: string; text: string; streaming: boolean }
-    | { kind: 'thinking-status'; state: 'active' | 'complete' }
     | { kind: 'tool'; toolCallId: string; name: string; args: unknown;
         state: 'preparing' | 'running' | 'success' | 'error' | 'cancelled';
         result?: unknown; elapsedMs?: number }
@@ -124,23 +127,26 @@ type TurnPresentation = {
 }
 ```
 
-view model 必须由 TUI 收到的 agent events 与可读的 message state 派生。事件缺字段时显示“未知/运行中”，不要推断成功。`toolCallId` 是工具调用匹配键；工具事件更新原行而不是追加重复行。结构可以按现有 `Container`/组件能力简化，但不得将显示用状态写回会话消息。
+view model 必须由 TUI 收到的 agent events 与可读的 message state 派生。有限状态机状态只存在于临时 UI 字段，不加入 `items` 或 session messages。事件缺字段时显示“未知/运行中”，不要推断成功。`toolCallId` 是工具调用匹配键；工具事件更新原行而不是追加重复行。结构可以按现有 `Container`/组件能力简化，但不得将显示用状态写回会话消息。
 
 ## 6. 文件边界与预计修改面
 
-只在 `src/tui/` 中实现呈现改造，预计涉及：
+实现呈现改造，预计涉及：
 
 - `components/assistantMessage.ts`：assistant 文本与 thinking-status 的视图组装。
-- `components/thinkingBlock.ts`：变为紧凑、默认收起的状态呈现；避免普通 transcript 直接输出原始正文。
+- `src/tui/agentActivity.ts`：将 Agent/工具生命周期事件映射到统一有限状态与标签。
+- `components/turnTimeline.ts`、`app.ts`：将状态更新到单一活动行，按工具/回答/结束生命周期替换或清理。
 - `components/toolExecution.ts`：摘要/详情两种视图、参数与结果的安全截断、清晰状态。
 - `app.ts`：按事件更新工具行和工作段；提供视图开关、键盘焦点和滚动行为。
 - `theme.ts`、`toolPresentation.ts`：必要的状态样式和文本摘要辅助。
 
-除非后续实施发现现有 agent events 无法表达必需状态，否则不要改 `src/agent/`、模型接入、session schema、prompt、工具实现或依赖。用户消息、slash 命令、权限确认、认证交互、取消流程须保持正常工作。
+不改 provider 协议实现、session schema、prompt、工具实现或依赖。状态机仅位于 TUI 层。用户消息、slash 命令、权限确认、认证交互、取消流程须保持正常工作。
 
 ## 7. 验收标准
 
 - 一般对话默认不显示原始 thinking 文本；用户能区分“仍在分析”“正在运行工具”“已完成”“已中断”和“失败”。
+- 所有 provider 均通过相同的有限状态机显示分析、工具准备、工具执行和回答状态；活动行带已处理时长，不展示 thinking block 正文。
+- 多个 reasoning block 或多次模型调用只更新同一活动行，不产生重复 `Analysis complete` / `Analyzing…` transcript 项；活动更新不写入 session。
 - 每个 user turn 的思维状态、工具调用和最终答复由一条连续纵向时间线连接；换行、展开工具详情和窄终端布局不会破坏归属关系或可读性。
 - 详细轨迹开关能查看同一轮的完整工具顺序，工具参数、部分输出和最终输出能匹配到正确 `toolCallId`。
 - 长参数、换行命令、大型工具输出、空输出、工具报错、工具取消及多个未完成工具不会撑破布局或导致错误状态。

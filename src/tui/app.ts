@@ -24,7 +24,12 @@ import { FooterComponent } from './components/footer.ts'
 import { AppLayout } from './components/appLayout.ts'
 import { AssistantMessageComponent } from './components/assistantMessage.ts'
 import { WelcomeBanner } from './components/welcomeBanner.ts'
-import { shouldShowRespondingActivity } from './agentActivity.ts'
+import {
+  getAgentActivityLabel,
+  transitionAgentActivity,
+  type AgentActivityEvent,
+  type AgentActivityState,
+} from './agentActivity.ts'
 import { ToolExecutionComponent } from './components/toolExecution.ts'
 import { BashExecutionComponent } from './components/bashExecution.ts'
 import { parseBashInput } from './bashInput.ts'
@@ -190,6 +195,7 @@ export class App {
   private toolRows = new Map<string, ToolUIComponent>()
   private activeTurnTimeline?: TurnTimeline
   private turnFinalized = false
+  private activityState: AgentActivityState = { phase: 'idle' }
   private toolElapsedTimer?: ReturnType<typeof setInterval>
   private agentWorking = false
   private lastSigintTime = 0
@@ -220,6 +226,7 @@ export class App {
   private firstUserInputForTitle?: string
   private workingText: Text | null = null
   private agentActivityLabel = 'Working…'
+  private workingStartedAt = 0
   private workingFrameIndex = 0
   private workingTimer: ReturnType<typeof setInterval> | undefined
   private mouseTrackingEnabled = false
@@ -1985,8 +1992,6 @@ export class App {
         }
         const component = new AssistantMessageComponent(getMarkdownTheme())
         component.updateContent(msg as any)
-        // 恢复的消息已经结束，避免旧 thinking 状态继续显示“Analyzing…”。
-        component.finish()
         this.activeTurnTimeline.addEntry(component, 'assistant')
 
         for (const block of msg.content) {
@@ -3748,7 +3753,7 @@ export class App {
           break
 
         case 'agent_start':
-          this.showWorking('Thinking…')
+          this.setAgentActivity({ type: 'thinking' })
           break
 
         case 'message_start':
@@ -3756,7 +3761,7 @@ export class App {
             this.streamingComponent = new AssistantMessageComponent(getMarkdownTheme())
             this.streamingMessage = event.message
             this.appendTurnEntry(this.streamingComponent, 'assistant')
-            this.showWorking('Thinking…')
+            this.setAgentActivity({ type: 'thinking' })
             this.streamingComponent.updateContent(this.streamingMessage)
             this.ui.requestRender()
           }
@@ -3766,18 +3771,17 @@ export class App {
           if (this.streamingComponent && event.message.role === 'assistant') {
             this.streamingMessage = event.message
             this.streamingComponent.updateContent(this.streamingMessage)
-            if (shouldShowRespondingActivity(
-              event.assistantMessageEvent.type === 'text_delta',
-              this.pendingTools.size,
-              this.agentActivityLabel,
-            )) {
-              // 正文开始流出后切换状态，避免回答已经可见时仍显示 Thinking。
-              this.showWorking('Responding…')
+            if (
+              event.assistantMessageEvent.type === 'text_delta' &&
+              this.activityState.phase !== 'responding'
+            ) {
+              this.setAgentActivity({ type: 'responding', pendingTools: this.pendingTools.size })
             }
             if (
               event.assistantMessageEvent.type === 'toolcall_start' ||
               event.assistantMessageEvent.type === 'toolcall_delta'
             ) {
+              this.setAgentActivity({ type: 'preparing-tool' })
               this.updateStreamingToolCall(
                 event.message,
                 event.assistantMessageEvent.type === 'toolcall_start',
@@ -3791,8 +3795,6 @@ export class App {
           if (event.message.role === 'assistant') {
             if (this.streamingComponent && this.streamingMessage) {
               this.streamingComponent.updateContent(this.streamingMessage)
-              // 即使本轮只有 thinking 或工具调用，也要在 message_end 收起进行中状态。
-              this.streamingComponent.finish()
               this.streamingComponent = undefined
               this.streamingMessage = undefined
             }
@@ -3816,7 +3818,7 @@ export class App {
           this.pendingToolStartedAt.set(event.toolCallId, performance.now())
           this.startToolElapsedTimer()
           // Keep the global working indicator alive across the model -> tool handoff.
-          this.showWorking(`Running ${event.toolName}…`)
+          this.setAgentActivity({ type: 'tool-started', toolName: event.toolName })
           this.commitToolFrame()
           break
         }
@@ -3852,7 +3854,7 @@ export class App {
           this.pendingToolStartedAt.delete(event.toolCallId)
           this.streamingToolLastRenderAt.delete(event.toolCallId)
           this.stopToolElapsedTimerIfIdle()
-          this.showWorking(this.pendingTools.size > 0 ? 'Running tools…' : 'Thinking…')
+          this.setAgentActivity({ type: 'tool-finished', pendingTools: this.pendingTools.size })
           this.ui.requestRender()
           break
         }
@@ -3864,6 +3866,7 @@ export class App {
           ) {
             this.clearPendingToolState()
             this.activeTurnTimeline?.setActivity(undefined)
+            this.activityState = { phase: 'idle' }
             const isInterrupted = event.message.stopReason === 'aborted'
             this.appendTurnEntry(new Text(
               theme.fg('error', isInterrupted
@@ -3877,9 +3880,9 @@ export class App {
           // A streamed tool call may already be pending before tool_execution_start.
           // Do not hide Working during that model -> tool handoff.
           } else if (this.pendingTools.size > 0) {
-            this.showWorking('Running tools…')
+            this.setAgentActivity({ type: 'work-finished', pendingTools: this.pendingTools.size })
           } else {
-            this.hideWorking()
+            this.setAgentActivity({ type: 'work-finished', pendingTools: 0 })
           }
           if (event.message.role === 'assistant' && event.message.stopReason === 'stop') {
             this.finishTurn()
@@ -3901,7 +3904,7 @@ export class App {
             this.applyQueuedMcpState()
             this.clearPendingToolState()
             this.finishTurn()
-            this.hideWorking()
+            this.setAgentActivity({ type: 'work-finished', pendingTools: 0 })
             this.ui.requestRender()
             break
           }
@@ -3909,9 +3912,9 @@ export class App {
           // executing its requested tools. Pending tools still mean real work remains.
           if (this.pendingTools.size === 0) {
             this.finishTurn()
-            this.hideWorking()
+            this.setAgentActivity({ type: 'work-finished', pendingTools: 0 })
           } else {
-            this.showWorking('Running tools…')
+            this.setAgentActivity({ type: 'work-finished', pendingTools: this.pendingTools.size })
           }
           this.ui.requestRender()
           break
@@ -3938,9 +3941,12 @@ export class App {
       this.workingFrameIndex++
       const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
       const frame = frames[Math.floor(this.workingFrameIndex / 2) % frames.length]
-      const label = `${theme.fg('accent', frame)} ${this.agentActivityLabel}`
+      const elapsedSeconds = Math.floor((Date.now() - this.workingStartedAt) / 1000)
+      const label = `${theme.fg('accent', frame)} ${this.agentActivityLabel} · ${elapsedSeconds}s`
       if (this.activeTurnTimeline) {
-        this.activeTurnTimeline.setActivity(this.pendingTools.size > 0 ? undefined : label)
+        // 工具卡片展示执行细节；活动行仍保留模型/工具交接状态，避免 OpenAI 等
+        // 不提供可展示摘要的 Provider 在工具执行期间看起来像“没有进度”。
+        this.activeTurnTimeline.setActivity(label)
         if (this.workingText) {
           this.workingContainer.removeChild(this.workingText)
           this.workingText = null
@@ -3987,7 +3993,7 @@ export class App {
         this.pendingTools.set(toolCall.id, component)
         // The tool is pending as soon as its call starts streaming. Waiting for
         // tool_execution_start creates a visible gap where Working disappears.
-        this.showWorking('Preparing tool calls…')
+        this.setAgentActivity({ type: 'preparing-tool' })
       } else {
         dispatchToolLifecycle(component, { phase: 'input', input: args })
       }
@@ -4134,10 +4140,18 @@ export class App {
   }
 
   private showWorking(label = 'Working…'): void {
+    if (!this.agentWorking) this.workingStartedAt = Date.now()
     this.agentActivityLabel = label
     this.agentWorking = true
     this.updateWorkingIndicator()
     this.ui.requestRender()
+  }
+
+  private setAgentActivity(event: AgentActivityEvent): void {
+    this.activityState = transitionAgentActivity(this.activityState, event)
+    const label = getAgentActivityLabel(this.activityState)
+    if (label) this.showWorking(label)
+    else this.hideWorking()
   }
 
   private hideWorking(): void {
@@ -4147,6 +4161,7 @@ export class App {
     }
     this.agentWorking = false
     this.updateWorkingIndicator()
+    this.workingStartedAt = 0
     this.ui.requestRender()
   }
 

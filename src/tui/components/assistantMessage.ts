@@ -1,20 +1,16 @@
 import { Container, type MarkdownTheme } from '@earendil-works/pi-tui'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { getMarkdownTheme, theme } from '../theme.ts'
-import { ThinkingBlock } from './thinkingBlock.ts'
 import { MarkedMarkdown } from './markedMarkdown.ts'
 
-type BlockComponent = { type: 'text'; component: MarkedMarkdown } | { type: 'thinking'; component: ThinkingBlock }
-
 /**
- * Component that renders an assistant message with Markdown formatting and thinking blocks.
+ * Component that renders user-visible assistant text; thinking stays out of transcript rows.
  * Supports streaming updates via updateContent().
  */
 export class AssistantMessageComponent extends Container {
-  private blockComponents: BlockComponent[] = []
+  private textComponents: MarkedMarkdown[] = []
   private markdownTheme: MarkdownTheme
   private lastText = ''
-  private hasText = false
   private lastBlockSignature = ''
 
   constructor(markdownTheme: MarkdownTheme = getMarkdownTheme()) {
@@ -26,7 +22,6 @@ export class AssistantMessageComponent extends Container {
     const blocks = message.content
     const textBlocks = blocks.filter((c) => c.type === 'text')
     const text = textBlocks.map((c) => c.text).join('')
-    this.hasText = text.trim().length > 0
 
     // Build a signature that captures block types and whether text blocks have content.
     // This ensures we rebuild when a text block transitions from empty to non-empty
@@ -38,7 +33,7 @@ export class AssistantMessageComponent extends Container {
     if (signature !== this.lastBlockSignature) {
       this.lastBlockSignature = signature
       this.clear()
-      this.blockComponents = []
+      this.textComponents = []
       for (const block of blocks) {
         if (block.type === 'text') {
           const md = new MarkedMarkdown(
@@ -48,12 +43,7 @@ export class AssistantMessageComponent extends Container {
             this.markdownTheme,
           )
           this.addChild(md)
-          this.blockComponents.push({ type: 'text', component: md })
-        } else if (block.type === 'thinking') {
-          const tb = new ThinkingBlock()
-          tb.update(this.hasText)
-          this.addChild(tb)
-          this.blockComponents.push({ type: 'thinking', component: tb })
+          this.textComponents.push(md)
         }
       }
 
@@ -64,26 +54,13 @@ export class AssistantMessageComponent extends Container {
     // Signature unchanged — update the last block's content for streaming
     if (text !== this.lastText) {
       const lastTextBlock = [...blocks].reverse().find((block) => block.type === 'text')
-      const lastTextComponent = [...this.blockComponents]
-        .reverse()
-        .find((block) => block.type === 'text')
+      const lastTextComponent = this.textComponents.at(-1)
 
-      if (lastTextBlock?.type === 'text' && lastTextComponent?.type === 'text') {
-        lastTextComponent.component.setText(lastTextBlock.text.trim() ? lastTextBlock.text : ' ')
+      if (lastTextBlock?.type === 'text' && lastTextComponent) {
+        lastTextComponent.setText(lastTextBlock.text.trim() ? lastTextBlock.text : ' ')
       }
 
       this.lastText = text
-    }
-
-    for (const blockComponent of this.blockComponents) {
-      if (blockComponent.type === 'thinking') blockComponent.component.update(this.hasText)
-    }
-  }
-
-  finish(): void {
-    // 消息结束是独立的生命周期信号；不能要求模型必须先输出普通文本。
-    for (const blockComponent of this.blockComponents) {
-      if (blockComponent.type === 'thinking') blockComponent.component.update(true)
     }
   }
 

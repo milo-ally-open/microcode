@@ -12,7 +12,11 @@ import { AssistantMessageComponent } from '../../src/tui/components/assistantMes
 import { getEditorTheme } from '../../src/tui/theme.ts'
 import { createSessionTitle, firstSentence, normalizeSessionTitle } from '../../src/tui/sessionTitle.ts'
 import { parseBashInput } from '../../src/tui/bashInput.ts'
-import { shouldShowRespondingActivity } from '../../src/tui/agentActivity.ts'
+import {
+  getAgentActivityLabel,
+  transitionAgentActivity,
+  type AgentActivityState,
+} from '../../src/tui/agentActivity.ts'
 import { COMPACT_LOGO_LINES, LOGO_LINES } from '../../src/tui/logo.ts'
 import { WelcomeBanner } from '../../src/tui/components/welcomeBanner.ts'
 
@@ -236,7 +240,8 @@ describe('tui modules', () => {
     const rendered = app.chatContainer.render(100).join('\n')
     expect(rendered).toContain('restored question')
     expect(rendered).toContain('restored answer')
-    expect(rendered).toContain('Analysis complete')
+    expect(rendered).not.toContain('internal reasoning')
+    expect(rendered).not.toContain('Analysis complete')
     expect(rendered).not.toContain('Analyzing…')
     expect(followedLatest).toBe(true)
     expect(requestedRender).toBe(true)
@@ -343,27 +348,65 @@ describe('tui modules', () => {
     expect(autocompleteMaxVisibleForHeight(12)).toBe(3)
   })
 
-  test('assistant thinking status completes when the message ends without answer text', () => {
+  test('assistant transcript keeps thinking blocks out of visible history', () => {
     const assistant = new AssistantMessageComponent(getMarkdownTheme())
     assistant.updateContent({
       role: 'assistant',
       content: [{ type: 'thinking', thinking: 'internal reasoning' }],
     } as any)
 
-    expect(assistant.render(80).join('\n')).toContain('Analyzing…')
-
-    assistant.finish()
-
     const rendered = assistant.render(80).join('\n')
-    expect(rendered).toContain('Analysis complete')
+    expect(rendered).not.toContain('internal reasoning')
     expect(rendered).not.toContain('Analyzing…')
+    expect(rendered).not.toContain('Analysis complete')
   })
 
-  test('assistant activity switches to responding on visible text, but not during tool work', () => {
-    expect(shouldShowRespondingActivity(true, 0, 'Thinking…')).toBe(true)
-    expect(shouldShowRespondingActivity(false, 0, 'Thinking…')).toBe(false)
-    expect(shouldShowRespondingActivity(true, 1, 'Running tools…')).toBe(false)
-    expect(shouldShowRespondingActivity(true, 0, 'Responding…')).toBe(false)
+  test('agent activity follows a provider-neutral finite state machine', () => {
+    let state: AgentActivityState = { phase: 'idle' }
+    state = transitionAgentActivity(state, { type: 'thinking' })
+    expect(getAgentActivityLabel(state)).toBe('Analyzing…')
+
+    state = transitionAgentActivity(state, { type: 'preparing-tool' })
+    expect(getAgentActivityLabel(state)).toBe('Preparing tool call…')
+    state = transitionAgentActivity(state, { type: 'tool-started', toolName: 'Read' })
+    expect(getAgentActivityLabel(state)).toBe('Running Read…')
+    state = transitionAgentActivity(state, { type: 'tool-finished', pendingTools: 0 })
+    expect(getAgentActivityLabel(state)).toBe('Analyzing…')
+    state = transitionAgentActivity(state, { type: 'responding', pendingTools: 0 })
+    expect(getAgentActivityLabel(state)).toBe('Responding…')
+    state = transitionAgentActivity(state, { type: 'work-finished', pendingTools: 0 })
+    expect(getAgentActivityLabel(state)).toBeUndefined()
+  })
+
+  test('turn activity updates replace the current row instead of appending history', () => {
+    const timeline = new TurnTimeline()
+    timeline.setActivity('Thinking…')
+    timeline.setActivity('Running tools…')
+
+    const rendered = timeline.render(80).join('\n')
+    expect(rendered).toContain('Running tools…')
+    expect(rendered).not.toContain('Thinking…')
+    expect(timeline.render(80)).toHaveLength(1)
+  })
+
+  test('concise activity and elapsed time remain visible while tool cards are active', () => {
+    const app = Object.create(App.prototype) as any
+    let displayedActivity: string | undefined
+    app.agentWorking = true
+    app.agentActivityLabel = 'Running Bash…'
+    app.workingStartedAt = Date.now() - 11_000
+    app.workingFrameIndex = 0
+    app.workingTimer = 1 // Prevent creating a real interval in this unit test.
+    app.workingText = null
+    app.pendingTools = new Map([['tool-1', {}]])
+    app.activeTurnTimeline = {
+      setActivity: (activity: string | undefined) => { displayedActivity = activity },
+    }
+
+    app.updateWorkingIndicator()
+
+    expect(displayedActivity).toContain('Running Bash…')
+    expect(displayedActivity).toContain('11s')
   })
 
   test('skill completion opens immediately after $ and updates while typing', async () => {
