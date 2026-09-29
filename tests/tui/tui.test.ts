@@ -22,10 +22,11 @@ describe('tui modules', () => {
     expect(LOGO_LINES.some((line) => line.includes('█'))).toBe(true)
     expect(LOGO_LINES.every((line) => line.length === 71)).toBe(true)
     expect(LOGO_LINES.some((line) => line.includes('▓'))).toBe(true)
-    // E 必须有完整上、下横和明显较短的中横；阴影不能侵入字形。
+    // E 必须有完整上、下横和明显较短的中横；整行阴影不能侵入字形内部。
     expect(LOGO_LINES[1]!.slice(64, 70)).toBe('██    ')
     expect(LOGO_LINES[2]!.slice(64, 70)).toBe('████  ')
     expect(LOGO_LINES[3]!.slice(64, 70)).toBe('██████')
+    expect(LOGO_LINES.slice(0, 4).every((line) => !line.includes('▓'))).toBe(true)
     expect(LOGO_LINES[4]!.slice(64, 71)).toBe(' ▓▓▓▓▓▓')
     expect(COMPACT_LOGO_LINES[3]!.slice(-5)).toBe('█████')
   })
