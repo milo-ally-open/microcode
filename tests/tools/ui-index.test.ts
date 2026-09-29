@@ -233,6 +233,30 @@ describe('tool UI and registration modules', () => {
     expect(stripAnsi(renderText(overwrite))).toMatch(/1\s+│ -old line/)
   })
 
+  test('large truncated write previews stay collapsed and cap expanded output', () => {
+    const content = Array.from({ length: 2_050 }, (_, index) => `line-${index}`).join('\n')
+    const write = new FileWriteToolUI('large-write', { file_path: '/tmp/large.txt', content })
+    write.updateDetails({
+      path: '/tmp/large.txt',
+      additions: 2_050,
+      isNewFile: true,
+      preview: content,
+      diff: [],
+      diffTruncated: true,
+      phase: 'approval',
+    })
+
+    const collapsed = renderText(write)
+    expect(collapsed).toContain('[Expand preview]')
+    expect(collapsed).not.toContain('line-0')
+
+    write.setExpanded(true)
+    const expanded = renderText(write)
+    expect(expanded).toContain('line-0')
+    expect(expanded).toContain('Preview limited to 2000 of 2050 lines')
+    expect(expanded).not.toContain('line-2049')
+  })
+
   test('Ask and Task UIs render special structured states', () => {
     const ask = new AskUserQuestionToolUI('ask', {
       questions: [{

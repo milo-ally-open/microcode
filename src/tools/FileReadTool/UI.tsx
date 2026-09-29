@@ -51,9 +51,9 @@ export class FileReadToolUI extends Container {
     return Boolean(this.result && this.preview.hasToggle(this.getOutputLines().length))
   }
 
-  getInteractionTargets(width: number) {
+  getInteractionTargets(renderedLines: readonly string[]) {
     return this.hasToggleButton()
-      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
       : []
   }
 

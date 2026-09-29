@@ -50,9 +50,9 @@ export class BashToolUI extends Container implements ToolUIComponent {
     return output.length > 0
   }
 
-  getInteractionTargets(width: number) {
+  getInteractionTargets(renderedLines: readonly string[]) {
     return this.hasToggleButton()
-      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
       : []
   }
 

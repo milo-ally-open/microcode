@@ -13,6 +13,8 @@ interface TimelineEntry {
 export class TurnTimeline extends Container {
   private entries: TimelineEntry[] = []
   private activity?: Text
+  private renderedWidth?: number
+  private renderedToolTargets: ToolInteractionTarget[] = []
 
   addEntry(component: Component, kind: EntryKind = 'status'): void {
     // Streaming tool updates can revisit the same component. A timeline owns a
@@ -41,32 +43,12 @@ export class TurnTimeline extends Container {
   }
 
   getToolInteractionTargets(width: number): ToolInteractionTarget[] {
-    const connected = this.entries.some((entry) => entry.kind === 'tool')
-    const railWidth = connected ? 3 : 0
-    const entryWidth = Math.max(1, width - railWidth)
-    const targets: ToolInteractionTarget[] = []
-    let rowOffset = 0
-
-    this.entries.forEach(({ component, kind }, entryIndex) => {
-      const renderedWidth = entryIndex === 0 ? width : entryWidth
-      if (kind === 'tool') {
-        const tool = component as ToolUIComponent
-        for (const target of tool.getInteractionTargets?.(renderedWidth) ?? []) {
-          targets.push({
-            ...target,
-            rowOffset: rowOffset + target.rowOffset,
-            startColumn: target.startColumn + (entryIndex > 0 ? railWidth : 0),
-            endColumn: target.endColumn + (entryIndex > 0 ? railWidth : 0),
-          })
-        }
-      }
-      rowOffset += component.render(renderedWidth).length
-    })
-
-    return targets
+    return width === this.renderedWidth ? this.renderedToolTargets : []
   }
 
   render(width: number): string[] {
+    this.renderedWidth = width
+    this.renderedToolTargets = []
     if (this.entries.length === 0) return []
 
     const connected = this.entries.some((entry) => entry.kind === 'tool')
@@ -80,7 +62,19 @@ export class TurnTimeline extends Container {
 
     for (let entryIndex = 0; entryIndex < this.entries.length; entryIndex++) {
       const entry = this.entries[entryIndex]!
-      const entryLines = entry.component.render(entryIndex === 0 ? width : entryWidth)
+      const renderedWidth = entryIndex === 0 ? width : entryWidth
+      const entryLines = entry.component.render(renderedWidth)
+      if (entry.kind === 'tool') {
+        const tool = entry.component as ToolUIComponent
+        for (const target of tool.getInteractionTargets?.(entryLines) ?? []) {
+          this.renderedToolTargets.push({
+            ...target,
+            rowOffset: lines.length + target.rowOffset,
+            startColumn: target.startColumn + (entryIndex > 0 ? railWidth : 0),
+            endColumn: target.endColumn + (entryIndex > 0 ? railWidth : 0),
+          })
+        }
+      }
       if (entryIndex === 0) {
         lines.push(...entryLines)
         continue
@@ -99,5 +93,36 @@ export class TurnTimeline extends Container {
 
   invalidate(): void {
     for (const { component } of this.entries) component.invalidate?.()
+  }
+}
+
+/** Renders chat children once and records preview hit targets in transcript coordinates. */
+export class ChatTranscript extends Container {
+  private renderedWidth?: number
+  private renderedToolTargets: ToolInteractionTarget[] = []
+
+  getToolInteractionTargets(width: number): ToolInteractionTarget[] {
+    return width === this.renderedWidth ? this.renderedToolTargets : []
+  }
+
+  render(width: number): string[] {
+    this.renderedWidth = width
+    this.renderedToolTargets = []
+    const lines: string[] = []
+
+    for (const component of this.children) {
+      const componentLines = component.render(width)
+      const targets = component instanceof TurnTimeline
+        ? component.getToolInteractionTargets(width)
+        : (component as ToolUIComponent).getInteractionTargets?.(componentLines) ?? []
+
+      this.renderedToolTargets.push(...targets.map((target) => ({
+        ...target,
+        rowOffset: lines.length + target.rowOffset,
+      })))
+      lines.push(...componentLines)
+    }
+
+    return lines
   }
 }

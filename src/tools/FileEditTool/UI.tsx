@@ -55,9 +55,9 @@ export class FileEditToolUI extends Container {
     return Boolean(this.details?.diff?.length)
   }
 
-  getInteractionTargets(width: number) {
+  getInteractionTargets(renderedLines: readonly string[]) {
     return this.hasToggleButton()
-      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
       : []
   }
 

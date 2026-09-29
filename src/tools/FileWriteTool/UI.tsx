@@ -31,6 +31,29 @@ interface FileWriteDetails {
   written?: boolean
 }
 
+const MAX_PREVIEW_LINES = 2_000
+const MAX_PREVIEW_LINE_CHARS = 2_000
+
+function takeContentLines(content: string, limit: number): string[] {
+  const lines: string[] = []
+  let start = 0
+
+  while (lines.length < limit) {
+    const newline = content.indexOf('\n', start)
+    if (newline < 0) {
+      if (start < content.length) lines.push(content.slice(start))
+      break
+    }
+    lines.push(content.slice(start, newline))
+    start = newline + 1
+    if (start === content.length) break
+  }
+
+  return lines.map((line) => line.length > MAX_PREVIEW_LINE_CHARS
+    ? `${line.slice(0, MAX_PREVIEW_LINE_CHARS)}… [line truncated]`
+    : line)
+}
+
 export class FileWriteToolUI extends Container {
   private args: any
   private preview = new ToolPreviewController()
@@ -39,6 +62,8 @@ export class FileWriteToolUI extends Container {
   private result?: ToolResult
   private details?: FileWriteDetails
   private contentBox: Box
+  private cachedPreviewContent?: string
+  private cachedPreviewLineCount = 0
 
   constructor(_toolCallId: string, args: any) {
     super()
@@ -67,14 +92,14 @@ export class FileWriteToolUI extends Container {
     const previewLineCount = Array.isArray(this.details?.diff) && !this.details.diffTruncated
       ? this.details.diff.length
       : typeof content === 'string'
-        ? countContentLines(content)
+        ? this.getPreviewLineCount(content)
         : 0
     return previewLineCount > 0
   }
 
-  getInteractionTargets(width: number) {
+  getInteractionTargets(renderedLines: readonly string[]) {
     return this.hasToggleButton()
-      ? this.preview.interactionTarget(this.render(width), () => this.toggleExpanded())
+      ? this.preview.interactionTarget(renderedLines, () => this.toggleExpanded())
       : []
   }
 
@@ -194,12 +219,15 @@ export class FileWriteToolUI extends Container {
 
   private appendDiffPreview(lines: string[], content: string): void {
     const hasDiff = Array.isArray(this.details?.diff) && !this.details.diffTruncated
-    const contentLines = content.split('\n')
-    if (content.endsWith('\n')) contentLines.pop()
-    const allDiffLines = hasDiff
-      ? this.details?.diff ?? []
-      : contentLines.map((line) => `+${line}`)
-    const visibleDiffLines = allDiffLines.slice(0, this.preview.visibleRows(allDiffLines.length))
+    const diff = hasDiff ? this.details?.diff ?? [] : undefined
+    const totalLines = diff?.length ?? this.getPreviewLineCount(content)
+    const requestedRows = this.preview.visibleRows(totalLines)
+    const visibleRows = Math.min(requestedRows, MAX_PREVIEW_LINES)
+
+    // 折叠状态不拆分完整文件；展开也限制行数和单行长度，避免大文件拖住 TUI。
+    const visibleDiffLines = diff
+      ? diff.slice(0, visibleRows)
+      : takeContentLines(content, visibleRows).map((line) => `+${line}`)
     if (visibleDiffLines.length > 0) {
       lines.push(...numberDiffLines(visibleDiffLines).map(({ line, gutter }) => `  ${theme.dim(gutter)}${renderTerminalDiffLine(line)}`))
     }
@@ -207,7 +235,12 @@ export class FileWriteToolUI extends Container {
       lines.push(`  ${theme.fg('warning', this.details.previewNotice)}`)
     } else if (this.details?.diffTruncated) {
       lines.push(`  ${theme.fg('warning', 'Diff unavailable for files over 1 MB; proposed content shown as additions')}`)
-    } else if (allDiffLines.length === 0) {
+      if (totalLines > visibleRows) {
+        lines.push(`  ${theme.dim(`Preview limited to ${visibleRows} of ${totalLines} lines`)}`)
+      }
+    } else if (totalLines > visibleRows) {
+      lines.push(`  ${theme.dim(`Preview limited to ${visibleRows} of ${totalLines} lines`)}`)
+    } else if (totalLines === 0) {
       lines.push(`  ${theme.dim('No line changes')}`)
     }
   }
@@ -216,6 +249,14 @@ export class FileWriteToolUI extends Container {
     return this.hasToggleButton()
       ? `  ${theme.fg('accent', this.preview.toggleLabel())}`
       : ''
+  }
+
+  private getPreviewLineCount(content: string): number {
+    if (this.cachedPreviewContent !== content) {
+      this.cachedPreviewContent = content
+      this.cachedPreviewLineCount = countContentLines(content)
+    }
+    return this.cachedPreviewLineCount
   }
 
   private getOutputPreview(): string {

@@ -30,7 +30,7 @@ import { BashExecutionComponent } from './components/bashExecution.ts'
 import { parseBashInput } from './bashInput.ts'
 import { dispatchToolLifecycle, getToolDefinition, getToolUIConstructor, type ToolUIComponent } from '../tools/registry.ts'
 import { UserMessage } from './components/userMessage.ts'
-import { TurnTimeline } from './components/turnTimeline.ts'
+import { ChatTranscript, TurnTimeline } from './components/turnTimeline.ts'
 import { InlineSelectPrompt } from './components/inlineSelectPrompt.ts'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import { modelSupportsImages } from '../models/index.ts'
@@ -172,7 +172,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
 export class App {
   private ui: TUI
   private headerContainer: Container
-  private chatContainer: Container
+  private chatContainer: ChatTranscript
   private statusContainer: Container
   private editorContainer: Container
   private workingContainer: Container
@@ -238,7 +238,7 @@ export class App {
     // Clear stale rows when a long injected prompt disappears; otherwise Windows consoles can retain it below the footer.
     this.ui.setClearOnShrink(true)
     this.headerContainer = new Container()
-    this.chatContainer = new Container()
+    this.chatContainer = new ChatTranscript()
     this.statusContainer = new Container()
     this.editorContainer = new Container()
     this.workingContainer = new Container()
@@ -511,11 +511,7 @@ export class App {
       this.chatContainer,
       [this.statusContainer, this.editorContainer, this.workingContainer, this.footer],
       () => this.ui.terminal.rows,
-      (width) => this.chatContainer.children.flatMap((component) => {
-        if (component instanceof TurnTimeline) return component.getToolInteractionTargets(width)
-        const row = component as ToolUIComponent
-        return row.getInteractionTargets?.(width) ?? []
-      }),
+      (width) => this.chatContainer.getToolInteractionTargets(width),
     )
     this.ui.addChild(this.appLayout)
 

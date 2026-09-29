@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { Fragment, h, jsx, jsxs } from '../../src/tui/jsxFactory.ts'
 import { InlineSelectPrompt } from '../../src/tui/components/inlineSelectPrompt.ts'
 import { AppLayout } from '../../src/tui/components/appLayout.ts'
-import { TurnTimeline } from '../../src/tui/components/turnTimeline.ts'
+import { ChatTranscript, TurnTimeline } from '../../src/tui/components/turnTimeline.ts'
 import { getBashModeBorderColor, getEditorTheme, getMarkdownTheme, theme } from '../../src/tui/theme.ts'
 import { countContentLines, formatBytes, formatCompletedStatus, formatRunningStatus, getProgressFrame } from '../../src/tui/toolPresentation.ts'
 import { Container, SelectList, Text, type Component } from '@earendil-works/pi-tui'
@@ -138,6 +138,69 @@ describe('tui modules', () => {
     timeline.addEntry(row, 'tool')
 
     expect(timeline.render(80).filter((line) => line.includes('tool completed'))).toHaveLength(1)
+  })
+
+  test('turn timeline derives preview hit targets from the same render pass', () => {
+    let renderCount = 0
+    const row = {
+      render: () => {
+        renderCount++
+        return ['tool [Expand preview]']
+      },
+      getInteractionTargets: (renderedLines: readonly string[]) => {
+        expect(renderedLines).toEqual(['tool [Expand preview]'])
+        return [{
+          action: 'toggle-preview' as const,
+          rowOffset: 0,
+          startColumn: 6,
+          endColumn: 21,
+          activate: () => {},
+        }]
+      },
+    } as unknown as Component
+    const timeline = new TurnTimeline()
+    timeline.addEntry(new Text('user input'), 'user')
+    timeline.addEntry(row, 'tool')
+
+    timeline.render(80)
+    const targets = timeline.getToolInteractionTargets(80)
+
+    expect(renderCount).toBe(1)
+    expect(targets).toHaveLength(1)
+  })
+
+  test('preview click coordinates include preceding transcript rows', () => {
+    let expanded = false
+    const toolRow = {
+      render: () => ['tool [Expand preview]'],
+      getInteractionTargets: () => [{
+        action: 'toggle-preview' as const,
+        rowOffset: 0,
+        startColumn: 6,
+        endColumn: 21,
+        activate: () => { expanded = !expanded },
+      }],
+    } as unknown as Component
+    const timeline = new TurnTimeline()
+    timeline.addEntry(new Text('user request'), 'user')
+    timeline.addEntry(toolRow, 'tool')
+    const transcript = new ChatTranscript()
+    transcript.addChild(new Text('earlier conversation'))
+    transcript.addChild(timeline)
+
+    const layout = new AppLayout(
+      { render: () => ['header'] },
+      transcript,
+      [{ render: () => ['editor'] }],
+      () => 8,
+      (width) => transcript.getToolInteractionTargets(width),
+    )
+    const rendered = layout.render(80)
+    const buttonRow = rendered.findIndex((line) => line.includes('[Expand preview]')) + 1
+
+    expect(buttonRow).toBeGreaterThan(0)
+    expect(layout.handleInput(`\x1b[<0;10;${buttonRow}M`)).toBe(true)
+    expect(expanded).toBe(true)
   })
 
   test('startup resume renders restored messages immediately like session switching', () => {

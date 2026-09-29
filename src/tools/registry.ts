@@ -10,7 +10,7 @@ import type { AgentSessionPersistence } from '../agent/persistence.ts'
 /** 工具 UI 组件的公共接口 */
 export interface ToolUIComponent extends Component {
   setExpanded(expanded: boolean): void
-  getInteractionTargets?(width: number): ToolInteractionTarget[]
+  getInteractionTargets?(renderedLines: readonly string[]): ToolInteractionTarget[]
   hasToggleButton?(): boolean
   toggleExpanded?(): void
   markExecutionStarted(): void
