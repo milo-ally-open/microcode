@@ -17,6 +17,11 @@
 - Update or add focused tests for behavior changes. The test script is `bun test ./tests` (`bun run test`); the build script is `bun run build`. Builds generate output, so do not run them during an explicitly read-only task or when generated-file changes are outside scope. There is no lint script currently declared in `package.json`.
 - Do not hand-edit generated build/package output such as `dist/` or `packaging/out/` unless the task explicitly requires it.
 
+### Model Gateway configuration and documentation
+- Gateway bind defaults to `127.0.0.1`; host precedence is `--gateway-host` > `MICROCODE_GATEWAY_HOST` > `gateway.host` in `~/.microcode/config.json` > default. Port follows the corresponding `--gateway-port` > `MICROCODE_GATEWAY_PORT` > `gateway.port` > `43127` precedence.
+- `/gateway` in the TUI persists a host selection and restarts/re-handshakes the daemon. `0.0.0.0` is a bind address only; remote clients must use the server's reachable interface address or DNS name.
+- Keep operator setup and OpenAI/Anthropic client examples in `README.md` aligned with the CLI and tested endpoints. Explain that the current gateway uses one shared client token and does not provide TLS, per-client identity, quotas, or tenant isolation; never describe raw public binding as production-secure.
+
 ## Reporting and verification
 - For audits and reviews, cite concrete `file:line` locations and relevant symbols. Separate source-proven conclusions from behavior that still needs runtime verification.
 - Report which checks were actually run and their results; do not imply that tests/builds passed if they were not run.

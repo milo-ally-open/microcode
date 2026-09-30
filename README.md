@@ -196,17 +196,27 @@ See [the model integration and gateway spec](docs/specs/model_intergration_spec.
 
 By default, `microcode` starts or reuses a per-user loopback Model Gateway, performs a health/model-list/private-RPC handshake, and routes model generation through it. A successful handshake prints the protocol version and model count. If startup or the handshake fails, Microcode prints the failure and explicitly falls back to the existing direct, in-process Pi path for that session. Use `microcode --no-daemon` to select that path intentionally. The gateway is an inference service; external harnesses continue to own their tools, approvals, prompts, and sessions.
 
-The initial local service listens on `127.0.0.1:43127`. Configure `gateway.port` in `~/.microcode/config.json`, set `MICROCODE_GATEWAY_PORT`, or pass `--gateway-port <port>`; precedence is CLI, environment, user config, then the default. If a daemon is already running on a different port, Microcode reports the conflict and does not stop or silently replace it. Gateway state and owner-only tokens are stored under `~/.microcode/daemon/`.
+The initial service listens on `127.0.0.1:43127`. Host and port can be configured independently. For each setting, precedence is command-line option, environment variable, `~/.microcode/config.json`, then the default:
 
-For a persistent user-level port, add this top-level section to `~/.microcode/config.json`:
+| Setting | CLI | Environment | User config | Default |
+|---|---|---|---|---|
+| Bind address | `--gateway-host <HOST>` | `MICROCODE_GATEWAY_HOST` | `gateway.host` | `127.0.0.1` |
+| Port | `--gateway-port <PORT>` | `MICROCODE_GATEWAY_PORT` | `gateway.port` | `43127` |
+
+The host must be an IP address or hostname without a scheme or port. Use `127.0.0.1` for this computer only, a specific local address such as `192.168.1.20` to listen on one interface, or `0.0.0.0` to listen on all IPv4 interfaces. For a persistent user-level configuration, merge this top-level section into `~/.microcode/config.json` (preserve any existing settings):
 
 ```json
 {
   "gateway": {
+    "host": "127.0.0.1",
     "port": 43127
   }
 }
 ```
+
+For a one-time bind-address override, start with `microcode gateway start --gateway-host 0.0.0.0`. In the TUI, `/gateway` opens the address picker; `/gateway 192.168.1.20` sets an address directly. Changing the address persists `gateway.host`, restarts the daemon, and checks the handshake. A specific address must be assigned to this machine. If a daemon is already running on another address or port, Microcode reports the conflict and does not replace it silently. Gateway state and owner-only tokens are stored under `~/.microcode/daemon/`.
+
+For a persistent private-network listener, set `"host": "0.0.0.0"` in the JSON above (or set `MICROCODE_GATEWAY_HOST=0.0.0.0`) and keep the port restricted to trusted clients with the server firewall.
 
 ```bash
 microcode gateway status
@@ -218,12 +228,19 @@ microcode gateway stop
 
 The service exposes `GET /v1/models`, OpenAI Chat Completions at `/v1/chat/completions`, OpenAI Responses at `/v1/responses`, and Anthropic Messages at `/v1/messages`. Use the printed gateway token as Bearer auth for OpenAI-compatible clients or `x-api-key` for Anthropic-compatible clients. Model IDs use `provider/model` from `/v1/models`. The public token is separate from upstream provider credentials and the private TUI RPC token. Stop the gateway before rotating the public token; rotation refuses to invalidate credentials used by a running daemon.
 
-### Use Microcode as a local API relay
+### Use Microcode as a local or private-network API relay
 
 The gateway separates upstream model authentication from client authentication:
 
 1. Sign in to the model provider in Microcode with `/login <provider>` (or configure that provider's API-key environment variable). The gateway uses these Microcode-managed credentials for upstream requests; client applications do not receive them.
-2. Start the persistent local service with `microcode gateway start` and check it with `microcode gateway status`. It listens on `127.0.0.1:43127` by default and stays available after the TUI exits.
+2. Start the persistent service with `microcode gateway start` and check it with `microcode gateway status`. It stays available after the TUI exits. It is loopback-only by default. To make it reachable from another machine on a trusted network, bind all IPv4 interfaces (or just the server's LAN address):
+
+   ```bash
+   microcode gateway start --gateway-host 0.0.0.0
+   # or: microcode gateway start --gateway-host 192.168.1.20
+   ```
+
+   Then use the server's reachable address—not `0.0.0.0`—in remote client URLs, for example `http://192.168.1.20:43127`. Allow the port only on the intended private network in the host firewall.
 3. Read the client token with `microcode gateway token`. Treat it as a secret. Find an exact model ID with the authenticated `GET /v1/models` endpoint; use its `id` value (usually `provider/model`) in requests.
 
 ```bash
@@ -271,7 +288,9 @@ for block in message.content:
         print(block.text)
 ```
 
-Install the corresponding SDK in your Python environment (`pip install openai` or `pip install anthropic`). The endpoint dialect is selected by the SDK route; the chosen upstream model must still support the requested capabilities, and unsupported protocol options are rejected rather than silently translated. The gateway is loopback-only by default: clients must run on the same machine unless you deliberately provide a separate secure networking layer. Do not expose the gateway token or assume that a vendor's consumer subscription permits API relaying; subscription-based providers must use an authorization and inference flow explicitly supported for that use.
+Install the corresponding SDK in your Python environment (`pip install openai` or `pip install anthropic`). For a client on another machine, replace `127.0.0.1` in the examples with the gateway server's reachable LAN address; OpenAI uses a base URL ending in `/v1`, while Anthropic uses the gateway origin. The endpoint dialect is selected by the SDK route; the chosen upstream model must support the requested capabilities, and unsupported protocol options are rejected rather than silently translated.
+
+**Public-network security:** binding to `0.0.0.0` only opens a listener; it does not add TLS, per-client identities/tokens, rate limits, quotas, or multi-tenant isolation. The current gateway has one shared client token. Do not expose its port directly to the public Internet. For remote use, put it behind a separately secured VPN or TLS/reverse-proxy layer, restrict inbound network access, and protect/rotate the gateway token. Do not assume a vendor's consumer subscription permits API relaying; use only provider authorization and inference flows explicitly supported for that use.
 
 These endpoints are protocol adapters under active development. Passing Microcode's fake-runtime contract tests does not by itself certify a specific Codex, Claude Code, or DeepSeek client/version; consult the spec for current compatibility gates and known unsupported request options. The gateway does not execute client tools or expose Microcode workspace tools.
 
