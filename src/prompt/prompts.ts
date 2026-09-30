@@ -1,6 +1,6 @@
 import type { McpServerState } from '../mcp/types.ts'
-import type { Skill } from '../skill/skill.ts'
-import { formatSkillsForPrompt } from '../skill/skill.ts'
+import type { Skill } from '../skill.ts'
+import { formatSkillsForPrompt } from '../skill.ts'
 import { getMcpInstructionsSection } from '../mcp/prompt.ts'
 import { getAskUserQuestionSection } from '../tools/AskUserQuestionTool/prompt.ts'
 import { getTaskToolSection } from '../tools/TaskTool/prompt.ts'

@@ -1,4 +1,4 @@
-import { readSkillBody, type Skill } from '../skill/skill.ts'
+import { readSkillBody, type Skill } from '../skill.ts'
 
 export function filterInvocableSkills(skills: readonly Skill[], query: string): Skill[] {
   const needle = query.toLowerCase()

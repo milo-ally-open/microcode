@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from 'fs
 import { homedir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
-import { loadSkills } from '../skill/skill.ts'
+import { loadSkills } from '../skill.ts'
 import { getProjectConfigPath, getUserConfigPath } from '../mcp/config.ts'
 import { parseMcpJson } from '../mcp/parseConfig.ts'
 import type { McpServerConfig } from '../mcp/types.ts'
@@ -405,7 +405,7 @@ export class PluginManager {
 
   getSnapshot(
     mcpServers?: Readonly<Record<string, McpServerConfig>>,
-    skills?: readonly import('../skill/skill.ts').Skill[],
+    skills?: readonly import('../skill.ts').Skill[],
   ): PluginSnapshot {
     const resolvedServers = mcpServers ?? this.buildMcpServers()
     const resolvedSkills = skills ?? this.records.filter((plugin) => plugin.enabled).flatMap((plugin) => plugin.skills)

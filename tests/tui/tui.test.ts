@@ -78,6 +78,126 @@ describe('tui modules', () => {
     expect(longTitle.endsWith('...')).toBe(true)
   })
 
+  test('gateway startup result is rendered as a visible success or fallback message', () => {
+    const app = Object.create(App.prototype) as any
+    const chatContainer = new ChatTranscript()
+    Object.assign(app, { startupMessages: [], chatContainer, ui: { requestRender() {} } })
+    app.addStartupMessage('Model Gateway handshake successful (protocol 1, 42 models).', 'success')
+    app.addStartupMessage('Model Gateway handshake failed: unavailable. Falling back to --no-daemon mode.', 'error')
+    app.renderStartupMessages()
+
+    const rendered = chatContainer.render(120).join('\n')
+    expect(rendered).toContain('Model Gateway handshake successful (protocol 1, 42 models).')
+    expect(rendered).toContain('Model Gateway handshake failed: unavailable. Falling back to --no-daemon mode.')
+  })
+
+  test('/gateway opens a bind-address picker and applies the selected address', async () => {
+    const children: Component[] = []
+    let changedHost: string | undefined
+    const app = Object.create(App.prototype) as any
+    Object.assign(app, {
+      editor: { addToHistory() {}, setText() {} },
+      chatContainer: {
+        addChild: (child: Component) => children.push(child),
+        removeChild: (child: Component) => { const index = children.indexOf(child); if (index >= 0) children.splice(index, 1) },
+      },
+      ui: { setFocus() {}, requestRender() {} },
+      agent: { isBusy: () => false },
+      gatewayBindControl: {
+        getBindHost: () => '127.0.0.1',
+        setBindHost: async (host: string) => { changedHost = host },
+      },
+      showStatus() {},
+      showError() {},
+    })
+
+    expect(app.handleSlashCommand('/gateway')).toBe(true)
+    const picker = children.find((child) => child instanceof SelectList) as SelectList | undefined
+    expect(picker).toBeDefined()
+    picker!.onSelect?.({ value: '0.0.0.0', label: 'All IPv4 interfaces' })
+    await Promise.resolve()
+    expect(changedHost).toBe('0.0.0.0')
+  })
+
+  test('/gateway accepts a directly supplied interface address', async () => {
+    let changedHost: string | undefined
+    const app = Object.create(App.prototype) as any
+    Object.assign(app, {
+      editor: { addToHistory() {} },
+      agent: { isBusy: () => false },
+      gatewayBindControl: {
+        getBindHost: () => '127.0.0.1',
+        setBindHost: async (host: string) => { changedHost = host },
+      },
+      showStatus() {},
+      showError() {},
+    })
+    app.handleGatewayCommand('192.168.1.22')
+    await Promise.resolve()
+    expect(changedHost).toBe('192.168.1.22')
+  })
+
+  test('model command resolves daemon-only models from the injected project catalog', async () => {
+    const catalogModel = {
+      id: 'catalog-only-model',
+      provider: 'custom:project-catalog',
+      name: 'Project Catalog Model',
+      api: 'openai-completions',
+    }
+    let switched: unknown[] = []
+    const app = Object.create(App.prototype) as any
+    Object.assign(app, {
+      modelCatalog: { getProjectModels: () => [catalogModel] },
+      agent: {
+        switchModel: (...args: unknown[]) => {
+          switched = args
+          return { model: catalogModel, provider: catalogModel.provider }
+        },
+      },
+      chatContainer: new ChatTranscript(),
+      ui: { requestRender() {} },
+      footer: { invalidate() {} },
+      pendingImages: [],
+      suppressTrailingQuote: false,
+    })
+
+    await app.handleModelCommand('catalog-only-model')
+
+    expect(switched).toEqual(['catalog-only-model', undefined, 'custom:project-catalog'])
+  })
+
+  test('gateway auth command uses provider catalog and auth status supplied over RPC', async () => {
+    let providersRequested = 0
+    let statusesRequested = 0
+    let selectedItems: unknown[] = []
+    const app = Object.create(App.prototype) as any
+    Object.assign(app, {
+      modelAuth: {
+        async listProviders() {
+          providersRequested++
+          return [{ id: 'gateway-provider', name: 'Gateway Provider', authChoices: [] }]
+        },
+        async getAuthStatus() {
+          statusesRequested++
+          return [{ providerId: 'gateway-provider', configured: true, type: 'oauth' }]
+        },
+      },
+      async selectAuthOption(_title: string, items: unknown[]) {
+        selectedItems = items
+      },
+    })
+
+    await app.handleAuthCommand('status', '')
+
+    expect(providersRequested).toBe(1)
+    expect(statusesRequested).toBe(1)
+    expect(selectedItems).toEqual([{
+      value: 'gateway-provider',
+      label: 'Gateway Provider',
+      description: 'gateway-provider · oauth',
+    }])
+  })
+
   test('session title generation uses the opening sentence and falls back to clipped input', async () => {
     let requestedSeed = ''
     const generated = await createSessionTitle('Fix parser errors. Add tests after.', async (seed) => {

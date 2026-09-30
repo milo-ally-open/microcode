@@ -1,5 +1,5 @@
 import type { McpServerConfig } from '../mcp/types.ts'
-import type { Skill } from '../skill/skill.ts'
+import type { Skill } from '../skill.ts'
 
 export type PluginScope = 'user' | 'project'
 export type PluginHealth = 'ready' | 'warning' | 'invalid' | 'incompatible'

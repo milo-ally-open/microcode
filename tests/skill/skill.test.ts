@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from 'fs/promises'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { formatSkillsForPrompt, loadSkills, readSkillBody } from '../../src/skill/skill.ts'
+import { formatSkillsForPrompt, loadSkills, readSkillBody } from '../../src/skill.ts'
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), 'microcode-skill-'))

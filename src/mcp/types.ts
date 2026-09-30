@@ -1,4 +1,4 @@
-import type { CapabilityScope } from '../capabilities/types.ts'
+export type CapabilityScope = 'system' | 'user' | 'project' | 'plugin' | 'path' | 'legacy'
 
 export interface McpStdioServerConfig {
   type?: 'stdio'

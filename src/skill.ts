@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
-import { getSystemSkillNames, getSystemSkillsRoot, installSystemCapabilities } from '../system/capabilities.ts'
-import type { CapabilityScope } from '../capabilities/types.ts'
-export type { CapabilityScope } from '../capabilities/types.ts'
+import { getSystemSkillNames, getSystemSkillsRoot, installSystemCapabilities } from './system/capabilities.ts'
+import type { CapabilityScope } from './mcp/types.ts'
+export type { CapabilityScope } from './mcp/types.ts'
 
 const MAX_NAME_LENGTH = 64
 const MAX_DESCRIPTION_LENGTH = 1024

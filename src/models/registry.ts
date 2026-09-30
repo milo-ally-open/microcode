@@ -77,6 +77,18 @@ function customAuth(def: CustomModelDef): ApiKeyAuth {
   }
 }
 
+function customProvider(def: CustomModelDef, providerId = `custom:${def.id}`): Provider {
+  const model = customModelToModel(def, providerId)
+  return createProvider({
+    id: providerId,
+    name: def.name,
+    baseUrl: def.baseUrl,
+    auth: { apiKey: customAuth(def) },
+    models: [model],
+    api: customApi(def),
+  })
+}
+
 function ensureCustomProviders(): void {
   const definitions = loadCustomModels()
   const fingerprint = JSON.stringify(definitions)
@@ -86,19 +98,26 @@ function ensureCustomProviders(): void {
   registeredCustomIds = new Set()
   for (const def of definitions) {
     const providerId = `custom:${def.id}`
-    const model = customModelToModel(def, providerId)
-    const provider = createProvider({
-      id: providerId,
-      name: def.name,
-      baseUrl: def.baseUrl,
-      auth: { apiKey: customAuth(def) },
-      models: [model],
-      api: customApi(def),
-    })
-    modelCollection.setProvider(provider)
+    modelCollection.setProvider(customProvider(def, providerId))
     registeredCustomIds.add(providerId)
   }
   customFingerprint = fingerprint
+}
+
+/**
+ * Build an isolated Pi model collection for the daemon's private, project-scoped
+ * TUI RPC. The existing process-wide collection and direct-mode behavior remain
+ * unchanged; project custom providers cannot overwrite each other's registry.
+ */
+export function createModelsForCwd(cwd: string): { models: MutableModels; allModels: Model<Api>[] } {
+  const models = builtinModels({ credentials: new EncryptedCredentialStore() })
+  const definitions = loadCustomModels(cwd)
+  for (const def of definitions) models.setProvider(customProvider(def))
+  const customIds = new Set(definitions.map((def) => def.id))
+  const allModels = models.getModels()
+    .filter((model) => String(model.provider).startsWith('custom:') || !customIds.has(model.id))
+    .map(applyEnvOverrides)
+  return { models, allModels }
 }
 
 export function resetCustomModelCache(): void {
@@ -139,21 +158,20 @@ function envModel(): string | undefined {
   return MODEL_ENV_KEYS.map((key) => process.env[key]).find(Boolean)
 }
 
-function candidatesFor(modelId: string): Model<Api>[] {
-  const all = getAllModels()
-  const exact = all.filter((model) => model.id === modelId || `${model.provider}/${model.id}` === modelId)
-  return exact.length > 0
-    ? exact
-    : all.filter((model) => model.id.includes(modelId) || modelId.includes(model.id))
+/** Resolve the environment-selected/default model against an explicit catalog. */
+export function getConfiguredModel(models: readonly Model<Api>[]): Model<Api> {
+  const wanted = envModel() ?? 'deepseek-v4-pro'
+  let candidates = models.filter((model) => model.id === wanted || `${model.provider}/${model.id}` === wanted)
+  if (candidates.length === 0) {
+    candidates = models.filter((model) => model.id.includes(wanted) || wanted.includes(model.id))
+  }
+  if (candidates.length === 0) throw new Error(`Model "${wanted}" was not found.`)
+  return candidates[0]!
 }
 
 export function getCurrentModel(): Model<Api> {
   if (currentModel) return currentModel
-  const wanted = envModel() ?? 'deepseek-v4-pro'
-  const candidates = candidatesFor(wanted)
-  if (candidates.length === 0) throw new Error(`Model "${wanted}" was not found.`)
-  const model = candidates[0]
-  currentModel = applyEnvOverrides(model)
+  currentModel = getConfiguredModel(getAllModels())
   return currentModel
 }
 

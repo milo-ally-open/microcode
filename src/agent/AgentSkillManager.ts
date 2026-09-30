@@ -2,7 +2,7 @@ import {
   loadSkills,
   readSkillBody,
   type Skill,
-} from '../skill/skill.ts'
+} from '../skill.ts'
 
 export interface LoadedSkillSnapshot {
   readonly name: string

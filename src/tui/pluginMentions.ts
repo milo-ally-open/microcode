@@ -1,5 +1,5 @@
 import type { PluginRecord } from '../plugins/types.ts'
-import { readSkillBody } from '../skill/skill.ts'
+import { readSkillBody } from '../skill.ts'
 
 export function filterMentionablePlugins(plugins: readonly PluginRecord[], query: string): PluginRecord[] {
   const needle = query.toLowerCase()

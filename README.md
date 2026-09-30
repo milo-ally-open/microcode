@@ -16,6 +16,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#tui-input">TUI guide</a> ·
   <a href="#models-and-authentication">Models</a> ·
+  <a href="#model-gateway">Model gateway</a> ·
   <a href="#skills-plugins-and-project-instructions">Extensibility</a>
 </p>
 
@@ -36,6 +37,7 @@
 - [TUI input](#tui-input)
 - [Slash commands](#slash-commands)
 - [Models and authentication](#models-and-authentication)
+- [Model gateway](#model-gateway)
 - [Skills, plugins, and project instructions](#skills-plugins-and-project-instructions)
 - [MCP servers](#mcp-servers)
 - [Permissions](#permissions)
@@ -188,7 +190,90 @@ Add models to `~/.microcode/config.json` for your user account or `.microcode/co
 
 Supported `api` values are `openai-completions`, `anthropic-messages`, and `google-generative-ai`. Optional fields include `apiKeyEnv`, `reasoning`, `thinkingFormat`, `input` (for example, `["text", "image"]`), `headers`, and display-only `cost`. Custom models are available in `/model` and `microcode model list`.
 
-See [the model integration spec](docs/specs/model_integration_spec.md) for the model catalog, authentication, and update policy.
+See [the model integration and gateway spec](docs/specs/model_intergration_spec.md) for the model catalog, authentication, direct integration, and harness-independent gateway design.
+
+## Model gateway
+
+By default, `microcode` starts or reuses a per-user loopback Model Gateway, performs a health/model-list/private-RPC handshake, and routes model generation through it. A successful handshake prints the protocol version and model count. If startup or the handshake fails, Microcode prints the failure and explicitly falls back to the existing direct, in-process Pi path for that session. Use `microcode --no-daemon` to select that path intentionally. The gateway is an inference service; external harnesses continue to own their tools, approvals, prompts, and sessions.
+
+The initial local service listens on `127.0.0.1:43127`. Configure `gateway.port` in `~/.microcode/config.json`, set `MICROCODE_GATEWAY_PORT`, or pass `--gateway-port <port>`; precedence is CLI, environment, user config, then the default. If a daemon is already running on a different port, Microcode reports the conflict and does not stop or silently replace it. Gateway state and owner-only tokens are stored under `~/.microcode/daemon/`.
+
+For a persistent user-level port, add this top-level section to `~/.microcode/config.json`:
+
+```json
+{
+  "gateway": {
+    "port": 43127
+  }
+}
+```
+
+```bash
+microcode gateway status
+microcode gateway start
+microcode gateway token  # explicitly prints the client token
+microcode gateway token --rotate  # rotate while stopped, then print the new client token
+microcode gateway stop
+```
+
+The service exposes `GET /v1/models`, OpenAI Chat Completions at `/v1/chat/completions`, OpenAI Responses at `/v1/responses`, and Anthropic Messages at `/v1/messages`. Use the printed gateway token as Bearer auth for OpenAI-compatible clients or `x-api-key` for Anthropic-compatible clients. Model IDs use `provider/model` from `/v1/models`. The public token is separate from upstream provider credentials and the private TUI RPC token. Stop the gateway before rotating the public token; rotation refuses to invalidate credentials used by a running daemon.
+
+### Use Microcode as a local API relay
+
+The gateway separates upstream model authentication from client authentication:
+
+1. Sign in to the model provider in Microcode with `/login <provider>` (or configure that provider's API-key environment variable). The gateway uses these Microcode-managed credentials for upstream requests; client applications do not receive them.
+2. Start the persistent local service with `microcode gateway start` and check it with `microcode gateway status`. It listens on `127.0.0.1:43127` by default and stays available after the TUI exits.
+3. Read the client token with `microcode gateway token`. Treat it as a secret. Find an exact model ID with the authenticated `GET /v1/models` endpoint; use its `id` value (usually `provider/model`) in requests.
+
+```bash
+export MICROCODE_GATEWAY_TOKEN="$(microcode gateway token)"
+curl --fail http://127.0.0.1:43127/v1/models \
+  -H "Authorization: Bearer $MICROCODE_GATEWAY_TOKEN"
+```
+
+For example, after setting `MICROCODE_GATEWAY_TOKEN` to the token printed by `microcode gateway token`, the OpenAI Python SDK can call the gateway's Chat Completions endpoint:
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:43127/v1",
+    api_key=os.environ["MICROCODE_GATEWAY_TOKEN"],
+)
+
+result = client.chat.completions.create(
+    model="deepseek/deepseek-v4-pro",  # Replace with an id from GET /v1/models.
+    messages=[{"role": "user", "content": "Explain what a reverse proxy does in one sentence."}],
+)
+print(result.choices[0].message.content)
+```
+
+The Anthropic Python SDK can use the Anthropic Messages endpoint in the same way. Its `api_key` here is the **Microcode gateway token**, not an Anthropic API key:
+
+```python
+import os
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://127.0.0.1:43127",
+    api_key=os.environ["MICROCODE_GATEWAY_TOKEN"],
+)
+
+message = client.messages.create(
+    model="anthropic/claude-sonnet-4-20250514",  # Replace with an id from GET /v1/models.
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Explain what a reverse proxy does in one sentence."}],
+)
+for block in message.content:
+    if block.type == "text":
+        print(block.text)
+```
+
+Install the corresponding SDK in your Python environment (`pip install openai` or `pip install anthropic`). The endpoint dialect is selected by the SDK route; the chosen upstream model must still support the requested capabilities, and unsupported protocol options are rejected rather than silently translated. The gateway is loopback-only by default: clients must run on the same machine unless you deliberately provide a separate secure networking layer. Do not expose the gateway token or assume that a vendor's consumer subscription permits API relaying; subscription-based providers must use an authorization and inference flow explicitly supported for that use.
+
+These endpoints are protocol adapters under active development. Passing Microcode's fake-runtime contract tests does not by itself certify a specific Codex, Claude Code, or DeepSeek client/version; consult the spec for current compatibility gates and known unsupported request options. The gateway does not execute client tools or expose Microcode workspace tools.
 
 ## Skills, plugins, and project instructions
 

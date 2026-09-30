@@ -8,7 +8,9 @@
 - Keep secrets out of output and logs. Do not repeat API keys, OAuth codes/tokens, or other credentials found in source, logs, URLs, or screenshots.
 
 ## Project-specific guidance
+- Place new Model Gateway daemon code under `src/daemon/`. Preserve the existing direct Pi integration and provider/auth behavior; `--no-daemon` must continue to use the in-process path.
 - This is a TypeScript/Bun project. Use the package manager and versions declared in `package.json`; do not assume npm scripts that are not defined there.
+- Model integration and gateway work must follow the [Model Integration and Harness-Agnostic Gateway specification](docs/specs/model_intergration_spec.md). Check the [live pi-ai upstream documentation](https://github.com/earendil-works/pi/blob/main/packages/ai/README.md) and relevant upstream source when designing or updating provider/model integration; then verify every API against the exact dependency version pinned by `package.json` and `bun.lock`. The live `main` documentation is a discovery/reference source, not runtime truth: do not fetch or adopt unpinned code/catalog data at runtime, and do not modify dependency source.
 - Preserve the single-Agent core and CLI/TUI runtime. Do not reintroduce a GUI or multi-Agent swarm/worker behavior unless explicitly requested. Keep independent capabilities (for example, general task management and Git/worktree functionality) separate from orchestration features.
 - When changing Agent behavior, inspect the full path across message conversion, system prompts, tool registration/discovery, permissions, model selection, and session persistence. Keep user-facing capability claims consistent with tools actually exposed at runtime.
 - Store all test code under the repository-root `tests/` directory. Never place test files inside `src/`; use `tests/` (plural) for unit, integration, and related test code.

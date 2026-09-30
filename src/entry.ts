@@ -25,8 +25,11 @@ if (process.argv.length === 3 && (process.argv[2] === '--version' || process.arg
   process.exit(0)
 }
 
-for (const diagnostic of installSystemCapabilities()) {
-  console.error(`System capabilities: ${diagnostic}`)
+if (process.env.MICROCODE_GATEWAY_CHILD !== '1') {
+  for (const diagnostic of installSystemCapabilities()) {
+    console.error(`System capabilities: ${diagnostic}`)
+  }
 }
 
-await import('./main.tsx')
+const { main } = await import('./main.tsx')
+await main()

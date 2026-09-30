@@ -27,6 +27,23 @@ describe('agent modules', () => {
     expect(() => ((snapshot as any).provider = 'mutated')).toThrow()
   })
 
+  test('model manager can use a transport-owned model resolver without consulting local credentials', () => {
+    const initial = resolveAgentModelConfig('deepseek-v4-pro', 'openai-completions')
+    const gatewayModel = { ...initial.model, id: 'gateway-only-model', provider: 'custom:gateway-only' }
+    const manager = new AgentModelManager({
+      model: initial.model,
+      apiKey: '',
+      resolveModelConfig: () => ({ model: gatewayModel, apiKey: '' }),
+      resolveApiKey: () => undefined,
+    })
+
+    manager.commit(manager.resolve('gateway-only-model'))
+
+    expect(manager.getModel().id).toBe('gateway-only-model')
+    expect(manager.getApiKey()).toBe('')
+    expect(manager.getSnapshot().apiKeyConfigured).toBe(false)
+  })
+
   test('skill manager loads skill bodies once and appends them to prompts', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'microcode-agent-skill-'))
     try {

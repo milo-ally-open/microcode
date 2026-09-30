@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadSkills } from '../../src/skill/skill.ts'
+import { loadSkills } from '../../src/skill.ts'
 import {
   applySkillCompletion,
   buildSkillMentionContext,

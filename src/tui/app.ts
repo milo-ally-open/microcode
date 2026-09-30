@@ -1,6 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core'
-import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai'
-import type { AuthPrompt, AuthType } from '@earendil-works/pi-ai'
+import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions } from '@earendil-works/pi-ai'
+import type { AuthEvent, AuthPrompt, AuthType } from '@earendil-works/pi-ai'
 import {
   TUI,
   ProcessTerminal,
@@ -16,8 +16,9 @@ import {
 import chalk from 'chalk'
 import { createTwoFilesPatch } from 'diff'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
+import { networkInterfaces } from 'node:os'
 import { getAllModels, getModels, resolveApiKey } from '../models/index.ts'
-import { getProviderAuthChoices } from '../models/authChoices.ts'
+import { getProviderAuthChoices, type ProviderAuthChoice } from '../models/authChoices.ts'
 import { theme, getEditorTheme, getMarkdownTheme, getBashModeBorderColor } from './theme.ts'
 import { MicrocodeEditor } from './components/microcodeEditor.ts'
 import { FooterComponent } from './components/footer.ts'
@@ -90,6 +91,22 @@ const INTERACTIVE_SHELL_COMMANDS = new Set(['node', 'codex', 'claude', 'microcod
 const NON_INTERACTIVE_FLAGS = new Set(['--help', '-h', '--version', '-v'])
 const MICROCODE_NON_INTERACTIVE_SUBCOMMANDS = new Set(['mcp', 'model'])
 
+interface GatewayAuthControl {
+  listProviders(): Promise<Array<{ id: string; name: string; authChoices: ProviderAuthChoice[] }>>
+  getAuthStatus(): Promise<Array<{ providerId: string; configured: boolean; type?: AuthType; error?: boolean }>>
+  login(providerId: string, authType: AuthType, interaction: {
+    signal: AbortSignal
+    prompt(prompt: AuthPrompt): Promise<string>
+    notify(event: AuthEvent): void
+  }): Promise<void>
+  logout(providerId: string): Promise<void>
+}
+
+interface GatewayBindControl {
+  getBindHost(): string
+  setBindHost(host: string): Promise<void>
+}
+
 function splitShellWords(command: string): string[] {
   const words: string[] = []
   let current = ''
@@ -158,6 +175,7 @@ const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'login', description: 'Sign in to a model provider (usage: /login <provider> [api_key|oauth])', argumentHint: '<provider> [api_key|oauth]' },
   { name: 'logout', description: 'Sign out of a model provider (usage: /logout <provider>)', argumentHint: '<provider>' },
   { name: 'auth', description: 'Show provider authentication status' },
+  { name: 'gateway', description: 'View or change the Model Gateway listen address (usage: /gateway [HOST])', argumentHint: '[HOST]' },
   { name: 'thinking', description: 'Show or set thinking depth (usage: /thinking [level])', argumentHint: '[off|minimal|low|medium|high|xhigh|max]' },
   { name: 'mcp', description: 'List MCP servers' },
   { name: 'session', description: 'Browse and load saved sessions', argumentHint: '' },
@@ -216,6 +234,7 @@ export class App {
   private bashCancelRequested = false
   private gitOperationActive = false
   private startupWarnings: string[] = []
+  private startupMessages: Array<{ message: string; kind: 'success' | 'error' }> = []
   private pendingImages: CachedImage[] = []
   private workspaceFileIndex?: Promise<string[]>
   private workspaceFileIndexUpdatedAt = 0
@@ -225,6 +244,10 @@ export class App {
   private firstUserInputForTitle?: string
   private workingText: Text | null = null
   private agentActivityLabel = 'Working…'
+  private modelCompletion?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => Promise<AssistantMessage>
+  private modelCatalog?: { getProjectModels(): readonly Model<Api>[] }
+  private modelAuth?: GatewayAuthControl
+  private gatewayBindControl?: GatewayBindControl
   private workingStartedAt = 0
   private workingFrameIndex = 0
   private workingTimer: ReturnType<typeof setInterval> | undefined
@@ -235,10 +258,18 @@ export class App {
     agent: MicrocodeAgent,
     mcpClient?: McpClientManager,
     sessionManager?: SessionManager,
+    modelCompletion?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => Promise<AssistantMessage>,
+    modelCatalog?: { getProjectModels(): readonly Model<Api>[] },
+    modelAuth?: GatewayAuthControl,
+    gatewayBindControl?: GatewayBindControl,
   ) {
     this.agent = agent
     this.mcpClient = mcpClient
     this.sessionManager = sessionManager ?? new SessionManager()
+    this.modelCompletion = modelCompletion
+    this.modelCatalog = modelCatalog
+    this.modelAuth = modelAuth
+    this.gatewayBindControl = gatewayBindControl
     this.agent.setPersistence(this.sessionManager)
     this.ui = new TUI(new ProcessTerminal())
     // Clear stale rows when a long injected prompt disappears; otherwise Windows consoles can retain it below the footer.
@@ -268,6 +299,20 @@ export class App {
     this.startupWarnings.push(message)
   }
 
+  /** Queue a durable gateway startup result for the visible transcript. */
+  addStartupMessage(message: string, kind: 'success' | 'error'): void {
+    this.startupMessages.push({ message, kind })
+  }
+
+  private renderStartupMessages(): void {
+    for (const { message, kind } of this.startupMessages) {
+      const color = kind === 'success' ? theme.fg('success', `✓ ${message}`) : theme.fg('error', `✗ ${message}`)
+      this.chatContainer.addChild(new Text(color, 1, 0))
+      this.chatContainer.addChild(new Spacer(1))
+    }
+    if (this.startupMessages.length > 0) this.ui.requestRender()
+  }
+
   async run(): Promise<void> {
     this.init()
     this.setupAgentSubscription()
@@ -293,6 +338,8 @@ export class App {
     if (this.startupWarnings.length > 0) {
       this.ui.requestRender()
     }
+
+    this.renderStartupMessages()
 
     // Main interactive loop
     while (true) {
@@ -876,7 +923,7 @@ export class App {
         return true
 
       case '/model':
-        this.handleModelCommand(args || undefined)
+        void this.handleModelCommand(args || undefined)
         return true
 
       case '/login':
@@ -889,6 +936,10 @@ export class App {
 
       case '/auth':
         void this.handleAuthCommand('status', args)
+        return true
+
+      case '/gateway':
+        void this.handleGatewayCommand(args)
         return true
 
       case '/mcp':
@@ -1131,6 +1182,10 @@ export class App {
   }
 
   private async handleAuthCommand(action: 'login' | 'logout' | 'status', args: string): Promise<void> {
+    if (this.modelAuth) {
+      await this.handleGatewayAuthCommand(action, args, this.modelAuth)
+      return
+    }
     const abortController = new AbortController()
     try {
       const models = getModels()
@@ -1185,9 +1240,169 @@ export class App {
         signal: abortController.signal,
         prompt: async (prompt) => {
           if (prompt.type !== 'select') return this.promptAuthValue(prompt, abortController)
-          const selected = await this.selectAuthOption(prompt.message, prompt.options)
+          const selected = await this.selectAuthOption(prompt.message, prompt.options, prompt.signal)
           if (!selected) {
-            abortController.abort()
+            if (!prompt.signal?.aborted) abortController.abort()
+            throw new Error('Authentication cancelled.')
+          }
+          return selected
+        },
+        notify: (event) => {
+          if (event.type === 'auth_url') {
+            this.showStatus(`${event.instructions ?? 'Complete authorization in your browser.'} ${event.url}`)
+            void this.openAuthUrl(event.url)
+          } else if (event.type === 'device_code') {
+            this.showStatus(`Code: ${event.userCode} · ${event.verificationUri}`)
+            void this.openAuthUrl(event.verificationUri)
+          } else {
+            this.showStatus(event.message)
+          }
+        },
+      })
+      this.showStatus(`Signed in to ${provider.name}.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (abortController.signal.aborted || /cancel(?:led|ed)/i.test(message)) {
+        if (action === 'login') this.showStatus('Sign-in cancelled.')
+        return
+      }
+      this.showError(message)
+    }
+  }
+
+  private async handleGatewayCommand(args: string): Promise<void> {
+    const control = this.gatewayBindControl
+    if (!control) {
+      this.showStatus('Gateway address controls are unavailable in this session. Start Microcode with the Model Gateway enabled, then run /gateway.')
+      return
+    }
+    if (this.agent.isBusy()) {
+      this.showStatus('Gateway settings cannot be changed while the Agent is working. Finish or interrupt the current turn, then retry.')
+      return
+    }
+    if (args.trim()) {
+      await this.applyGatewayBindHost(args.trim())
+      return
+    }
+
+    const currentHost = control.getBindHost()
+    const addresses = [...new Set(Object.values(networkInterfaces()).flatMap((entries) =>
+      (entries ?? [])
+        .filter((entry) => !entry.internal && (entry.family === 'IPv4' || entry.family === 4))
+        .map((entry) => entry.address)))]
+    const choices: SelectItem[] = [
+      { value: '127.0.0.1', label: 'Loopback · 127.0.0.1', description: 'Only accept connections from this computer' },
+      { value: '0.0.0.0', label: 'All IPv4 interfaces · 0.0.0.0', description: 'Listen on every IPv4 network interface' },
+      ...addresses.map((address) => ({
+        value: address,
+        label: `Network interface · ${address}`,
+        description: address === currentHost ? 'Current bind address' : 'Listen only on this interface',
+      })),
+    ]
+    if (!choices.some((choice) => choice.value === currentHost)) {
+      choices.unshift({ value: currentHost, label: `Current · ${currentHost}`, description: 'Currently configured bind address' })
+    }
+    choices.push({ value: '__custom__', label: 'Enter an address…', description: 'Use /gateway <IP address or hostname>' })
+
+    const list = new SelectList(choices, Math.min(choices.length, 12), {
+      selectedPrefix: (text) => chalk.cyan(text),
+      selectedText: (text) => chalk.cyan(text),
+      description: (text) => theme.dim(text),
+      scrollInfo: (text) => theme.dim(text),
+      noMatch: (text) => theme.dim(text),
+    })
+    this.chatContainer.addChild(new Text(theme.fg('accent', 'Model Gateway listen address'), 1, 0))
+    this.chatContainer.addChild(new Text(theme.dim(`Current: ${currentHost}`), 1, 0))
+    this.chatContainer.addChild(list)
+    this.ui.setFocus(list)
+    this.ui.requestRender()
+
+    const close = () => {
+      this.chatContainer.removeChild(list)
+      this.chatContainer.addChild(new Spacer(1))
+      this.ui.setFocus(this.editor)
+    }
+    list.onSelect = (item) => {
+      close()
+      if (item.value === '__custom__') {
+        this.editor.setText('/gateway ')
+        this.ui.requestRender()
+        return
+      }
+      void this.applyGatewayBindHost(item.value)
+      this.ui.requestRender()
+    }
+    list.onCancel = () => {
+      close()
+      this.showStatus('Gateway menu closed.')
+    }
+  }
+
+  private async applyGatewayBindHost(host: string): Promise<void> {
+    if (this.agent.isBusy()) {
+      this.showStatus('Gateway settings were not changed because the Agent became busy.')
+      return
+    }
+    try {
+      await this.gatewayBindControl?.setBindHost(host)
+      this.showStatus(`Model Gateway is now listening on ${host}.`)
+    } catch (error) {
+      this.showError(`Could not change the gateway listen address: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private async handleGatewayAuthCommand(action: 'login' | 'logout' | 'status', args: string, gateway: GatewayAuthControl): Promise<void> {
+    const abortController = new AbortController()
+    try {
+      const providers = await gateway.listProviders()
+      if (action === 'status') {
+        const statuses = await gateway.getAuthStatus()
+        const byId = new Map(statuses.map((status) => [status.providerId, status]))
+        await this.selectAuthOption('Provider authentication status', providers.map((provider) => {
+          const auth = byId.get(provider.id)
+          const status = auth?.error ? 'error' : auth?.configured ? auth.type ?? 'configured' : 'not configured'
+          return { value: provider.id, label: provider.name, description: `${provider.id} · ${status}` }
+        }))
+        return
+      }
+
+      const [providerArg, requestedType] = args.trim().split(/\s+/, 2)
+      const providerId = providerArg || await this.selectAuthOption(
+        action === 'login' ? 'Choose a provider to sign in' : 'Choose a provider to sign out',
+        providers.map((provider) => ({ value: provider.id, label: provider.name, description: provider.id })),
+      )
+      if (!providerId) return
+      const provider = providers.find((entry) => entry.id === providerId)
+      if (!provider) throw new Error(`Unknown provider "${providerId}". Run /auth to list providers.`)
+
+      if (action === 'logout') {
+        await gateway.logout(providerId)
+        this.showStatus(`Signed out of ${provider.name}.`)
+        return
+      }
+
+      if (provider.authChoices.length === 0) {
+        throw new Error(`Provider ${provider.name} has no interactive sign-in method. Configure its ambient credentials and try again.`)
+      }
+      const requestedAuthType: AuthType | undefined = requestedType === 'oauth' || requestedType === 'api_key'
+        ? requestedType
+        : undefined
+      if (requestedAuthType && !provider.authChoices.some((choice) => choice.value === requestedAuthType)) {
+        throw new Error(`Provider ${provider.name} does not support ${requestedAuthType === 'oauth' ? 'OAuth' : 'interactive API key'} login.`)
+      }
+      const type = requestedAuthType
+        ?? (provider.authChoices.length > 1
+          ? await this.selectAuthOption(`Choose a sign-in method for ${provider.name}`, provider.authChoices) as AuthType | undefined
+          : provider.authChoices[0]?.value)
+      if (!type) return
+
+      await gateway.login(providerId, type, {
+        signal: abortController.signal,
+        prompt: async (prompt) => {
+          if (prompt.type !== 'select') return this.promptAuthValue(prompt, abortController)
+          const selected = await this.selectAuthOption(prompt.message, prompt.options, prompt.signal)
+          if (!selected) {
+            if (!prompt.signal?.aborted) abortController.abort()
             throw new Error('Authentication cancelled.')
           }
           return selected
@@ -1249,7 +1464,7 @@ export class App {
         // A second Escape immediately after cancelling auth must not be
         // mistaken for the app-level double-Escape exit gesture.
         this.lastSigintTime = 0
-        if (!authController?.signal.aborted) authController?.abort()
+        if (!authController?.signal.aborted && !prompt.signal?.aborted) authController?.abort()
         reject(new Error('Authentication cancelled.'))
       }
       const cancel = () => {
@@ -1324,6 +1539,7 @@ export class App {
         if (settled) return
         settled = true
         prompt.signal?.removeEventListener('abort', onAbort)
+        authController?.signal.removeEventListener('abort', onAbort)
         this.editor.onSubmit = previousSubmit
         this.editor.onEscape = previousEscape
         this.chatContainer.removeChild(notice)
@@ -1348,12 +1564,15 @@ export class App {
       }
       if (prompt.signal?.aborted) return onAbort()
       prompt.signal?.addEventListener('abort', onAbort, { once: true })
+      authController?.signal.addEventListener('abort', onAbort, { once: true })
+      if (authController?.signal.aborted) onAbort()
     })
   }
 
   private async selectAuthOption(
     title: string,
     options: readonly { value?: string; id?: string; label: string; description?: string }[],
+    signal?: AbortSignal,
   ): Promise<string | undefined> {
     if (options.length === 0) return undefined
     const items: SelectItem[] = options.map((option) => ({
@@ -1380,6 +1599,7 @@ export class App {
       const finish = (value?: string) => {
         if (finished) return
         finished = true
+        signal?.removeEventListener('abort', onAbort)
         removeFilter()
         this.chatContainer.removeChild(list)
         this.chatContainer.removeChild(titleText)
@@ -1388,8 +1608,11 @@ export class App {
         this.ui.requestRender()
         resolve(value)
       }
+      const onAbort = () => finish()
       list.onSelect = (item) => finish(item.value)
       list.onCancel = () => finish()
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) onAbort()
     })
   }
 
@@ -1914,7 +2137,8 @@ export class App {
 
     const title = await createSessionTitle(text, async (openingSentence) => {
       const model = this.agent.getCurrentModel()
-      const result = await getModels().completeSimple(model, {
+      const complete = this.modelCompletion ?? ((selectedModel, context, options) => getModels().completeSimple(selectedModel, context, options))
+      const result = await complete(model, {
         systemPrompt: 'Generate a short, concise title (5 words max) for a conversation. Reply with ONLY the title, no quotes, no explanation.',
         messages: [{ role: 'user', content: [{ type: 'text', text: `Generate a title for a conversation that starts with: "${openingSentence.slice(0, 200)}"` }] }],
       } as any, { maxTokens: 30, temperature: 0.3 })
@@ -2027,28 +2251,41 @@ export class App {
     this.activeTurnTimeline = undefined
   }
 
-  private handleModelCommand(searchTerm?: string): void {
+  private async handleModelCommand(searchTerm?: string): Promise<void> {
+    let allModels: Model<Api>[]
+    try {
+      allModels = [...(this.modelCatalog?.getProjectModels() ?? getAllModels())]
+    } catch (error) {
+      this.showError(`Could not load models: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+
     if (searchTerm?.trim()) {
       const term = searchTerm.trim()
-      const exact = getAllModels().filter((model) => `${model.provider}/${model.id}` === term || model.id === term)
+      const exact = allModels.filter((model) => `${model.provider}/${model.id}` === term || model.id === term)
       if (exact.length === 1) {
         this.switchModel(`${exact[0]!.provider}/${exact[0]!.id}`)
         return
       }
-      this.showModelChoices(getAllModels().filter((model) =>
+      this.showModelChoices(allModels.filter((model) =>
         `${model.provider} ${model.id} ${model.name}`.toLowerCase().includes(term.toLowerCase()),
       ), `Models matching “${term}”`)
       return
     }
 
-    const allModels = getAllModels()
-    const providers = getModels().getProviders()
-      .map((provider) => ({
-        value: provider.id,
-        label: provider.name,
-        description: `${allModels.filter((model) => model.provider === provider.id).length} models · ${provider.id}`,
-      }))
-      .filter((provider) => !provider.description.startsWith('0 models'))
+    const providers = this.modelCatalog
+      ? [...new Set(allModels.map((model) => String(model.provider)))].map((providerId) => ({
+          value: providerId,
+          label: providerId,
+          description: `${allModels.filter((model) => String(model.provider) === providerId).length} models · ${providerId}`,
+        }))
+      : getModels().getProviders()
+          .map((provider) => ({
+            value: provider.id,
+            label: provider.name,
+            description: `${allModels.filter((model) => model.provider === provider.id).length} models · ${provider.id}`,
+          }))
+          .filter((provider) => !provider.description.startsWith('0 models'))
     const currentProvider = String(this.agent.getCurrentModel().provider)
     const items: SelectItem[] = providers.map((provider) => ({ ...provider, label: `${provider.label}${provider.value === currentProvider ? ' (current)' : ''}` }))
     const selectList = new SelectList(items, Math.min(items.length, 12), {
@@ -3631,6 +3868,7 @@ export class App {
       `  ${theme.bold('/login')} [provider]   Sign in with provider and method pickers`,
       `  ${theme.bold('/logout')} [provider]  Sign out with a provider picker`,
       `  ${theme.bold('/auth')}             Show provider authentication status`,
+      `  ${theme.bold('/gateway')} [HOST]    View or change the gateway listen address`,
       `  ${theme.bold('/thinking')} [level]   Show or set thinking depth`,
       `  ${theme.bold('/mcp')}              List MCP servers`,
       `  ${theme.bold('/session')}            Browse and load saved sessions`,

@@ -2,6 +2,8 @@ import type { Api, Model } from '@earendil-works/pi-ai'
 
 export {
   getAllModels,
+  createModelsForCwd,
+  getConfiguredModel,
   getCurrentModel,
   setCurrentModel,
   findModel,

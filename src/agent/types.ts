@@ -4,7 +4,8 @@ import type {
   StreamFn,
   ThinkingLevel,
 } from '@earendil-works/pi-agent-core'
-import type { Api, Model } from '@earendil-works/pi-ai'
+import type { Api, Model, Models } from '@earendil-works/pi-ai'
+import type { ModelConfig } from '../models/index.ts'
 import type { McpServerState } from '../mcp/types.ts'
 import type {
   EffectivePolicy,
@@ -19,7 +20,7 @@ import type { AgentToolSnapshot } from './AgentToolManager.ts'
 import type { AgentSkillSnapshot } from './AgentSkillManager.ts'
 import type { AgentSessionPersistence } from './persistence.ts'
 import type { ProjectInstructions } from '../instructions/projectInstructions.ts'
-import type { Skill } from '../skill/skill.ts'
+import type { Skill } from '../skill.ts'
 import type {
   CompactionSettings,
   generateSummary,
@@ -67,6 +68,12 @@ export interface CreateMicrocodeAgentOptions {
   generateSummaryFn?: typeof generateSummary
   compactionSettings?: Partial<CompactionSettings>
   streamFn?: StreamFn
+  /** Optional generation client. Defaults to the existing in-process Pi Models collection. */
+  models?: Models
+  /** Optional transport-owned initial selection and resolver for daemon-backed model catalogs. */
+  initialModelConfig?: ModelConfig
+  resolveModelConfig?: (modelId: string, api?: Api, provider?: string) => ModelConfig
+  resolveModelApiKey?: (model: Model<Api>) => string | undefined
 }
 
 export interface CompactAgentOptions {

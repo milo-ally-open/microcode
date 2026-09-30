@@ -113,13 +113,17 @@ export class MicrocodeAgent {
         : undefined,
     })
 
-    const modelConfig = options.modelId
-      ? resolveAgentModelConfig(options.modelId, options.api as Api | undefined)
-      : getModelConfig()
+    const resolveModelConfig = options.resolveModelConfig ?? resolveAgentModelConfig
+    const modelConfig = options.initialModelConfig
+      ?? (options.modelId
+        ? resolveModelConfig(options.modelId, options.api as Api | undefined)
+        : getModelConfig())
     this.modelManager = new AgentModelManager({
       model: modelConfig.model,
       apiKey: modelConfig.apiKey,
       thinkingLevel: options.thinkingLevel,
+      resolveModelConfig,
+      resolveApiKey: options.resolveModelApiKey,
     })
     this.mcpServers = options.mcpServers ? [...options.mcpServers] : undefined
     this.skillManager = new AgentSkillManager({
@@ -159,7 +163,7 @@ export class MicrocodeAgent {
         })
       },
       generateSummaryFn: options.generateSummaryFn,
-      models: getModels(),
+      models: options.models ?? getModels(),
       settings: options.compactionSettings,
     })
     this.compactionManager.setSystemPrompt(this.baseSystemPrompt)
@@ -184,7 +188,7 @@ export class MicrocodeAgent {
         return undefined
       },
       streamFn: options.streamFn ?? ((model, context, streamOptions) =>
-        getModels().streamSimple(model, context, streamOptions)),
+        (options.models ?? getModels()).streamSimple(model, context, streamOptions)),
       convertToLlm: createConvertToLlm(() => this.core.state.model),
       // prepareRequest can replace the loop's current context. transformContext
       // only projects a one-request copy, so compaction there leaves subsequent
@@ -653,7 +657,7 @@ export class MicrocodeAgent {
     this.emitStateChangedDetached('skills_changed')
   }
 
-  setPluginSkills(skills: readonly import('../skill/skill.ts').Skill[], diagnostics: readonly string[] = []): void {
+  setPluginSkills(skills: readonly import('../skill.ts').Skill[], diagnostics: readonly string[] = []): void {
     if (!this.skillManager.setPluginSkills(skills, diagnostics)) return
     this.baseSystemPrompt = this.buildBaseSystemPrompt(this.core.state.model)
     this.rebuildSystemPrompt()

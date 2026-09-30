@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { mergeProjectMcpServers, mergeProjectModels } from '../../src/config/projectConfigWrite.ts'
+import { mergeProjectMcpServers, mergeProjectModels } from '../../src/mcp/configWrite.ts'
 
 async function tempProject(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'microcode-config-'))

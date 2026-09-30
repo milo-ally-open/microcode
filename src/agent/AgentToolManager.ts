@@ -11,7 +11,7 @@ import {
   getDeferredToolDefinitions,
   type ToolDefinition,
 } from '../tools/registry.ts'
-import type { Skill } from '../skill/skill.ts'
+import type { Skill } from '../skill.ts'
 import type { McpClientManager } from '../mcp/client.ts'
 import type { AgentSessionPersistence } from './persistence.ts'
 import { assertInitReadPath } from '../instructions/initReadScope.ts'

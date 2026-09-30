@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type } from 'typebox'
-import { createMcpTool, formatMcpInputSchema, registerMcpToolsAsDeferred } from '../../src/tools/MCPTool/MCPTool.ts'
+import { createMcpTool, formatMcpInputSchema, registerMcpToolsAsDeferred } from '../../src/tools/index.ts'
 import { createCodingTools } from '../../src/tools/index.ts'
 import { formatToolActivity, formatToolDetail, formatToolStatus, formatToolSummary, getAllDeferredToolDefinitions, getAllToolDefinitions, registerDynamicDeferredTool, registerTool, unregisterDynamicDeferredTool } from '../../src/tools/registry.ts'
 import { boolTag, count, countLines, joinSummaryParts, previewList, producedText, statusPrefix, text } from '../../src/tools/summary.ts'

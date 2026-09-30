@@ -36,21 +36,27 @@ export function resolveAgentModelConfig(modelId: string, api?: Api, provider?: s
 export class AgentModelManager {
   private config: ModelConfig
   private thinkingLevel: ThinkingLevel
+  private readonly resolveConfig: (modelId: string, api?: Api, provider?: string) => ModelConfig
+  private readonly resolveApiKeyForModel: (model: Model<Api>) => string | undefined
 
   constructor(options: {
     model: Model<Api>
     apiKey: string
     thinkingLevel?: ThinkingLevel
+    resolveModelConfig?: (modelId: string, api?: Api, provider?: string) => ModelConfig
+    resolveApiKey?: (model: Model<Api>) => string | undefined
   }) {
     this.config = {
       model: options.model,
       apiKey: options.apiKey,
     }
     this.thinkingLevel = options.thinkingLevel ?? 'off'
+    this.resolveConfig = options.resolveModelConfig ?? resolveAgentModelConfig
+    this.resolveApiKeyForModel = options.resolveApiKey ?? resolveApiKey
   }
 
   resolve(modelId: string, api?: Api, provider?: string): ModelConfig {
-    return resolveAgentModelConfig(modelId, api, provider)
+    return this.resolveConfig(modelId, api, provider)
   }
 
   commit(config: ModelConfig): void {
@@ -62,7 +68,7 @@ export class AgentModelManager {
   }
 
   getApiKey(): string {
-    return resolveApiKey(this.config.model) ?? this.config.apiKey
+    return this.resolveApiKeyForModel(this.config.model) ?? this.config.apiKey
   }
 
   getProvider(): string {
