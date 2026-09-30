@@ -7,8 +7,8 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "analyze_session.py"
-SPEC = importlib.util.spec_from_file_location("analyze_session", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "analyze.py"
+SPEC = importlib.util.spec_from_file_location("analyze", SCRIPT)
 analyzer = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(analyzer)
@@ -26,7 +26,7 @@ def message_entry(seq, timestamp, message):
     }
 
 
-class AnalyzeSessionTests(unittest.TestCase):
+class AnalyzeTests(unittest.TestCase):
     def test_pairs_tool_calls_and_reports_success_failure_and_pending(self):
         header = {"kind": "header", "v": 4, "id": "session-123", "createdAt": 1_700_000_000_000}
         records = [

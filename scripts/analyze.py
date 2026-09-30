@@ -13,6 +13,24 @@ import statistics
 import sys
 from typing import Any, Iterable
 
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    from matplotlib.ticker import FuncFormatter
+except ImportError as error:
+    MATPLOTLIB_IMPORT_ERROR: ImportError | None = error
+else:
+    MATPLOTLIB_IMPORT_ERROR = None
+    plt.rcParams["text.parse_math"] = False
+
+
+def _require_matplotlib() -> None:
+    if MATPLOTLIB_IMPORT_ERROR is not None:
+        raise ValueError("Matplotlib is required. Install it with: python3 -m pip install matplotlib") from MATPLOTLIB_IMPORT_ERROR
+
 
 def parse_timestamp(value: Any) -> float | None:
     if isinstance(value, (int, float)):
@@ -323,23 +341,9 @@ def analyze(
     }
 
 
-def _plot_modules():
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from matplotlib.lines import Line2D
-        from matplotlib.patches import Patch
-    except ImportError as error:
-        raise ValueError("Matplotlib is required. Install it with: python3 -m pip install matplotlib") from error
-    plt.rcParams["text.parse_math"] = False
-    return plt, Line2D, Patch
-
-
 def render_chart(result: dict[str, Any], source: Path, output: Path, warnings: list[str] | None = None) -> None:
     """Render per-turn activity, tool reliability, provider usage, and latency."""
-    plt, _, Patch = _plot_modules()
-    from matplotlib.ticker import FuncFormatter
+    _require_matplotlib()
     bg, panel, fg, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
     colors = {"success": "#47c78a", "failed": "#fa6b73", "pending": "#e8b85e", "unknown": "#8694a8"}
     session = str(result["header"].get("id") or source.stem)
@@ -447,7 +451,7 @@ def render_chart(result: dict[str, Any], source: Path, output: Path, warnings: l
 
 def render_trajectory(result: dict[str, Any], source: Path, output: Path) -> None:
     """Plot one swimlane timeline organized around user turns; never show raw text or arguments."""
-    plt, Line2D, _ = _plot_modules()
+    _require_matplotlib()
     bg, panel, fg, muted = "#10151d", "#171f2a", "#e7edf5", "#9aa9bb"
     colors = {"user": "#69aaf8", "assistant": "#b89cff", "success": "#47c78a", "failed": "#fa6b73",
               "pending": "#e8b85e", "unknown": "#8694a8", "compaction": "#e8b85e"}

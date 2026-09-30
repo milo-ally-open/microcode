@@ -134,7 +134,7 @@ Autocomplete menus appear above the input. While viewing older conversation hist
 | `/new` | Start a new conversation session |
 | `/session` | Browse and load saved sessions |
 | `/compact [instructions]` | Compress conversation context |
-| `/export` | Export the current conversation as JSONL into `.microcode/` |
+| `/export` | Export the current conversation as JSONL into `.microcode/sessions/` |
 | `/status` | Show context usage, token statistics, and model details |
 | `/model [provider/model]` | Browse, select, or switch models |
 | `/thinking [level]` | Show or set thinking depth |
@@ -372,6 +372,15 @@ Review tool requests and permission prompts before approving them, especially wh
 ## Sessions
 
 Sessions are stored locally under `~/.microcode/sessions/`. `microcode --resume` opens the latest session for the current working directory; `microcode --resume <id-prefix>` opens a matching session. Resumed messages are rendered in the conversation immediately and can be browsed with the mouse wheel or PageUp/PageDown. Use `/session` to choose from saved sessions or `/new` to begin another conversation.
+
+To analyze an exported session's user turns, tool outcomes, token usage, and trajectory, install Matplotlib and run:
+
+```bash
+python3 -m pip install matplotlib
+python3 scripts/analyze.py .microcode/sessions/session-SESSION_ID.jsonl
+```
+
+Replace `SESSION_ID` with the exported filename's ID. The dashboard and `-trajectory.png` chart are written under `.microcode/analysis/` by default. Pass `--output <PATH>` to choose a different dashboard path. The charts summarize metadata and do not render conversation text or tool arguments.
 
 ## Release packages
 
