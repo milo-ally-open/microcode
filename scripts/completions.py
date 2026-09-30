@@ -38,7 +38,7 @@ def main() -> int:
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "user", "content": "Explain what a reverse proxy does in one sentence."}
+            {"role": "user", "content": "Who are you? Briefly introduce yourself in one sentence."}
         ],
         max_completion_tokens=128,
     )

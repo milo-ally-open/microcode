@@ -40,7 +40,7 @@ def main() -> int:
         model=MODEL,
         max_tokens=128,
         messages=[
-            {"role": "user", "content": "Explain what a reverse proxy does in one sentence."}
+            {"role": "user", "content": "Who are you? Briefly introduce yourself in one sentence."}
         ],
     )
 

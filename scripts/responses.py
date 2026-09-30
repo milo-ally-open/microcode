@@ -37,7 +37,7 @@ def main() -> int:
     )
     response = client.responses.create(
         model=MODEL,
-        input="Explain what a reverse proxy does in one sentence.",
+        input="Who are you? Briefly introduce yourself in one sentence.",
         max_output_tokens=128,
     )
 
