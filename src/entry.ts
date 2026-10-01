@@ -6,6 +6,7 @@
 import { ensureBootstrapMacro } from './macro'
 import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { installSystemCapabilities } from './system/capabilities.ts'
+import { configureLoopbackProxyBypass } from './daemon/proxy.ts'
 
 declare const MACRO: {
   VERSION: string
@@ -14,6 +15,8 @@ declare const MACRO: {
 try {
   process.title = 'microcode'
 } catch {}
+
+configureLoopbackProxyBypass()
 
 ensureBootstrapMacro()
 // pi-ai keeps OAuth implementations behind dynamic imports in normal runtimes.

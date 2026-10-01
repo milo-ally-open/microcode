@@ -85,8 +85,13 @@ describe('runtime tools', () => {
   })
 
   test('Bash keeps Agent output bounded while retaining a separate bounded UI preview', async () => {
+    const outputCommand = process.platform === 'win32'
+      ? (process.env.PSModulePath || process.env.SHELL?.includes('powershell'))
+        ? "[Console]::Write(('0' * 30000))"
+        : 'powershell.exe -NoProfile -Command "[Console]::Write((\'0\' * 30000))"'
+      : "printf '%030000d' 0"
     const result = await createBashTool(process.cwd()).execute('bash-large-output', {
-      command: "printf '%030000d' 0",
+      command: outputCommand,
     })
     expect(result.content[0]?.text?.length).toBeLessThan(21_000)
     expect(result.details?.displayOutput.length).toBe(30_000)

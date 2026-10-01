@@ -12,6 +12,7 @@ import * as os from 'os'
 import { chmodSync, existsSync, statSync } from 'fs'
 import { spawnSync } from 'child_process'
 import { diagnoseWindowsPath, installBinaryAtomically } from './packaging/build-install.ts'
+import { compileBinaryAtomically } from './packaging/build-compile.ts'
 
 // ============================================================================
 // ANSI helpers
@@ -92,12 +93,19 @@ interface StepResult {
 }
 
 async function runBuild(): Promise<StepResult> {
+  return compileBinaryAtomically(COMPILED_BINARY, compileBinary, (source, destination) =>
+    installBinaryAtomically(source, destination, undefined,
+      IS_WINDOWS ? undefined : (temporaryPath) => chmodSync(temporaryPath, 0o755)),
+  )
+}
+
+async function compileBinary(outputPath: string): Promise<StepResult> {
   const result: StepResult = {}
   let spinnerIdx = 0
   let startTime = Date.now()
 
   const proc = Bun.spawn({
-    cmd: ['bun', 'build', './src/entry.ts', '--compile', '--outfile=' + COMPILED_BINARY],
+    cmd: ['bun', 'build', './src/entry.ts', '--compile', '--outfile=' + outputPath],
     cwd: PROJECT_DIR,
     stdout: 'pipe',
     stderr: 'pipe',

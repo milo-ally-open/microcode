@@ -1,9 +1,14 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { configureLoopbackProxyBypass } from '../../src/daemon/proxy.ts'
+
+configureLoopbackProxyBypass()
+// These tests start several Bun CLI processes; Windows startup can exceed Bun's 5s default.
+setDefaultTimeout(60_000)
 
 const entry = join(process.cwd(), 'src/entry.ts')
 const testHomePromise = mkdtemp(join(tmpdir(), 'microcode-gateway-lifecycle-'))
@@ -27,7 +32,7 @@ async function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: n
     const timer = setTimeout(() => {
       timedOut = true
       child.kill('SIGKILL')
-    }, 20_000)
+    }, 45_000)
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
     child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
     child.once('error', (error) => { clearTimeout(timer); reject(error) })

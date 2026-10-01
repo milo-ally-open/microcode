@@ -78,7 +78,7 @@ export async function installBinaryAtomically(
 
   const detail = installError instanceof Error ? installError.message : String(installError)
   const message = isReplacementLock(installError)
-    ? `The operating system refused to replace the installed executable (often because a Microcode process still has it open). Close every running Microcode process, then run "bun run build" again. The existing installation was not reported as updated. (${detail})`
+    ? `The operating system refused to replace the installed executable at ${destination} (often because a Microcode process still has it open). Run "microcode gateway stop" and close any running Microcode CLI sessions, then run "bun run build" again. The existing installation was not reported as updated. (${detail})`
     : `Could not install the compiled executable. The existing installation was not reported as updated. (${detail})`
   const cleanupDetail = cleanupError
     ? ` Temporary file cleanup also failed at ${temporaryPath}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`

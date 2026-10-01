@@ -8,6 +8,9 @@ import { GatewayClient } from '../../src/daemon/client.ts'
 import { openAiChatEvents, responsesEvents } from '../../src/daemon/streaming.ts'
 import { initializeTuiModelTransport } from '../../src/daemon/startup.ts'
 import type { GatewayModelRuntime, GatewayRequestOptions, GatewayServerHandle } from '../../src/daemon/types.ts'
+import { configureLoopbackProxyBypass } from '../../src/daemon/proxy.ts'
+
+configureLoopbackProxyBypass()
 
 const TOKEN = 'gateway-test-token'
 const RPC_TOKEN = 'gateway-private-rpc-token'
